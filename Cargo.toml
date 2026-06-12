@@ -1,0 +1,10 @@
+[package]
+name = "rust-sandbox"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = "0.10.1"
+raylib = "5.5.1"
+raylib_imgui = "1.0.1"
+#raylib-rs = "0.1.0"
