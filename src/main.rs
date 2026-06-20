@@ -1,8 +1,10 @@
 use rand::prelude::*;
-use raylib::ffi::IsMouseButtonPressed;
 use raylib::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+mod config;
+mod editor;
 
 struct Node {
     radius: f32, // Changed to f32 to match Raylib's draw_circle_v expectations
@@ -18,10 +20,12 @@ struct Edge {
 }
 
 fn main() {
-    let height = 1080;
-    let width = 1920;
+    let height = config::HEIGHT;
+    let width = config::WIDTH;
+
     let mut editor_open = false;
     let editor_dimentions = Vector2::new(0.8, 0.8);
+    let mut editor_buffer: String = String::new();
 
     // 1. Initialize the Raylib window and context
     let (mut rl, thread) = raylib::init()
@@ -83,9 +87,15 @@ fn main() {
     // 2. The Main Game Loop
     while !rl.window_should_close() {
         // Read user input
+
+        // Toggle editor
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
             print!("Button clicked!");
             editor_open = !editor_open;
+        }
+
+        while let Some(ch) = rl.get_char_pressed() {
+            editor_buffer.push(char::from_u32(ch as u32).unwrap());
         }
 
         // --- Update Phase ---
@@ -127,19 +137,12 @@ fn main() {
             }
         }
 
-        // Draw editor
-        if editor_open {
-            d.draw_rectangle_rounded(
-                Rectangle::new(
-                    width as f32 * (1. - editor_dimentions.x) * 0.5,
-                    height as f32 * (1. - editor_dimentions.y) * 0.5,
-                    width as f32 * editor_dimentions.x,
-                    height as f32 * editor_dimentions.y,
-                ),
-                0.05,
-                0,
-                Color::RAYWHITE.alpha(0.5),
-            );
-        }
+        // Editor
+        editor::renderer::draw(
+            d,
+            editor_open,
+            editor_dimentions,
+            &editor_buffer.to_string(),
+        );
     }
 }
