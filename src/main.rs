@@ -1,4 +1,5 @@
 use rand::prelude::*;
+use raylib::ffi::IsMouseButtonPressed;
 use raylib::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,6 +20,8 @@ struct Edge {
 fn main() {
     let height = 1080;
     let width = 1920;
+    let mut editor_open = false;
+    let editor_dimentions = Vector2::new(0.8, 0.8);
 
     // 1. Initialize the Raylib window and context
     let (mut rl, thread) = raylib::init()
@@ -29,10 +32,10 @@ fn main() {
     rl.set_target_fps(60);
 
     let colors = [
-        //  Color::new(255, 0, 127, 255), // Neon Pink
-        //  Color::new(0, 240, 255, 255), // Electric Cyan
-        //  Color::new(57, 255, 20, 255), // Acid Lime
-        //  Color::new(189, 0, 255, 255), // Bright Violet
+        Color::new(255, 0, 127, 255), // Neon Pink
+        Color::new(0, 240, 255, 255), // Electric Cyan
+        Color::new(57, 255, 20, 255), // Acid Lime
+        Color::new(189, 0, 255, 255), // Bright Violet
         Color::new(255, 255, 255, 255),
     ];
     let num_nodes = 10;
@@ -79,6 +82,12 @@ fn main() {
 
     // 2. The Main Game Loop
     while !rl.window_should_close() {
+        // Read user input
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            print!("Button clicked!");
+            editor_open = !editor_open;
+        }
+
         // --- Update Phase ---
         let delta_time = rl.get_frame_time(); // Time passed since last frame
 
@@ -107,7 +116,7 @@ fn main() {
         // Draw each edge
         for edge in &edges {
             if let (Ok(n1), Ok(n2)) = (edge.n1.try_borrow(), edge.n2.try_borrow()) {
-                d.draw_line_ex(n1.position, n2.position, 10., Color::WHITE);
+                d.draw_line_ex(n1.position, n2.position, 4., Color::WHITE);
             }
         }
 
@@ -116,6 +125,21 @@ fn main() {
             if let Ok(n) = node.try_borrow() {
                 d.draw_circle_v(n.position, n.radius, n.color);
             }
+        }
+
+        // Draw editor
+        if editor_open {
+            d.draw_rectangle_rounded(
+                Rectangle::new(
+                    width as f32 * (1. - editor_dimentions.x) * 0.5,
+                    height as f32 * (1. - editor_dimentions.y) * 0.5,
+                    width as f32 * editor_dimentions.x,
+                    height as f32 * editor_dimentions.y,
+                ),
+                0.05,
+                0,
+                Color::RAYWHITE.alpha(0.5),
+            );
         }
     }
 }
