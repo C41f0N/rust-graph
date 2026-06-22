@@ -94,33 +94,7 @@ fn main() {
             editor_open = !editor_open;
         }
         if editor_open {
-            while let Some(ch) = rl.get_char_pressed() {
-                let c = char::from_u32(ch as u32).unwrap();
-
-                match c {
-                    // Enter key
-                    '\n' | '\r' => {
-                        editor_buffer.push('\n');
-                    }
-
-                    // Backspace (handled separately below usually, but included here if mapped)
-                    '\u{8}' | '\u{7f}' => {
-                        editor_buffer.pop();
-                    }
-
-                    // Normal printable characters
-                    _ => {
-                        if !c.is_control() {
-                            editor_buffer.push(c);
-                        }
-                    }
-                }
-            }
-
-            // IMPORTANT: handle real backspace key separately (Raylib style)
-            if rl.is_key_pressed(raylib::consts::KeyboardKey::KEY_BACKSPACE) {
-                editor_buffer.pop();
-            }
+            editor::input_handler::handle_input(&mut rl);
         }
 
         // --- Update Phase ---
@@ -163,11 +137,6 @@ fn main() {
         }
 
         // Editor
-        editor::renderer::draw(
-            d,
-            editor_open,
-            editor_dimentions,
-            &editor_buffer.to_string(),
-        );
+        editor::renderer::draw(d, editor_open, editor_dimentions);
     }
 }

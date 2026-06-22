@@ -2,7 +2,35 @@ use raylib::prelude::*;
 
 use crate::config;
 
-pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2, buffer: &str) {
+fn wrap_text(d: &RaylibDrawHandle, text: &str, max_width: i32, font_size: i32) -> Vec<String> {
+    let mut result = Vec::new();
+
+    for logical_line in text.lines() {
+        let mut current = String::new();
+        let mut width = 0;
+
+        for word in logical_line.split_inclusive(char::is_whitespace) {
+            let word_width = d.measure_text(word, font_size);
+
+            if width > 0 && width + word_width > max_width {
+                result.push(current);
+                current = String::new();
+                width = 0;
+            }
+
+            current.push_str(word);
+            width += word_width;
+        }
+
+        result.push(current);
+    }
+
+    result
+}
+
+pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
+    let buffer = crate::editor::buffer::BUFFER.lock().unwrap();
+
     // Draw editor
     if editor_open {
         // The background
@@ -18,29 +46,21 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             Color::RAYWHITE.alpha(0.5),
         );
 
-        // Draw the text on editor
-        let mut i = 0;
-        let max_w = (editor_dimentions.x * config::WIDTH as f32) as i32;
-        let mut w = 0;
+        let editor_x = ((1.0 - editor_dimentions.x) * 0.5 * config::WIDTH as f32) as i32;
+        let editor_y = ((1.0 - editor_dimentions.y) * 0.5 * config::HEIGHT as f32) as i32;
 
-        for word in buffer.split_inclusive(char::is_whitespace) {
-            let new_w = w + d.measure_text(word, config::EDITOR_FONT_SIZE);
+        let max_width = (editor_dimentions.x * config::WIDTH as f32) as i32;
 
-            if new_w > max_w {
-                w = 0;
-                i += 1;
-            }
+        let wrapped_lines = wrap_text(&d, buffer.as_str(), max_width, config::EDITOR_FONT_SIZE);
 
+        for (i, line) in wrapped_lines.iter().enumerate() {
             d.draw_text(
-                word,
-                ((1. - editor_dimentions.x) * 0.5 * config::WIDTH as f32) as i32 + w,
-                ((1. - editor_dimentions.y) * 0.5 * config::HEIGHT as f32) as i32
-                    + config::EDITOR_FONT_SIZE * i,
+                line,
+                editor_x,
+                editor_y + i as i32 * config::EDITOR_FONT_SIZE,
                 config::EDITOR_FONT_SIZE,
                 Color::YELLOW,
             );
-
-            w += d.measure_text(word, config::EDITOR_FONT_SIZE);
         }
     }
 }
