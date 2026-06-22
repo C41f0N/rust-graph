@@ -30,6 +30,8 @@ fn wrap_text(d: &RaylibDrawHandle, text: &str, max_width: i32, font_size: i32) -
 
 pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
     let buffer = crate::editor::buffer::BUFFER.lock().unwrap();
+    let cursor_x = crate::editor::buffer::CURSOR_X.lock().unwrap();
+    let cursor_y = crate::editor::buffer::CURSOR_Y.lock().unwrap();
 
     // Draw editor
     if editor_open {
@@ -51,13 +53,27 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         let max_width = (editor_dimentions.x * config::WIDTH as f32) as i32;
 
-        let wrapped_lines = wrap_text(&d, buffer.as_str(), max_width, config::EDITOR_FONT_SIZE);
+        let wrapped_lines = buffer;
 
-        for (i, line) in wrapped_lines.iter().enumerate() {
+        for (line_num, line) in wrapped_lines.iter().enumerate() {
+            // Draw the cursor if it's on this line
+            if *cursor_y == line_num as i32 {
+                let cursor_x_abs = editor_x
+                    + d.measure_text(&line[0..*cursor_x as usize], config::EDITOR_FONT_SIZE);
+                let cursor_y_abs = editor_y + line_num as i32 * config::EDITOR_FONT_SIZE;
+
+                d.draw_rectangle(
+                    cursor_x_abs,
+                    cursor_y_abs,
+                    2,
+                    config::EDITOR_FONT_SIZE,
+                    Color::YELLOW,
+                );
+            }
             d.draw_text(
                 line,
                 editor_x,
-                editor_y + i as i32 * config::EDITOR_FONT_SIZE,
+                editor_y + line_num as i32 * config::EDITOR_FONT_SIZE,
                 config::EDITOR_FONT_SIZE,
                 Color::YELLOW,
             );

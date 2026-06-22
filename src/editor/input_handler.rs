@@ -2,54 +2,74 @@ use raylib::prelude::*;
 
 pub fn handle_input(rl: &mut RaylibHandle) {
     let mut buffer = crate::editor::buffer::BUFFER.lock().unwrap();
-    let mut cursorI = crate::editor::buffer::CURSOR_INDEX.lock().unwrap();
-    let mut cursorLine = crate::editor::buffer::CURSOR_LINE.lock().unwrap();
+    let mut cursor_x = crate::editor::buffer::CURSOR_X.lock().unwrap();
+    let mut cursor_y = crate::editor::buffer::CURSOR_Y.lock().unwrap();
+
+    if buffer.is_empty() {
+        buffer.push(String::new());
+    }
 
     while let Some(ch) = rl.get_char_pressed() {
         let c = char::from_u32(ch as u32).unwrap();
 
-        match c {
-            // Enter key
-            '\n' | '\r' => {
-                buffer.push('\n');
-            }
-
-            // Backspace (handled separately below usually, but included here if mapped)
-            '\u{8}' | '\u{7f}' => {
-                buffer.pop();
-            }
-
-            // Normal printable characters
-            _ => {
-                if !c.is_control() {
-                    buffer.push(c);
-                }
-            }
+        if !c.is_control() {
+            buffer[*cursor_y as usize].insert(*cursor_x as usize, c);
+            *cursor_x += 1;
         }
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE) {
-        buffer.pop();
+        if *cursor_x > 0 {
+            buffer[*cursor_y as usize].remove(*cursor_x as usize - 1);
+            *cursor_x -= 1;
+        } else if *cursor_y > 0 {
+            let prev_line_len = buffer[*cursor_y as usize - 1].len() as i32;
+            let buffered_line = buffer.remove(*cursor_y as usize);
+            buffer[*cursor_y as usize - 1].push_str(&buffered_line);
+            *cursor_y -= 1;
+            *cursor_x = prev_line_len;
+        }
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_ENTER) {
-        buffer.push('\n');
-    }
-
-    // TODO: complete this shit
-    if rl.is_key_pressed(KeyboardKey::KEY_UP) {
-        *cursorLine = if *cursorLine >= 1 { *cursorLine - 1 } else { 0 };
-    }
-
-    if rl.is_key_pressed(KeyboardKey::KEY_DOWN) {
-        *cursorLine += 1;
+        if *cursor_y < buffer.len() as i32 - 1 {
+            if *cursor_x < buffer[*cursor_y as usize].len() as i32 {
+                let new_line = buffer[*cursor_y as usize][*cursor_x as usize..].to_string();
+                buffer.insert(*cursor_y as usize + 1, new_line);
+                buffer[*cursor_y as usize].truncate(*cursor_x as usize);
+            } else {
+                buffer.insert(*cursor_y as usize + 1, String::new());
+            }
+        } else {
+            buffer.push(String::new());
+        }
+        *cursor_y += 1;
+        *cursor_x = 0;
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_RIGHT) {
-        *cursorLine = if *cursorLine >= 1 { *cursorLine - 1 } else { 0 };
+        *cursor_x += if *cursor_x < buffer[*cursor_y as usize].len() as i32 {
+            1
+        } else {
+            0
+        };
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_LEFT) {
-        *cursorLine = if *cursorLine >= 1 { *cursorLine - 1 } else { 0 };
+        *cursor_x -= if *cursor_x > 0 { 1 } else { 0 };
+    }
+
+    if rl.is_key_pressed(KeyboardKey::KEY_UP) {
+        if *cursor_y > 0 {
+            *cursor_y -= 1;
+            *cursor_x = (*cursor_x).min(buffer[*cursor_y as usize].len() as i32);
+        }
+    }
+
+    if rl.is_key_pressed(KeyboardKey::KEY_DOWN) {
+        if *cursor_y < buffer.len() as i32 - 1 {
+            *cursor_y += 1;
+            *cursor_x = (*cursor_x).min(buffer[*cursor_y as usize].len() as i32);
+        }
     }
 }

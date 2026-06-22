@@ -23,7 +23,7 @@ fn main() {
     let height = config::HEIGHT;
     let width = config::WIDTH;
 
-    let mut editor_open = false;
+    let mut editor_open = true;
     let editor_dimentions = Vector2::new(0.8, 0.8);
     let mut editor_buffer: String = String::new();
 
@@ -32,6 +32,8 @@ fn main() {
         .size(width, height)
         .title("Raylib Nodes")
         .build();
+
+    rl.set_trace_log(TraceLogLevel::LOG_ERROR);
 
     rl.set_target_fps(60);
 
