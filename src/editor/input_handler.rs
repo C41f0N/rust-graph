@@ -32,31 +32,33 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_ENTER) {
-        if *cursor_y < buffer.len() as i32 - 1 {
-            if *cursor_x < buffer[*cursor_y as usize].len() as i32 {
-                let new_line = buffer[*cursor_y as usize][*cursor_x as usize..].to_string();
-                buffer.insert(*cursor_y as usize + 1, new_line);
-                buffer[*cursor_y as usize].truncate(*cursor_x as usize);
-            } else {
-                buffer.insert(*cursor_y as usize + 1, String::new());
-            }
-        } else {
-            buffer.push(String::new());
-        }
+        let y = *cursor_y as usize;
+        let x = *cursor_x as usize;
+
+        let new_line = buffer[y][x..].to_string();
+        buffer[y].truncate(x);
+        buffer.insert(y + 1, new_line);
+
         *cursor_y += 1;
         *cursor_x = 0;
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_RIGHT) {
-        *cursor_x += if *cursor_x < buffer[*cursor_y as usize].len() as i32 {
-            1
-        } else {
-            0
-        };
+        if *cursor_x < buffer[*cursor_y as usize].len() as i32 {
+            *cursor_x += 1;
+        } else if *cursor_y < buffer.len() as i32 - 1 {
+            *cursor_y += 1;
+            *cursor_x = 0;
+        }
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_LEFT) {
-        *cursor_x -= if *cursor_x > 0 { 1 } else { 0 };
+        if *cursor_x > 0 {
+            *cursor_x -= 1;
+        } else if *cursor_y > 0 {
+            *cursor_y -= 1;
+            *cursor_x = buffer[*cursor_y as usize].len() as i32;
+        }
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_UP) {
