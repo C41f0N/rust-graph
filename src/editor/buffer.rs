@@ -22,37 +22,74 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
 
     for (line_index, line) in buffer.iter().enumerate() {
         let chars: Vec<char> = line.chars().collect();
+
         let mut start = 0;
 
         while start < chars.len() {
             let mut end = start;
-            let mut current_text = String::new();
+            let mut last_space = None;
+            let mut text = String::new();
 
             while end < chars.len() {
-                current_text.push(chars[end]);
+                text.push(chars[end]);
 
-                let width = d.measure_text(&current_text, config::EDITOR_FONT_SIZE);
+                if chars[end].is_whitespace() {
+                    last_space = Some(end);
+                }
+
+                let width = d.measure_text(&text, config::EDITOR_FONT_SIZE);
 
                 if width > max_width {
-                    current_text.pop();
                     break;
                 }
 
                 end += 1;
             }
 
-            // Ensure progress even if a single glyph exceeds max_width
-            if end == start {
-                end += 1;
+            if end == chars.len() {
+                visual_lines.push(VisualLine {
+                    start,
+                    end,
+                    line: line_index,
+                });
+                break;
             }
 
+            if let Some(space) = last_space {
+                // Wrap at the last space.
+                visual_lines.push(VisualLine {
+                    start,
+                    end: space,
+                    line: line_index,
+                });
+
+                // Skip whitespace at the beginning of the next visual line.
+                start = space + 1;
+                while start < chars.len() && chars[start].is_whitespace() {
+                    start += 1;
+                }
+            } else {
+                // No spaces in this segment (very long word).
+                if end == start {
+                    end += 1;
+                }
+
+                visual_lines.push(VisualLine {
+                    start,
+                    end,
+                    line: line_index,
+                });
+
+                start = end;
+            }
+        }
+
+        if chars.is_empty() {
             visual_lines.push(VisualLine {
-                start,
-                end,
+                start: 0,
+                end: 0,
                 line: line_index,
             });
-
-            start = end;
         }
     }
 }

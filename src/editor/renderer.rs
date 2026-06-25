@@ -41,7 +41,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             let text_y = editor_y + line_num as i32 * config::EDITOR_FONT_SIZE;
 
             // Draw the cursor if it's on this line
-            if *cursor_y == line_num as i32
+            if *cursor_y == line.line as i32
                 && *cursor_x >= line.start as i32
                 && *cursor_x <= line.end as i32
             {

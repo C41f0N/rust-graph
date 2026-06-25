@@ -1,6 +1,7 @@
 use raylib::prelude::*;
 
 pub fn handle_input(rl: &mut RaylibHandle) {
+    let visual_lines = crate::editor::buffer::VISUAL_LINES.lock().unwrap();
     let mut buffer = crate::editor::buffer::BUFFER.write().unwrap();
     let mut cursor_x = crate::editor::buffer::CURSOR_X.lock().unwrap();
     let mut cursor_y = crate::editor::buffer::CURSOR_Y.lock().unwrap();
@@ -8,6 +9,12 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     if buffer.is_empty() {
         buffer.push(String::new());
     }
+
+    let current_visual = visual_lines.iter().position(|vl| {
+        vl.line == *cursor_y as usize
+            && *cursor_x as usize >= vl.start
+            && *cursor_x as usize <= vl.end
+    });
 
     while let Some(ch) = rl.get_char_pressed() {
         let c = char::from_u32(ch as u32).unwrap();
@@ -18,7 +25,9 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         }
     }
 
-    if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE) {
+    if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE)
+        || rl.is_key_pressed_repeat(KeyboardKey::KEY_BACKSPACE)
+    {
         if *cursor_x > 0 {
             buffer[*cursor_y as usize].remove(*cursor_x as usize - 1);
             *cursor_x -= 1;
@@ -31,7 +40,8 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         }
     }
 
-    if rl.is_key_pressed(KeyboardKey::KEY_ENTER) {
+    if rl.is_key_pressed(KeyboardKey::KEY_ENTER) || rl.is_key_pressed_repeat(KeyboardKey::KEY_ENTER)
+    {
         let y = *cursor_y as usize;
         let x = *cursor_x as usize;
 
@@ -43,7 +53,8 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         *cursor_x = 0;
     }
 
-    if rl.is_key_pressed(KeyboardKey::KEY_RIGHT) {
+    if rl.is_key_pressed(KeyboardKey::KEY_RIGHT) || rl.is_key_pressed_repeat(KeyboardKey::KEY_RIGHT)
+    {
         if *cursor_x < buffer[*cursor_y as usize].len() as i32 {
             *cursor_x += 1;
         } else if *cursor_y < buffer.len() as i32 - 1 {
@@ -52,7 +63,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         }
     }
 
-    if rl.is_key_pressed(KeyboardKey::KEY_LEFT) {
+    if rl.is_key_pressed(KeyboardKey::KEY_LEFT) || rl.is_key_pressed_repeat(KeyboardKey::KEY_LEFT) {
         if *cursor_x > 0 {
             *cursor_x -= 1;
         } else if *cursor_y > 0 {
@@ -61,17 +72,31 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         }
     }
 
-    if rl.is_key_pressed(KeyboardKey::KEY_UP) {
-        if *cursor_y > 0 {
-            *cursor_y -= 1;
-            *cursor_x = (*cursor_x).min(buffer[*cursor_y as usize].len() as i32);
+    if rl.is_key_pressed(KeyboardKey::KEY_UP) || rl.is_key_pressed_repeat(KeyboardKey::KEY_UP) {
+        if let Some(current) = current_visual {
+            if current > 0 {
+                let from = &visual_lines[current];
+                let to = &visual_lines[current - 1];
+
+                let offset = *cursor_x as usize - from.start;
+
+                *cursor_y = to.line as i32;
+                *cursor_x = (to.start + offset).min(to.end) as i32;
+            }
         }
     }
 
-    if rl.is_key_pressed(KeyboardKey::KEY_DOWN) {
-        if *cursor_y < buffer.len() as i32 - 1 {
-            *cursor_y += 1;
-            *cursor_x = (*cursor_x).min(buffer[*cursor_y as usize].len() as i32);
+    if rl.is_key_pressed(KeyboardKey::KEY_DOWN) || rl.is_key_pressed_repeat(KeyboardKey::KEY_DOWN) {
+        if let Some(current) = current_visual {
+            if current + 1 < visual_lines.len() {
+                let from = &visual_lines[current];
+                let to = &visual_lines[current + 1];
+
+                let offset = *cursor_x as usize - from.start;
+
+                *cursor_y = to.line as i32;
+                *cursor_x = (to.start + offset).min(to.end) as i32;
+            }
         }
     }
 }
