@@ -1,7 +1,7 @@
 use raylib::prelude::*;
 
 pub fn handle_input(rl: &mut RaylibHandle) {
-    let mut buffer = crate::editor::buffer::BUFFER.lock().unwrap();
+    let mut buffer = crate::editor::buffer::BUFFER.write().unwrap();
     let mut cursor_x = crate::editor::buffer::CURSOR_X.lock().unwrap();
     let mut cursor_y = crate::editor::buffer::CURSOR_Y.lock().unwrap();
 

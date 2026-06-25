@@ -2,34 +2,8 @@ use raylib::prelude::*;
 
 use crate::config;
 
-fn wrap_text(d: &RaylibDrawHandle, text: &str, max_width: i32, font_size: i32) -> Vec<String> {
-    let mut result = Vec::new();
-
-    for logical_line in text.lines() {
-        let mut current = String::new();
-        let mut width = 0;
-
-        for word in logical_line.split_inclusive(char::is_whitespace) {
-            let word_width = d.measure_text(word, font_size);
-
-            if width > 0 && width + word_width > max_width {
-                result.push(current);
-                current = String::new();
-                width = 0;
-            }
-
-            current.push_str(word);
-            width += word_width;
-        }
-
-        result.push(current);
-    }
-
-    result
-}
-
 pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
-    let buffer = crate::editor::buffer::BUFFER.lock().unwrap();
+    let buffer = crate::editor::buffer::BUFFER.read().unwrap();
     let cursor_x = crate::editor::buffer::CURSOR_X.lock().unwrap();
     let cursor_y = crate::editor::buffer::CURSOR_Y.lock().unwrap();
     let font_color = config::EDITOR_FONT_COLOR;
@@ -54,11 +28,30 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         let max_width = (editor_dimentions.x * config::WIDTH as f32) as i32;
 
-        for (line_num, line) in buffer.iter().enumerate() {
+        // Generate visual lines based on the current buffer and max width
+        crate::editor::buffer::generate_visual_lines(max_width, &mut d);
+
+        for (line_num, line) in crate::editor::buffer::VISUAL_LINES
+            .lock()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let text = &buffer[line.line][line.start..line.end];
+            let text_y = editor_y + line_num as i32 * config::EDITOR_FONT_SIZE;
+
             // Draw the cursor if it's on this line
-            if *cursor_y == line_num as i32 {
+            if *cursor_y == line_num as i32
+                && *cursor_x >= line.start as i32
+                && *cursor_x <= line.end as i32
+            {
                 let cursor_x_abs = editor_x
-                    + d.measure_text(&line[0..*cursor_x as usize], config::EDITOR_FONT_SIZE);
+                    + d.measure_text(
+                        buffer[line.line as usize].as_str()[line.start..*cursor_x as usize]
+                            .to_string()
+                            .as_str(),
+                        config::EDITOR_FONT_SIZE,
+                    );
                 let cursor_y_abs = editor_y + line_num as i32 * config::EDITOR_FONT_SIZE;
 
                 d.draw_rectangle(
@@ -69,8 +62,11 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                     font_color,
                 );
             }
+
             d.draw_text(
-                line,
+                buffer[line.line as usize].as_str()[line.start..line.end]
+                    .to_string()
+                    .as_str(),
                 editor_x,
                 editor_y + line_num as i32 * config::EDITOR_FONT_SIZE,
                 config::EDITOR_FONT_SIZE,
