@@ -7,6 +7,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
     let cursor_x = crate::editor::buffer::CURSOR_X.lock().unwrap();
     let cursor_y = crate::editor::buffer::CURSOR_Y.lock().unwrap();
     let font_color = config::EDITOR_FONT_COLOR;
+    let padding = config::EDITOR_PADDING;
 
     // Draw editor
     if editor_open {
@@ -26,7 +27,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         let editor_x = ((1.0 - editor_dimentions.x) * 0.5 * config::WIDTH as f32) as i32;
         let editor_y = ((1.0 - editor_dimentions.y) * 0.5 * config::HEIGHT as f32) as i32;
 
-        let max_width = (editor_dimentions.x * config::WIDTH as f32) as i32;
+        let max_width = (editor_dimentions.x * config::WIDTH as f32) as i32 - 2 * padding;
 
         // Generate visual lines based on the current buffer and max width
         crate::editor::buffer::generate_visual_lines(max_width, &mut d);
@@ -51,24 +52,34 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                             .to_string()
                             .as_str(),
                         config::EDITOR_FONT_SIZE,
-                    );
-                let cursor_y_abs = editor_y + line_num as i32 * config::EDITOR_FONT_SIZE;
+                    )
+                    + padding;
+                let cursor_y_abs =
+                    editor_y + line_num as i32 * config::EDITOR_FONT_SIZE + padding / 2;
 
-                d.draw_rectangle(
-                    cursor_x_abs,
-                    cursor_y_abs,
-                    2,
-                    config::EDITOR_FONT_SIZE,
-                    font_color,
-                );
+                let blink = ((d.get_time() * 2.0) as i32) % 2 == 0;
+
+                if blink {
+                    d.draw_rectangle(
+                        cursor_x_abs,
+                        cursor_y_abs
+                            + (config::EDITOR_FONT_SIZE as f32
+                                * (1. - config::EDITOR_CURSOR_HEIGHT_RATIO))
+                                as i32,
+                        2,
+                        (config::EDITOR_FONT_SIZE as f32 * config::EDITOR_CURSOR_HEIGHT_RATIO)
+                            as i32,
+                        font_color,
+                    );
+                }
             }
 
             d.draw_text(
                 buffer[line.line as usize].as_str()[line.start..line.end]
                     .to_string()
                     .as_str(),
-                editor_x,
-                editor_y + line_num as i32 * config::EDITOR_FONT_SIZE,
+                editor_x + padding,
+                editor_y + line_num as i32 * config::EDITOR_FONT_SIZE + padding / 2,
                 config::EDITOR_FONT_SIZE,
                 font_color,
             );
