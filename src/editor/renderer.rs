@@ -4,8 +4,8 @@ use crate::config;
 
 pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
     let buffer = crate::editor::buffer::BUFFER.read().unwrap();
-    let cursor_x = crate::editor::buffer::CURSOR_X.lock().unwrap();
-    let cursor_y = crate::editor::buffer::CURSOR_Y.lock().unwrap();
+    let cursor_x = crate::editor::buffer::CURSOR_X.read().unwrap();
+    let cursor_y = crate::editor::buffer::CURSOR_Y.read().unwrap();
     let font_color = config::EDITOR_FONT_COLOR;
     let padding = config::EDITOR_PADDING;
 
@@ -31,6 +31,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         // Generate visual lines based on the current buffer and max width
         crate::editor::buffer::generate_visual_lines(max_width, &mut d);
+        let mut line_y = 0;
 
         for (line_num, line) in crate::editor::buffer::VISUAL_LINES
             .lock()
@@ -38,9 +39,11 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             .iter()
             .enumerate()
         {
-            let text = &buffer[line.line][line.start..line.end];
-            let text_y = editor_y + line_num as i32 * config::EDITOR_FONT_SIZE;
+            let mut line_font_size = config::EDITOR_FONT_SIZE;
 
+            if buffer[line.line].starts_with("# ") && *cursor_y as usize != line.line {
+                line_font_size = config::EDITOR_FONT_SIZE_H1;
+            }
             // Draw the cursor if it's on this line
             if *cursor_y == line.line as i32
                 && *cursor_x >= line.start as i32
@@ -48,14 +51,13 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             {
                 let cursor_x_abs = editor_x
                     + d.measure_text(
-                        buffer[line.line as usize].as_str()[line.start..*cursor_x as usize]
+                        buffer[line.line].as_str()[line.start..*cursor_x as usize]
                             .to_string()
                             .as_str(),
-                        config::EDITOR_FONT_SIZE,
+                        line_font_size,
                     )
                     + padding;
-                let cursor_y_abs =
-                    editor_y + line_num as i32 * config::EDITOR_FONT_SIZE + padding / 2;
+                let cursor_y_abs = editor_y + line_y + padding / 2;
 
                 let blink = ((d.get_time() * 2.0) as i32) % 2 == 0;
 
@@ -63,26 +65,24 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                     d.draw_rectangle(
                         cursor_x_abs,
                         cursor_y_abs
-                            + (config::EDITOR_FONT_SIZE as f32
-                                * (1. - config::EDITOR_CURSOR_HEIGHT_RATIO))
+                            + (line_font_size as f32 * (1. - config::EDITOR_CURSOR_HEIGHT_RATIO))
                                 as i32,
                         2,
-                        (config::EDITOR_FONT_SIZE as f32 * config::EDITOR_CURSOR_HEIGHT_RATIO)
-                            as i32,
+                        (line_font_size as f32 * config::EDITOR_CURSOR_HEIGHT_RATIO) as i32,
                         font_color,
                     );
                 }
             }
 
             d.draw_text(
-                buffer[line.line as usize].as_str()[line.start..line.end]
-                    .to_string()
-                    .as_str(),
+                buffer[line.line][line.start..line.end].to_string().as_str(),
                 editor_x + padding,
-                editor_y + line_num as i32 * config::EDITOR_FONT_SIZE + padding / 2,
-                config::EDITOR_FONT_SIZE,
+                editor_y + line_y + padding / 2,
+                line_font_size,
                 font_color,
             );
+
+            line_y += line_font_size + config::EDITOR_LINE_SPACING;
         }
     }
 }

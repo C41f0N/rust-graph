@@ -12,18 +12,26 @@ pub struct VisualLine {
 pub static BUFFER: RwLock<Vec<String>> = RwLock::new(Vec::new());
 pub static VISUAL_LINES: Mutex<Vec<VisualLine>> = Mutex::new(Vec::new());
 
-pub static CURSOR_X: Mutex<i32> = Mutex::new(0);
-pub static CURSOR_Y: Mutex<i32> = Mutex::new(0);
+pub static CURSOR_X: RwLock<i32> = RwLock::new(0);
+pub static CURSOR_Y: RwLock<i32> = RwLock::new(0);
 
 pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
+    let cursor_y = crate::editor::buffer::CURSOR_Y.read().unwrap();
     let buffer = BUFFER.read().unwrap();
     let mut visual_lines = VISUAL_LINES.lock().unwrap();
     visual_lines.clear();
 
     for (line_index, line) in buffer.iter().enumerate() {
-        let chars: Vec<char> = line.chars().collect();
+        let mut line_font_size = config::EDITOR_FONT_SIZE;
 
         let mut start = 0;
+
+        if line.starts_with("# ") && *cursor_y as usize != line_index {
+            start = 2;
+            line_font_size = config::EDITOR_FONT_SIZE_H1;
+        }
+
+        let chars: Vec<char> = line.chars().collect();
 
         while start < chars.len() {
             let mut end = start;
@@ -37,7 +45,7 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
                     last_space = Some(end);
                 }
 
-                let width = d.measure_text(&text, config::EDITOR_FONT_SIZE);
+                let width = d.measure_text(&text, line_font_size);
 
                 if width > max_width {
                     break;

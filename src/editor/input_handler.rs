@@ -3,8 +3,8 @@ use raylib::prelude::*;
 pub fn handle_input(rl: &mut RaylibHandle) {
     let visual_lines = crate::editor::buffer::VISUAL_LINES.lock().unwrap();
     let mut buffer = crate::editor::buffer::BUFFER.write().unwrap();
-    let mut cursor_x = crate::editor::buffer::CURSOR_X.lock().unwrap();
-    let mut cursor_y = crate::editor::buffer::CURSOR_Y.lock().unwrap();
+    let mut cursor_x = crate::editor::buffer::CURSOR_X.write().unwrap();
+    let mut cursor_y = crate::editor::buffer::CURSOR_Y.write().unwrap();
 
     if buffer.is_empty() {
         buffer.push(String::new());
