@@ -21,7 +21,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             ),
             0.05,
             0,
-            Color::RAYWHITE.alpha(0.5),
+            Color::BLACK.alpha(0.5),
         );
 
         let editor_x = ((1.0 - editor_dimentions.x) * 0.5 * config::WIDTH as f32) as i32;
