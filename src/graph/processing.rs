@@ -4,6 +4,7 @@ use raylib::prelude::*;
 use std::sync::RwLock;
 
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
+pub static HOVER_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static NODES: RwLock<Vec<Node>> = RwLock::new(Vec::<Node>::new());
 pub static EDGES: RwLock<Vec<Edge>> = RwLock::new(Vec::<Edge>::new());
 

@@ -40,7 +40,9 @@ fn main() {
         update_forces(&mut rl);
 
         let mut d = rl.begin_drawing(&thread);
+
         graph::renderer::draw(&mut d);
+
         editor::renderer::draw(d, editor_open, editor_dimentions);
     }
 }
