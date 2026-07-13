@@ -19,7 +19,6 @@ fn main() {
         .title("Raylib Nodes")
         .build();
     rl.set_exit_key(Some(KeyboardKey::KEY_NULL));
-    rl.set_trace_log(TraceLogLevel::LOG_ERROR);
 
     rl.set_target_fps(60);
 

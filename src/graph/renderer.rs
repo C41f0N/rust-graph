@@ -3,11 +3,19 @@ use std::sync::RwLock;
 use crate::config::HEIGHT;
 use crate::config::WIDTH;
 use crate::graph::processing::*;
+use raylib::ffi;
 use raylib::prelude::*;
+use std::ffi::CString;
 
 pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
-    target: Vector2::new(WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0),
-    offset: Vector2::new(WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0),
+    target: Vector2 {
+        x: WIDTH as f32 / 2.0,
+        y: HEIGHT as f32 / 2.0,
+    },
+    offset: Vector2 {
+        x: WIDTH as f32 / 2.0,
+        y: HEIGHT as f32 / 2.0,
+    },
     rotation: 0.0,
     zoom: 1.0,
 });
@@ -42,6 +50,25 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             } else {
                 node.color
             },
+        );
+
+        let font = mode.get_font_default();
+
+        let c_text = CString::new(node.name.clone()).unwrap();
+
+        let text_size =
+            unsafe { ffi::MeasureTextEx(ffi::GetFontDefault(), c_text.as_ptr(), 5.0, 0.0) };
+
+        mode.draw_text_ex(
+            font,
+            &node.name,
+            Vector2::new(
+                node.position.x - text_size.x / 2.0,
+                node.position.y + node.radius + 5.0,
+            ),
+            5.0,
+            0.0,
+            Color::WHITE.alpha(((camera.zoom - 2.0) / 0.5).clamp(0.0, 1.0)),
         );
     }
 }

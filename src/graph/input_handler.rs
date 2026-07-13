@@ -84,6 +84,4 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     }
 
     drop(camera);
-
-    println!("Wheel Value: {}", wheel);
 }

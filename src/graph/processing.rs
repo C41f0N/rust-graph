@@ -9,10 +9,11 @@ pub static NODES: RwLock<Vec<Node>> = RwLock::new(Vec::<Node>::new());
 pub static EDGES: RwLock<Vec<Edge>> = RwLock::new(Vec::<Edge>::new());
 
 pub struct Node {
-    pub radius: f32, // Changed to f32 to match Raylib's draw_circle_v expectations
+    pub radius: f32,
     pub color: Color,
     pub position: Vector2,
-    pub velocity: Vector2, // Changed to a Vector2 so they can move in 2D space
+    pub velocity: Vector2,
+    pub name: String,
 }
 
 pub struct Edge {
@@ -32,17 +33,15 @@ pub fn generate_random_nodes() {
     println!("HERE");
     // Generating dummy nodes
     for _ in 0..num_nodes {
-        // Generate a random angle for movement direction
-
         nodes.push(Node {
             radius: rng.random_range(5.0..=5.0),
             color: Color::WHITE,
             position: Vector2::new(
-                rng.random_range((WIDTH as f32 / 2. - 50.)..(WIDTH as f32 / 2. + 50. as f32)),
-                rng.random_range((HEIGHT as f32 / 2. - 50.)..(HEIGHT as f32 / 2. + 50. as f32)),
+                rng.random_range((WIDTH as f32 / 2. - 50.)..(WIDTH as f32 / 2. + 50.)),
+                rng.random_range((HEIGHT as f32 / 2. - 50.)..(HEIGHT as f32 / 2. + 50.)),
             ),
-            // Velocity split into X and Y components based on the angle
             velocity: Vector2::new(0.0, 0.0),
+            name: "Some name".to_string(),
         });
     }
 
@@ -85,7 +84,7 @@ pub fn update_forces(rl: &mut RaylibHandle) {
             let pj = nodes[j].position;
             let diff = pi - pj;
             let dist = diff.length().max(1.0);
-            forces[i] += (diff / dist) * (repulsion_k / (dist * dist));
+            forces[i] += diff * (repulsion_k / (dist * dist * dist));
         }
     }
 
@@ -103,7 +102,7 @@ pub fn update_forces(rl: &mut RaylibHandle) {
         let diff = pj - pi;
         let dist = diff.length().max(1.0);
         let force = spring_k * (dist - rest_length);
-        let direction = diff / dist;
+        let direction = diff.normalize();
         forces[edge.n1] += direction * force;
         forces[edge.n2] -= direction * force;
     }
