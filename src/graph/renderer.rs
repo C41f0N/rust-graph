@@ -23,6 +23,8 @@ pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
 pub fn draw(d: &mut RaylibDrawHandle) {
     let dragging_node = DRAGGING_NODE.read().unwrap();
     let hover_node = HOVER_NODE.read().unwrap();
+    let selected_node = SELECTED_NODE.read().unwrap();
+    let delete_pending = DELETE_PENDING.read().unwrap();
     let nodes = NODES.read().unwrap();
     let edges = EDGES.read().unwrap();
     let camera = CAMERA.read().unwrap();
@@ -38,19 +40,31 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     }
 
     for (i, node) in nodes.iter().enumerate() {
-        mode.draw_circle_v(
-            node.position,
-            if i == dragging_node.unwrap_or(usize::MAX) {
-                node.radius * 1.5
-            } else {
-                node.radius
-            },
-            if i == hover_node.unwrap_or(usize::MAX) {
-                Color::LIGHTPINK
-            } else {
-                node.color
-            },
-        );
+        let is_dragging = *dragging_node == Some(i);
+        let is_hover = *hover_node == Some(i);
+        let is_selected = *selected_node == Some(i);
+
+        let mut node_color = node.color;
+        if is_hover {
+            node_color = Color::LIGHTPINK;
+        }
+
+        let draw_radius = if is_dragging {
+            node.radius * 1.5
+        } else {
+            node.radius
+        };
+
+        mode.draw_circle_v(node.position, draw_radius, node_color);
+
+        // Draw selection ring
+        if is_selected {
+            mode.draw_circle_lines_v(
+                node.position,
+                draw_radius + 3.0,
+                Color::YELLOW,
+            );
+        }
 
         let font = mode.get_font_default();
 
@@ -70,5 +84,20 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             0.0,
             Color::WHITE.alpha(((camera.zoom - 2.0) / 0.5).clamp(0.0, 1.0)),
         );
+    }
+
+    drop(mode);
+    drop(camera);
+
+    // Draw delete confirmation prompt (outside camera mode, in screen space)
+    if *delete_pending {
+        if let Some(idx) = *selected_node {
+            let name = &nodes[idx].name;
+            let prompt = format!("Delete '{}'? (Y/N)", name);
+            let text_width = d.measure_text(&prompt, 20);
+            let x = (WIDTH - text_width) / 2;
+            d.draw_rectangle(x - 10, 10, text_width + 20, 30, Color::BLACK.alpha(0.7));
+            d.draw_text(&prompt, x, 15, 20, Color::WHITE);
+        }
     }
 }

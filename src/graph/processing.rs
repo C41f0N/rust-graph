@@ -1,6 +1,8 @@
 use crate::config::*;
+use crate::filesystem;
 use rand::prelude::*;
 use raylib::prelude::*;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
@@ -8,12 +10,18 @@ pub static HOVER_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static NODES: RwLock<Vec<Node>> = RwLock::new(Vec::<Node>::new());
 pub static EDGES: RwLock<Vec<Edge>> = RwLock::new(Vec::<Edge>::new());
 
+pub static DIR_PATH: RwLock<PathBuf> = RwLock::new(PathBuf::new());
+pub static SELECTED_NODE: RwLock<Option<usize>> = RwLock::new(None);
+pub static EDITING_NODE: RwLock<Option<usize>> = RwLock::new(None);
+pub static DELETE_PENDING: RwLock<bool> = RwLock::new(false);
+
 pub struct Node {
     pub radius: f32,
     pub color: Color,
     pub position: Vector2,
     pub velocity: Vector2,
     pub name: String,
+    pub path: PathBuf,
 }
 
 pub struct Edge {
@@ -22,37 +30,44 @@ pub struct Edge {
     pub direction: i32,
 }
 
-pub fn generate_random_nodes() {
-    let num_nodes = 100;
-    let num_edges = 50;
+pub fn generate_nodes_from_directory(dir: &Path) {
+    let files = filesystem::scan_directory(dir);
     let mut rng = rand::rng();
+    let num_edges = (files.len() / 2).max(1);
 
     let mut nodes = NODES.write().unwrap();
     let mut edges = EDGES.write().unwrap();
 
-    // Generating dummy nodes
-    for _ in 0..num_nodes {
+    for file in &files {
+        let name = file
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
         nodes.push(Node {
-            radius: rng.random_range(5.0..=5.0),
+            radius: 5.0,
             color: Color::WHITE,
             position: Vector2::new(
-                rng.random_range((WIDTH as f32 / 2. - 50.)..(WIDTH as f32 / 2. + 50.)),
-                rng.random_range((HEIGHT as f32 / 2. - 50.)..(HEIGHT as f32 / 2. + 50.)),
+                rng.random_range((WIDTH as f32 / 2. - 100.)..(WIDTH as f32 / 2. + 100.)),
+                rng.random_range((HEIGHT as f32 / 2. - 100.)..(HEIGHT as f32 / 2. + 100.)),
             ),
             velocity: Vector2::new(0.0, 0.0),
-            name: "Some name".to_string(),
+            name,
+            path: file.clone(),
         });
     }
 
+    let num_nodes = nodes.len();
     for _ in 0..num_edges {
+        if num_nodes < 2 {
+            break;
+        }
         let n1 = rng.random_range(0..num_nodes);
         let mut n2 = rng.random_range(0..num_nodes);
-
-        // Prevent self-loops (node connecting to itself)
         while n1 == n2 {
             n2 = rng.random_range(0..num_nodes);
         }
-
         edges.push(Edge {
             n1,
             n2,
@@ -61,12 +76,75 @@ pub fn generate_random_nodes() {
     }
 }
 
+pub fn add_node(dir: &Path) -> usize {
+    let mut rng = rand::rng();
+    let stem = "untitled";
+    let filename = filesystem::unique_filename(dir, stem);
+    let file_path = dir.join(&filename);
+    let title = filename.trim_end_matches(".md");
+
+    filesystem::create_file(&file_path, &format!("# {}\n", title));
+
+    let mut nodes = NODES.write().unwrap();
+    let mut edges = EDGES.write().unwrap();
+
+    let idx = nodes.len();
+    nodes.push(Node {
+        radius: 5.0,
+        color: Color::WHITE,
+        position: Vector2::new(
+            rng.random_range((WIDTH as f32 / 2. - 50.)..(WIDTH as f32 / 2. + 50.)),
+            rng.random_range((HEIGHT as f32 / 2. - 50.)..(HEIGHT as f32 / 2. + 50.)),
+        ),
+        velocity: Vector2::new(0.0, 0.0),
+        name: filename,
+        path: file_path,
+    });
+
+    // Connect to a random existing node if possible
+    if idx > 0 {
+        let n1 = rng.random_range(0..idx);
+        edges.push(Edge {
+            n1,
+            n2: idx,
+            direction: 1,
+        });
+    }
+
+    idx
+}
+
+pub fn remove_node(idx: usize) {
+    let mut nodes = NODES.write().unwrap();
+    let mut edges = EDGES.write().unwrap();
+
+    if idx >= nodes.len() {
+        return;
+    }
+
+    let path = nodes[idx].path.clone();
+    filesystem::delete_file(&path);
+
+    nodes.remove(idx);
+
+    // Remove edges referencing this node and remap indices > idx
+    edges.retain(|e| e.n1 != idx && e.n2 != idx);
+    for edge in edges.iter_mut() {
+        if edge.n1 > idx {
+            edge.n1 -= 1;
+        }
+        if edge.n2 > idx {
+            edge.n2 -= 1;
+        }
+    }
+}
+
 pub fn update_forces(rl: &mut RaylibHandle) {
     let mut nodes = NODES.write().unwrap();
     let edges = EDGES.read().unwrap();
 
     let dragging_node = DRAGGING_NODE.read().unwrap();
-    let delta_time = rl.get_frame_time(); // Time passed since last frame
+    let delta_time = rl.get_frame_time();
 
     let repulsion_k = 25000.0_f32;
     let spring_k = 0.90;

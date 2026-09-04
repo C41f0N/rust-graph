@@ -3,20 +3,90 @@ use crate::graph::renderer::*;
 use raylib::prelude::*;
 use std::cell::Cell;
 
-// Thread-local variables persist across calls on the same thread safely!
 thread_local! {
     static LAST_CLICK_TIME: Cell<f64> = Cell::new(0.0);
     static LAST_CLICK_NODE: Cell<Option<usize>> = Cell::new(None);
 }
+
 pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     let mut nodes = NODES.write().unwrap();
     let mut dragging_node = DRAGGING_NODE.write().unwrap();
     let mut hover_node = HOVER_NODE.write().unwrap();
+    let mut selected_node = SELECTED_NODE.write().unwrap();
+    let mut delete_pending = DELETE_PENDING.write().unwrap();
+    let mut editing_node = EDITING_NODE.write().unwrap();
+    let dir_path = DIR_PATH.read().unwrap();
     let camera = CAMERA.read().unwrap();
 
     let mouse_pos = rl.get_screen_to_world2D(rl.get_mouse_position(), *camera);
 
     drop(camera);
+
+    // ------------------------------------------------------------
+    // Delete confirmation keys
+    // ------------------------------------------------------------
+
+    if *delete_pending && !*editor_open {
+        if rl.is_key_pressed(KeyboardKey::KEY_Y) {
+            if let Some(idx) = *selected_node {
+                drop(nodes);
+                drop(dragging_node);
+                drop(hover_node);
+                drop(selected_node);
+                drop(delete_pending);
+                drop(editing_node);
+                drop(dir_path);
+                remove_node(idx);
+                // Re-acquire to clean up
+                let mut selected_node = SELECTED_NODE.write().unwrap();
+                let mut delete_pending = DELETE_PENDING.write().unwrap();
+                *selected_node = None;
+                *delete_pending = false;
+                return;
+            }
+            *selected_node = None;
+            *delete_pending = false;
+        } else if rl.is_key_pressed(KeyboardKey::KEY_N)
+            || rl.is_key_pressed(KeyboardKey::KEY_ESCAPE)
+        {
+            *delete_pending = false;
+        }
+        return;
+    }
+
+    // ------------------------------------------------------------
+    // Delete key = start delete confirmation
+    // ------------------------------------------------------------
+
+    if !*editor_open
+        && selected_node.is_some()
+        && (rl.is_key_pressed(KeyboardKey::KEY_DELETE)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_DELETE))
+    {
+        *delete_pending = true;
+        return;
+    }
+
+    // ------------------------------------------------------------
+    // N key = add new node
+    // ------------------------------------------------------------
+
+    if !*editor_open && rl.is_key_pressed(KeyboardKey::KEY_N) {
+        drop(nodes);
+        drop(dragging_node);
+        drop(hover_node);
+        drop(selected_node);
+        drop(delete_pending);
+        drop(editing_node);
+        let idx = add_node(&dir_path);
+        let mut selected_node = SELECTED_NODE.write().unwrap();
+        *selected_node = Some(idx);
+        return;
+    }
+
+    // ------------------------------------------------------------
+    // Mouse click handling
+    // ------------------------------------------------------------
 
     if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
         let current_time = rl.get_time();
@@ -31,18 +101,26 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         }
 
         if let Some(i) = clicked_node {
-            // Read values using .get()
             let last_node = LAST_CLICK_NODE.get();
             let last_time = LAST_CLICK_TIME.get();
 
             if last_node == Some(i) && (current_time - last_time) < 0.3 {
+                // Double-click: open editor
+                *editing_node = Some(i);
                 *editor_open = true;
-                LAST_CLICK_NODE.set(None); // Update using .set()
+                LAST_CLICK_NODE.set(None);
             } else {
+                // Single click: select + start drag
+                *selected_node = Some(i);
+                *delete_pending = false;
                 *dragging_node = Some(i);
                 LAST_CLICK_TIME.set(current_time);
                 LAST_CLICK_NODE.set(Some(i));
             }
+        } else {
+            // Click on empty space: deselect
+            *selected_node = None;
+            *delete_pending = false;
         }
     }
 

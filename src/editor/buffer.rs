@@ -1,5 +1,7 @@
 use crate::config;
+use crate::filesystem;
 use raylib::prelude::*;
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::RwLock;
 
@@ -139,4 +141,33 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
             });
         }
     }
+}
+
+pub fn load_from_file(path: &Path) {
+    let content = filesystem::read_file(path);
+    let mut buffer = BUFFER.write().unwrap();
+    let mut cursor_x = CURSOR_X.write().unwrap();
+    let mut cursor_y = CURSOR_Y.write().unwrap();
+    let mut anchor_x = ANCHOR_X.write().unwrap();
+    let mut anchor_y = ANCHOR_Y.write().unwrap();
+
+    buffer.clear();
+    if content.is_empty() {
+        buffer.push(String::new());
+    } else {
+        for line in content.lines() {
+            buffer.push(line.to_string());
+        }
+    }
+    *cursor_x = 0;
+    *cursor_y = 0;
+    *anchor_x = 0;
+    *anchor_y = 0;
+}
+
+pub fn save_to_file(path: &Path) {
+    let buffer = BUFFER.read().unwrap();
+    let content = buffer.join("\n");
+    drop(buffer);
+    filesystem::write_file(path, &content);
 }
