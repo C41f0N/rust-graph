@@ -15,6 +15,45 @@ pub static VISUAL_LINES: Mutex<Vec<VisualLine>> = Mutex::new(Vec::new());
 pub static CURSOR_X: RwLock<i32> = RwLock::new(0);
 pub static CURSOR_Y: RwLock<i32> = RwLock::new(0);
 
+pub static ANCHOR_X: RwLock<i32> = RwLock::new(0);
+pub static ANCHOR_Y: RwLock<i32> = RwLock::new(0);
+
+pub fn selection_range(
+    ax: i32,
+    ay: i32,
+    cx: i32,
+    cy: i32,
+) -> Option<(usize, usize, usize, usize)> {
+    if ax == cx && ay == cy {
+        return None;
+    }
+    if (ay, ax) <= (cy, cx) {
+        Some((ay as usize, ax as usize, cy as usize, cx as usize))
+    } else {
+        Some((cy as usize, cx as usize, ay as usize, ax as usize))
+    }
+}
+
+pub fn delete_selection(
+    buffer: &mut Vec<String>,
+    start_y: usize,
+    start_x: usize,
+    end_y: usize,
+    end_x: usize,
+) -> (i32, i32) {
+    if start_y == end_y {
+        buffer[start_y].drain(start_x..end_x);
+    } else {
+        let tail = buffer[end_y][end_x..].to_string();
+        buffer[start_y].truncate(start_x);
+        buffer[start_y].push_str(&tail);
+        for _ in start_y + 1..=end_y {
+            buffer.remove(start_y + 1);
+        }
+    }
+    (start_x as i32, start_y as i32)
+}
+
 pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
     let cursor_y = crate::editor::buffer::CURSOR_Y.read().unwrap();
     let buffer = BUFFER.read().unwrap();

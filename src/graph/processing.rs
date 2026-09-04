@@ -30,7 +30,6 @@ pub fn generate_random_nodes() {
     let mut nodes = NODES.write().unwrap();
     let mut edges = EDGES.write().unwrap();
 
-    println!("HERE");
     // Generating dummy nodes
     for _ in 0..num_nodes {
         nodes.push(Node {
