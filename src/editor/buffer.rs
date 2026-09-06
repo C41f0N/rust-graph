@@ -1,4 +1,5 @@
 use crate::config;
+use crate::editor::markdown;
 use crate::filesystem;
 use raylib::prelude::*;
 use std::path::Path;
@@ -9,6 +10,7 @@ pub struct VisualLine {
     pub start: usize,
     pub end: usize,
     pub line: usize,
+    pub indent: i32,
 }
 
 pub static BUFFER: RwLock<Vec<String>> = RwLock::new(Vec::new());
@@ -57,85 +59,155 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
     let mut visual_lines = VISUAL_LINES.lock().unwrap();
     visual_lines.clear();
 
+    let kinds = crate::editor::blocks::classify(&buffer);
+
     for (line_index, line) in buffer.iter().enumerate() {
-        let mut line_font_size = config::EDITOR_FONT_SIZE;
+        let editing_line = *cursor_y as usize == line_index;
+        let kind = kinds.get(line_index).copied().unwrap_or(crate::editor::blocks::LineKind::Paragraph);
 
-        let mut start = 0;
-
-        if line.starts_with("# ") && *cursor_y as usize != line_index {
-            start = 2;
-            line_font_size = config::EDITOR_FONT_SIZE_H1;
+        // A nested list item sits indented by its depth; wrapped
+        // continuations also hang by four spaces. Both are measured like
+        // real spaces so the wrap and the render never disagree.
+        let mut base_indent = 0;
+        let mut hang_indent = 0;
+        if !editing_line {
+            if let crate::editor::blocks::LineKind::List { depth } = kind {
+                let font_size = config::EDITOR_FONT_SIZE;
+                base_indent = d.measure_text("  ", font_size) * depth as i32;
+                hang_indent = d.measure_text("    ", font_size);
+            }
         }
 
-        let chars: Vec<char> = line.chars().collect();
+        // Fence lines are drawn as raw source, so they must be measured raw.
+        let format = !editing_line
+            && !matches!(
+                kind,
+                crate::editor::blocks::LineKind::FencedCode
+                    | crate::editor::blocks::LineKind::FenceDelimiter
+            );
 
-        while start < chars.len() {
-            let mut end = start;
-            let mut last_space = None;
-            let mut text = String::new();
+        visual_lines.extend(wrap_line(
+            line,
+            max_width,
+            line_index,
+            base_indent,
+            hang_indent,
+            format,
+            |t, size| d.measure_text(t, size),
+        ));
+    }
+}
 
-            while end < chars.len() {
-                text.push(chars[end]);
+// Wrap one buffer line into visual lines. `measure` is injected so the
+// logic is unit-testable; on-screen it is the raylib measure_text.
+// `base_indent` shifts the whole item (nested list depth), `hang_indent` is
+// added to every line after the first in a list item, and `format` selects
+// formatted vs raw measurement (fence lines stay raw).
+fn wrap_line(
+    line: &str,
+    max_width: i32,
+    buf_index: usize,
+    base_indent: i32,
+    hang_indent: i32,
+    format: bool,
+    measure: impl Fn(&str, i32) -> i32,
+) -> Vec<VisualLine> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut line_font_size = config::EDITOR_FONT_SIZE;
 
-                if chars[end].is_whitespace() {
-                    last_space = Some(end);
-                }
+    if let Some((level, skip)) = markdown::heading_info(line) {
+        if format {
+            start = skip;
+            line_font_size = config::EDITOR_HEADING_SIZE[(level - 1) as usize];
+        }
+    }
 
-                let width = d.measure_text(&text, line_font_size);
+    let chars: Vec<char> = line.chars().collect();
 
-                if width > max_width {
-                    break;
-                }
+    if chars.is_empty() {
+        out.push(VisualLine {
+            start: 0,
+            end: 0,
+            line: buf_index,
+            indent: 0,
+        });
+        return out;
+    }
 
-                end += 1;
+    // Continuation lines of a list item hang indented by four spaces.
+    let list_indent = hang_indent;
+    let mut emitted = false;
+
+    while start < chars.len() {
+        // The first visual line of a list item carries the marker inline
+        // (indent 0); every following visual line gets the hanging indent,
+        // and a nested item's whole block sits at `base_indent`.
+        let cur_indent = base_indent + if emitted { list_indent } else { 0 };
+        let mut end = start;
+        let mut last_space = None;
+        let mut text = String::new();
+
+        while end < chars.len() {
+            text.push(chars[end]);
+
+            if chars[end].is_whitespace() {
+                last_space = Some(end);
             }
 
-            if end == chars.len() {
-                visual_lines.push(VisualLine {
-                    start,
-                    end,
-                    line: line_index,
-                });
+            let width = cur_indent
+                + measure(&markdown::measure_line(&text, format), line_font_size);
+
+            if width > max_width {
                 break;
             }
 
-            if let Some(space) = last_space {
-                // Wrap at the last space.
-                visual_lines.push(VisualLine {
-                    start,
-                    end: space,
-                    line: line_index,
-                });
-
-                // Skip whitespace at the beginning of the next visual line.
-                start = space + 1;
-                while start < chars.len() && chars[start].is_whitespace() {
-                    start += 1;
-                }
-            } else {
-                // No spaces in this segment (very long word).
-                if end == start {
-                    end += 1;
-                }
-
-                visual_lines.push(VisualLine {
-                    start,
-                    end,
-                    line: line_index,
-                });
-
-                start = end;
-            }
+            end += 1;
         }
 
-        if chars.is_empty() {
-            visual_lines.push(VisualLine {
-                start: 0,
-                end: 0,
-                line: line_index,
+        if end == chars.len() {
+            out.push(VisualLine {
+                start,
+                end,
+                line: buf_index,
+                indent: cur_indent,
             });
+            break;
         }
+
+        if let Some(space) = last_space {
+            // Wrap at the last space.
+            out.push(VisualLine {
+                start,
+                end: space,
+                line: buf_index,
+                indent: cur_indent,
+            });
+
+            // Skip whitespace at the beginning of the next visual line.
+            start = space + 1;
+            while start < chars.len() && chars[start].is_whitespace() {
+                start += 1;
+            }
+        } else {
+            // No spaces in this segment (very long word).
+            if end == start {
+                end += 1;
+            }
+
+            out.push(VisualLine {
+                start,
+                end,
+                line: buf_index,
+                indent: cur_indent,
+            });
+
+            start = end;
+        }
+        emitted = true;
     }
+
+    out
 }
 
 pub fn load_from_file(path: &Path) {
@@ -166,4 +238,75 @@ pub fn save_to_file(path: &Path) {
     let content = buffer.join("\n");
     drop(buffer);
     filesystem::write_file(path, &content);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Fake measure: 10px per char, independent of font size.
+    fn pix(_s: &str, _n: i32) -> i32 {
+        10 * _s.chars().count() as i32
+    }
+
+    #[test]
+    fn plain_line_wraps_without_indent() {
+        let vls = wrap_line(
+            "one two three four five six seven eight",
+            100,
+            0,
+            0,
+            0,
+            true,
+            pix,
+        );
+        assert!(vls.len() >= 2);
+        for vl in &vls {
+            assert_eq!(vl.indent, 0);
+        }
+    }
+
+    #[test]
+    fn list_continuation_lines_hang_indented() {
+        // 10 chars/line at max_width 100; "    " = 40px indent.
+        let line = "- one two three four five six seven eight nine ten";
+        let vls = wrap_line(line, 100, 0, 0, 40, true, pix);
+        assert!(vls.len() >= 2, "expected the item to wrap");
+        assert_eq!(vls[0].indent, 0, "first visual line has no indent");
+        for vl in &vls[1..] {
+            assert_eq!(vl.indent, 40, "continuation hangs by four spaces");
+        }
+    }
+
+    #[test]
+    fn nested_list_indents_by_depth() {
+        // depth 1 line: base 20px (two spaces), hang 40px.
+        let line = "  - one two three four five six seven eight nine ten";
+        let vls = wrap_line(line, 100, 0, 20, 40, true, pix);
+        assert!(vls.len() >= 2);
+        assert_eq!(vls[0].indent, 20);
+        for vl in &vls[1..] {
+            assert_eq!(vl.indent, 60);
+        }
+    }
+
+    #[test]
+    fn editing_line_shows_no_indent() {
+        // In real use generate_visual_lines zeroes the indents for the
+        // editing line; wrap_line is a mechanical function, so the caller
+        // passes 0.
+        let line = "- one two three four five six seven eight nine ten";
+        let vls = wrap_line(line, 100, 0, 0, 0, false, pix);
+        for vl in &vls {
+            assert_eq!(vl.indent, 0);
+        }
+    }
+
+    #[test]
+    fn empty_line_is_single_visual_line() {
+        let vls = wrap_line("", 100, 3, 0, 0, true, pix);
+        assert_eq!(vls.len(), 1);
+        assert_eq!(vls[0].line, 3);
+        assert_eq!(vls[0].indent, 0);
+    }
 }

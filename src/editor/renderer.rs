@@ -1,6 +1,7 @@
 use raylib::prelude::*;
 
 use crate::config;
+use crate::editor::blocks;
 use crate::editor::buffer;
 use crate::editor::markdown;
 
@@ -32,6 +33,8 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         let max_width = (editor_dimentions.x * config::WIDTH as f32) as i32 - 2 * padding;
 
+        let kinds = blocks::classify(&buf);
+
         crate::editor::buffer::generate_visual_lines(max_width, &mut d);
         let mut line_y = 0;
 
@@ -39,9 +42,42 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         for line in buffer::VISUAL_LINES.lock().unwrap().iter() {
             let mut line_font_size = config::EDITOR_FONT_SIZE;
+            let editing_line = *cursor_y as usize == line.line;
+            let kind = kinds.get(line.line).copied().unwrap_or(blocks::LineKind::Paragraph);
+            let is_fence = matches!(kind, blocks::LineKind::FencedCode | blocks::LineKind::FenceDelimiter);
+            let format = !editing_line && !is_fence;
 
-            if buf[line.line].starts_with("# ") && *cursor_y as usize != line.line {
-                line_font_size = config::EDITOR_FONT_SIZE_H1;
+            if let Some((level, _)) = markdown::heading_info(&buf[line.line]) {
+                if !editing_line {
+                    line_font_size = config::EDITOR_HEADING_SIZE[(level - 1) as usize];
+                }
+            }
+
+            let content_x = editor_x + padding + line.indent;
+
+            // Horizontal rule: draw a line instead of text.
+            if !editing_line && matches!(kind, blocks::LineKind::HorizontalRule) {
+                let y_mid = editor_y + line_y + line_font_size / 2;
+                d.draw_line(
+                    editor_x + padding,
+                    y_mid,
+                    editor_x + padding + max_width,
+                    y_mid,
+                    config::EDITOR_HR_COLOR,
+                );
+                line_y += line_font_size + config::EDITOR_LINE_SPACING;
+                continue;
+            }
+
+            // Fenced code block: background for the full container width.
+            if is_fence && !editing_line {
+                d.draw_rectangle(
+                    editor_x + padding,
+                    editor_y + line_y,
+                    max_width,
+                    line_font_size,
+                    config::EDITOR_CODE_BG,
+                );
             }
 
             // Draw selection highlight for this visual line
@@ -60,20 +96,20 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                     };
 
                     if vis_sel_start < vis_sel_end || (vis_sel_start == vis_sel_end && line.start == line.end && vis_sel_start == line.start) {
-                        let x_start = editor_x
-                            + padding
+                        let x_start = content_x
                             + d.measure_text(
-                                buf[line.line][line.start..vis_sel_start]
-                                    .to_string()
-                                    .as_str(),
+                                &markdown::measure_line(
+                                    &buf[line.line][line.start..vis_sel_start],
+                                    format,
+                                ),
                                 line_font_size,
                             );
-                        let x_end = editor_x
-                            + padding
+                        let x_end = content_x
                             + d.measure_text(
-                                buf[line.line][line.start..vis_sel_end]
-                                    .to_string()
-                                    .as_str(),
+                                &markdown::measure_line(
+                                    &buf[line.line][line.start..vis_sel_end],
+                                    format,
+                                ),
                                 line_font_size,
                             );
 
@@ -93,14 +129,14 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 && *cursor_x >= line.start as i32
                 && *cursor_x <= line.end as i32
             {
-                let cursor_x_abs = editor_x
+                let cursor_x_abs = content_x
                     + d.measure_text(
-                        buf[line.line].as_str()[line.start..*cursor_x as usize]
-                            .to_string()
-                            .as_str(),
+                        &markdown::measure_line(
+                            &buf[line.line][line.start..*cursor_x as usize],
+                            format,
+                        ),
                         line_font_size,
-                    )
-                    + padding;
+                    );
                 let cursor_y_abs = editor_y + line_y + padding / 2;
 
                 let blink = ((d.get_time() * 2.0) as i32) % 2 == 0;
@@ -181,16 +217,73 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
             let slice_text = buf[line.line][line.start..line.end].to_string();
 
-            let segments = markdown::line_segments(&slice_text);
-            let mut seg_x = editor_x + padding;
+            let is_quote = markdown::is_blockquote(&buf[line.line]);
 
-            for seg in segments {
+            if is_quote {
+                d.draw_rectangle(
+                    editor_x + padding,
+                    editor_y + line_y + padding / 2,
+                    3,
+                    line_font_size,
+                    config::EDITOR_BLOCKQUOTE_BAR,
+                );
+            }
+
+            let list_marker = if !editing_line && line.start == 0 {
+                markdown::list_marker_display(&buf[line.line])
+            } else {
+                None
+            };
+
+            let fence_color = if is_fence {
+                if matches!(kind, blocks::LineKind::FenceDelimiter) {
+                    Some(config::EDITOR_FENCE_COLOR)
+                } else {
+                    Some(config::EDITOR_CODE_COLOR)
+                }
+            } else {
+                None
+            };
+
+            let segments = markdown::render_line(&slice_text, format);
+            let mut seg_x = content_x;
+
+            for (si, seg) in segments.iter().enumerate() {
+                let mut text = seg.text.as_str();
+                if si == 0 {
+                    if let Some((disp, raw_len)) = &list_marker {
+                        if text.as_bytes().len() >= *raw_len
+                            && text.as_bytes()[..*raw_len]
+                                == buf[line.line].as_bytes()[..*raw_len]
+                        {
+                            d.draw_text(
+                                disp,
+                                seg_x,
+                                editor_y + line_y + padding / 2,
+                                line_font_size,
+                                config::EDITOR_LIST_MARKER_COLOR,
+                            );
+                            seg_x += d.measure_text(disp, line_font_size);
+                            text = &text[*raw_len..];
+                        }
+                    }
+                }
                 let color = match seg.style {
-                    markdown::SegmentStyle::Plain => font_color,
+                    markdown::SegmentStyle::Plain
+                    | markdown::SegmentStyle::Bold
+                    | markdown::SegmentStyle::Italic => {
+                        if let Some(fc) = fence_color {
+                            fc
+                        } else if is_quote {
+                            config::EDITOR_BLOCKQUOTE_COLOR
+                        } else {
+                            font_color
+                        }
+                    }
                     markdown::SegmentStyle::Link => config::EDITOR_LINK_COLOR,
                     markdown::SegmentStyle::Code => config::EDITOR_CODE_COLOR,
                 };
-                let seg_w = d.measure_text(&seg.text, line_font_size);
+                let seg_w = d.measure_text(text, line_font_size);
 
                 if seg.style == markdown::SegmentStyle::Code {
                     d.draw_rectangle(
@@ -203,7 +296,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 }
 
                 d.draw_text(
-                    &seg.text,
+                    text,
                     seg_x,
                     editor_y + line_y + padding / 2,
                     line_font_size,

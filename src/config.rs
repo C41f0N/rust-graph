@@ -4,7 +4,7 @@ pub const HEIGHT: i32 = 1080;
 pub const WIDTH: i32 = 1920;
 
 pub const EDITOR_FONT_SIZE: i32 = 20;
-pub const EDITOR_FONT_SIZE_H1: i32 = 70;
+pub const EDITOR_HEADING_SIZE: [i32; 6] = [70, 52, 42, 33, 25, 21];
 pub const EDITOR_PADDING: i32 = 12;
 pub const EDITOR_LINE_SPACING: i32 = 2;
 pub const EDITOR_CURSOR_HEIGHT_RATIO: f32 = 0.8;
@@ -14,6 +14,11 @@ pub const EDITOR_SELECTION_COLOR: Color = Color::new(76, 128, 204, 102);
 pub const EDITOR_LINK_COLOR: Color = Color::SKYBLUE;
 pub const EDITOR_CODE_COLOR: Color = Color::new(240, 200, 120, 255);
 pub const EDITOR_CODE_BG: Color = Color::new(50, 50, 60, 220);
+pub const EDITOR_FENCE_COLOR: Color = Color::new(120, 140, 170, 255);
+pub const EDITOR_BLOCKQUOTE_COLOR: Color = Color::new(170, 190, 220, 255);
+pub const EDITOR_BLOCKQUOTE_BAR: Color = Color::new(120, 150, 210, 255);
+pub const EDITOR_HR_COLOR: Color = Color::new(120, 120, 120, 255);
+pub const EDITOR_LIST_MARKER_COLOR: Color = Color::new(160, 160, 220, 255);
 
 pub const AUTOCOMPLETE_MAX_VISIBLE: usize = 8;
 pub const AUTOCOMPLETE_ITEM_HEIGHT: i32 = 18;
