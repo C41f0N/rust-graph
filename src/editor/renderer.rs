@@ -2,6 +2,7 @@ use raylib::prelude::*;
 
 use crate::config;
 use crate::editor::buffer;
+use crate::editor::markdown;
 
 pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
     let buf = buffer::BUFFER.read().unwrap();
@@ -36,12 +37,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         let sel = buffer::selection_range(*anchor_x, *anchor_y, *cursor_x, *cursor_y);
 
-        for (line_num, line) in buffer::VISUAL_LINES
-            .lock()
-            .unwrap()
-            .iter()
-            .enumerate()
-        {
+        for line in buffer::VISUAL_LINES.lock().unwrap().iter() {
             let mut line_font_size = config::EDITOR_FONT_SIZE;
 
             if buf[line.line].starts_with("# ") && *cursor_y as usize != line.line {
@@ -183,13 +179,38 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 drop(autocomplete);
             }
 
-            d.draw_text(
-                buf[line.line][line.start..line.end].to_string().as_str(),
-                editor_x + padding,
-                editor_y + line_y + padding / 2,
-                line_font_size,
-                font_color,
-            );
+            let slice_text = buf[line.line][line.start..line.end].to_string();
+
+            let segments = markdown::line_segments(&slice_text);
+            let mut seg_x = editor_x + padding;
+
+            for seg in segments {
+                let color = match seg.style {
+                    markdown::SegmentStyle::Plain => font_color,
+                    markdown::SegmentStyle::Link => config::EDITOR_LINK_COLOR,
+                    markdown::SegmentStyle::Code => config::EDITOR_CODE_COLOR,
+                };
+                let seg_w = d.measure_text(&seg.text, line_font_size);
+
+                if seg.style == markdown::SegmentStyle::Code {
+                    d.draw_rectangle(
+                        seg_x,
+                        editor_y + line_y + padding / 2,
+                        seg_w,
+                        line_font_size,
+                        config::EDITOR_CODE_BG,
+                    );
+                }
+
+                d.draw_text(
+                    &seg.text,
+                    seg_x,
+                    editor_y + line_y + padding / 2,
+                    line_font_size,
+                    color,
+                );
+                seg_x += seg_w;
+            }
 
             line_y += line_font_size + config::EDITOR_LINE_SPACING;
         }

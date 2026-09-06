@@ -11,6 +11,9 @@ pub const EDITOR_CURSOR_HEIGHT_RATIO: f32 = 0.8;
 
 pub const EDITOR_FONT_COLOR: Color = Color::WHITE;
 pub const EDITOR_SELECTION_COLOR: Color = Color::new(76, 128, 204, 102);
+pub const EDITOR_LINK_COLOR: Color = Color::SKYBLUE;
+pub const EDITOR_CODE_COLOR: Color = Color::new(240, 200, 120, 255);
+pub const EDITOR_CODE_BG: Color = Color::new(50, 50, 60, 220);
 
 pub const AUTOCOMPLETE_MAX_VISIBLE: usize = 8;
 pub const AUTOCOMPLETE_ITEM_HEIGHT: i32 = 18;
