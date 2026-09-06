@@ -66,15 +66,26 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
         let kind = kinds.get(line_index).copied().unwrap_or(crate::editor::blocks::LineKind::Paragraph);
 
         // A nested list item sits indented by its depth; wrapped
-        // continuations also hang by four spaces. Both are measured like
-        // real spaces so the wrap and the render never disagree.
+        // continuations also hang by four spaces. A quote line is nudged
+        // right by its marker width so wrapped continuations align under the
+        // quote text instead of the `>` marker. All are measured like real
+        // spaces so the wrap and the render never disagree.
         let mut base_indent = 0;
         let mut hang_indent = 0;
         if !editing_line {
-            if let crate::editor::blocks::LineKind::List { depth } = kind {
-                let font_size = config::EDITOR_FONT_SIZE;
-                base_indent = d.measure_text("  ", font_size) * depth as i32;
-                hang_indent = d.measure_text("    ", font_size);
+            let font_size = config::EDITOR_FONT_SIZE;
+            match kind {
+                crate::editor::blocks::LineKind::List { depth } => {
+                    base_indent = d.measure_text("  ", font_size) * depth as i32;
+                    hang_indent = d.measure_text("    ", font_size);
+                }
+                crate::editor::blocks::LineKind::Blockquote => {
+                    base_indent = markdown::blockquote_marker_len(line)
+                        .map(|len| d.measure_text(&line[..len], font_size))
+                        .unwrap_or(0);
+                    hang_indent = 0;
+                }
+                _ => {}
             }
         }
 
@@ -263,6 +274,19 @@ mod tests {
         assert!(vls.len() >= 2);
         for vl in &vls {
             assert_eq!(vl.indent, 0);
+        }
+    }
+
+    #[test]
+    fn quote_continuations_hang_by_marker_width() {
+        // View mode: the caller sets base = marker width, hang = 0, so every
+        // visual line sits right of the rail. "> " = 2 chars = 20px.
+        let line = "> one two three four five six seven eight nine ten";
+        let vls = wrap_line(line, 100, 0, 20, 0, true, pix);
+        assert!(vls.len() >= 2, "expected the quote to wrap");
+        assert_eq!(vls[0].indent, 20, "content starts after the marker");
+        for vl in &vls[1..] {
+            assert_eq!(vl.indent, 20, "continuations align under the content");
         }
     }
 

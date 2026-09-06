@@ -37,6 +37,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         crate::editor::buffer::generate_visual_lines(max_width, &mut d);
         let mut line_y = 0;
+        let mut quote_rail: Option<(i32, i32, i32)> = None;
 
         let sel = buffer::selection_range(*anchor_x, *anchor_y, *cursor_x, *cursor_y);
 
@@ -217,16 +218,18 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
             let slice_text = buf[line.line][line.start..line.end].to_string();
 
-            let is_quote = markdown::is_blockquote(&buf[line.line]);
+            let is_quote = matches!(kind, blocks::LineKind::Blockquote);
 
-            if is_quote {
-                d.draw_rectangle(
-                    editor_x + padding,
-                    editor_y + line_y + padding / 2,
-                    3,
-                    line_font_size,
-                    config::EDITOR_BLOCKQUOTE_BAR,
-                );
+            // Accumulate the quote rail across contiguous quote visual lines
+            // so a block reads as one continuous vertical bar. The rail is
+            // hidden where the cursor is editing (raw markers are shown).
+            if is_quote && !editing_line {
+                let (_, _, h) = quote_rail.get_or_insert((editor_x + padding, editor_y + line_y, 0));
+                *h += line_font_size + config::EDITOR_LINE_SPACING;
+            } else {
+                if let Some((x, top, h)) = quote_rail.take() {
+                    d.draw_rectangle(x, top, 3, h, config::EDITOR_BLOCKQUOTE_BAR);
+                }
             }
 
             let list_marker = if !editing_line && line.start == 0 {
@@ -251,6 +254,19 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             for (si, seg) in segments.iter().enumerate() {
                 let mut text = seg.text.as_str();
                 if si == 0 {
+                    // Quotes: the whole marker prefix (`>`, optionally
+                    // preceded by spaces) is display-only in view mode; the
+                    // rail replaces it and the text keeps its indent.
+                    if is_quote && !editing_line && line.start == 0 {
+                        if let Some(skip) = markdown::blockquote_marker_len(&buf[line.line]) {
+                            if skip <= text.as_bytes().len()
+                                && text.as_bytes()[..skip]
+                                    == buf[line.line].as_bytes()[..skip]
+                            {
+                                text = &text[skip..];
+                            }
+                        }
+                    }
                     if let Some((disp, raw_len)) = &list_marker {
                         if text.as_bytes().len() >= *raw_len
                             && text.as_bytes()[..*raw_len]
@@ -306,6 +322,10 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             }
 
             line_y += line_font_size + config::EDITOR_LINE_SPACING;
+        }
+
+        if let Some((x, top, h)) = quote_rail.take() {
+            d.draw_rectangle(x, top, 3, h, config::EDITOR_BLOCKQUOTE_BAR);
         }
     }
 }

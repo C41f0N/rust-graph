@@ -215,6 +215,31 @@ pub fn is_blockquote(line: &str) -> bool {
     line.trim_start().starts_with('>')
 }
 
+// Byte length of the leading blockquote markers on a raw line: the leading
+// whitespace plus each `>` (optionally followed by a single space), e.g.
+// `> foo` -> 2, `>> bar` -> 3, `  > baz` -> 4. Content starts after this.
+// Returns None when the line isn't a quote.
+pub fn blockquote_marker_len(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let mut found = false;
+    while i < bytes.len() && bytes[i] == b'>' {
+        found = true;
+        i += 1;
+        if i < bytes.len() && bytes[i] == b' ' {
+            i += 1;
+        }
+    }
+    if found {
+        Some(i)
+    } else {
+        None
+    }
+}
+
 // A list item marker: "- ", "* ", "+ " or "1..9. "/"9) " (after optional
 // indentation). Returns the byte offset where the visible content begins.
 pub fn list_info(line: &str) -> Option<usize> {
@@ -366,6 +391,14 @@ mod tests {
         assert!(is_blockquote("  > indented quote"));
         assert!(!is_blockquote("no quote"));
         assert!(!is_blockquote(""));
+
+        assert_eq!(blockquote_marker_len("> foo"), Some(2));
+        assert_eq!(blockquote_marker_len(">"), Some(1));
+        assert_eq!(blockquote_marker_len(">> bar"), Some(3));
+        assert_eq!(blockquote_marker_len("  > baz"), Some(4));
+        assert_eq!(blockquote_marker_len(">  spaced"), Some(2));
+        assert_eq!(blockquote_marker_len("> > nested"), Some(4));
+        assert_eq!(blockquote_marker_len("not a quote"), None);
     }
 
     #[test]
