@@ -15,12 +15,72 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     let mut selected_node = SELECTED_NODE.write().unwrap();
     let mut delete_pending = DELETE_PENDING.write().unwrap();
     let mut editing_node = EDITING_NODE.write().unwrap();
+    let mut adding_note = ADDING_NOTE.write().unwrap();
+    let mut adding_name = ADDING_NAME.write().unwrap();
     let dir_path = DIR_PATH.read().unwrap();
     let camera = CAMERA.read().unwrap();
 
     let mouse_pos = rl.get_screen_to_world2D(rl.get_mouse_position(), *camera);
 
     drop(camera);
+
+    // ------------------------------------------------------------
+    // Add-note name prompt mode
+    // ------------------------------------------------------------
+
+    if *adding_note && !*editor_open {
+        // Char input appends to the name
+        while let Some(ch) = rl.get_char_pressed() {
+            let c = char::from_u32(ch as u32).unwrap();
+            if !c.is_control() {
+                adding_name.push(c);
+            }
+        }
+
+        // Backspace removes last char
+        if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_BACKSPACE)
+        {
+            adding_name.pop();
+        }
+
+        // Enter confirms and creates the note
+        if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_ENTER)
+        {
+            let name = adding_name.clone();
+            let name = if name.trim().is_empty() {
+                "untitled".to_string()
+            } else {
+                name.trim().to_string()
+            };
+
+            drop(nodes);
+            drop(dragging_node);
+            drop(hover_node);
+            drop(selected_node);
+            drop(delete_pending);
+            drop(editing_node);
+            drop(adding_note);
+            drop(adding_name);
+            let idx = add_node(&dir_path, &name);
+            let mut selected_node = SELECTED_NODE.write().unwrap();
+            let mut adding_note = ADDING_NOTE.write().unwrap();
+            let mut adding_name = ADDING_NAME.write().unwrap();
+            *adding_name = String::new();
+            *adding_note = false;
+            *selected_node = Some(idx);
+            return;
+        }
+
+        // Escape cancels the prompt
+        if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            *adding_name = String::new();
+            *adding_note = false;
+        }
+
+        return;
+    }
 
     // ------------------------------------------------------------
     // Delete confirmation keys
@@ -68,19 +128,12 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     }
 
     // ------------------------------------------------------------
-    // N key = add new node
+    // N key = start add-note name prompt
     // ------------------------------------------------------------
 
     if !*editor_open && rl.is_key_pressed(KeyboardKey::KEY_N) {
-        drop(nodes);
-        drop(dragging_node);
-        drop(hover_node);
-        drop(selected_node);
-        drop(delete_pending);
-        drop(editing_node);
-        let idx = add_node(&dir_path);
-        let mut selected_node = SELECTED_NODE.write().unwrap();
-        *selected_node = Some(idx);
+        *adding_name = String::new();
+        *adding_note = true;
         return;
     }
 

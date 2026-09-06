@@ -20,12 +20,7 @@ pub static CURSOR_Y: RwLock<i32> = RwLock::new(0);
 pub static ANCHOR_X: RwLock<i32> = RwLock::new(0);
 pub static ANCHOR_Y: RwLock<i32> = RwLock::new(0);
 
-pub fn selection_range(
-    ax: i32,
-    ay: i32,
-    cx: i32,
-    cy: i32,
-) -> Option<(usize, usize, usize, usize)> {
+pub fn selection_range(ax: i32, ay: i32, cx: i32, cy: i32) -> Option<(usize, usize, usize, usize)> {
     if ax == cx && ay == cy {
         return None;
     }
@@ -145,6 +140,7 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
 
 pub fn load_from_file(path: &Path) {
     let content = filesystem::read_file(path);
+    println!("content: {}", content);
     let mut buffer = BUFFER.write().unwrap();
     let mut cursor_x = CURSOR_X.write().unwrap();
     let mut cursor_y = CURSOR_Y.write().unwrap();

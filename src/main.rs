@@ -42,34 +42,12 @@ fn main() {
     *DIR_PATH.write().unwrap() = dir_path.clone();
     generate_nodes_from_directory(&dir_path);
 
-    let mut prev_editor_open = false;
+    let mut editor_was_open = false;
 
     // 2. The Main Game Loop
     while !rl.window_should_close() {
-        // Save file when editor is closing
-        if prev_editor_open && !editor_open {
-            if let Some(idx) = *EDITING_NODE.read().unwrap() {
-                let nodes = NODES.read().unwrap();
-                if idx < nodes.len() {
-                    let path = nodes[idx].path.clone();
-                    drop(nodes);
-                    editor::buffer::save_to_file(&path);
-                }
-            }
-            *EDITING_NODE.write().unwrap() = None;
-        }
-
-        // Load file when editor is opening
-        if editor_open && !prev_editor_open {
-            if let Some(idx) = *EDITING_NODE.read().unwrap() {
-                let nodes = NODES.read().unwrap();
-                if idx < nodes.len() {
-                    let path = nodes[idx].path.clone();
-                    drop(nodes);
-                    editor::buffer::load_from_file(&path);
-                }
-            }
-        }
+        // Capture editor state BEFORE input handling
+        let was_open = editor_was_open;
 
         // Read user input
         if editor_open {
@@ -82,7 +60,31 @@ fn main() {
         graph::input_handler::handle_input(&mut rl, &mut editor_open);
         update_forces(&mut rl);
 
-        prev_editor_open = editor_open;
+        // Detect transitions AFTER all input has been processed
+        if editor_open && !was_open {
+            if let Some(idx) = *EDITING_NODE.read().unwrap() {
+                let nodes = NODES.read().unwrap();
+                if idx < nodes.len() {
+                    let path = nodes[idx].path.clone();
+                    drop(nodes);
+                    editor::buffer::load_from_file(&path);
+                }
+            }
+        }
+
+        if !editor_open && was_open {
+            if let Some(idx) = *EDITING_NODE.read().unwrap() {
+                let nodes = NODES.read().unwrap();
+                if idx < nodes.len() {
+                    let path = nodes[idx].path.clone();
+                    drop(nodes);
+                    editor::buffer::save_to_file(&path);
+                }
+            }
+            *EDITING_NODE.write().unwrap() = None;
+        }
+
+        editor_was_open = editor_open;
 
         let mut d = rl.begin_drawing(&thread);
 
@@ -91,3 +93,4 @@ fn main() {
         editor::renderer::draw(d, editor_open, editor_dimentions);
     }
 }
+

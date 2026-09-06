@@ -14,6 +14,8 @@ pub static DIR_PATH: RwLock<PathBuf> = RwLock::new(PathBuf::new());
 pub static SELECTED_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static EDITING_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static DELETE_PENDING: RwLock<bool> = RwLock::new(false);
+pub static ADDING_NOTE: RwLock<bool> = RwLock::new(false);
+pub static ADDING_NAME: RwLock<String> = RwLock::new(String::new());
 
 pub struct Node {
     pub radius: f32,
@@ -76,9 +78,12 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     }
 }
 
-pub fn add_node(dir: &Path) -> usize {
+pub fn add_node(dir: &Path, filename: &str) -> usize {
     let mut rng = rand::rng();
-    let stem = "untitled";
+
+    // Normalize the stem (strip .md extension if provided)
+    let stem = filename.trim_end_matches(".md");
+    let stem = if stem.is_empty() { "untitled" } else { stem };
     let filename = filesystem::unique_filename(dir, stem);
     let file_path = dir.join(&filename);
     let title = filename.trim_end_matches(".md");

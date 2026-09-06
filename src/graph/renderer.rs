@@ -100,4 +100,24 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             d.draw_text(&prompt, x, 15, 20, Color::WHITE);
         }
     }
+
+    // Draw add-note name prompt (outside camera mode, in screen space)
+    let adding_note = *crate::graph::processing::ADDING_NOTE.read().unwrap();
+    if adding_note {
+        let adding_name = crate::graph::processing::ADDING_NAME.read().unwrap();
+        let prompt_base = "Filename: ";
+        let full = format!("{}{}", prompt_base, adding_name);
+        let label_width = d.measure_text(prompt_base, 20);
+        let text_width = d.measure_text(&full, 20);
+        let x = (WIDTH - text_width) / 2 - 10;
+        let y = 10;
+        d.draw_rectangle(x, y, text_width + 20, 30, Color::BLACK.alpha(0.7));
+        d.draw_text(prompt_base, x + 10, y + 15, 20, Color::WHITE);
+
+        // Draw the input content (in a lighter color) plus a cursor
+        d.draw_text(&adding_name, x + 10 + label_width, y + 15, 20, Color::SKYBLUE);
+        let name_width = d.measure_text(&adding_name, 20);
+        let cursor_x = x + 10 + label_width + name_width;
+        d.draw_rectangle(cursor_x, y + 5, 2, 20, Color::WHITE);
+    }
 }
