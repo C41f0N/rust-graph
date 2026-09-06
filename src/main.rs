@@ -79,6 +79,7 @@ fn main() {
                     let path = nodes[idx].path.clone();
                     drop(nodes);
                     editor::buffer::save_to_file(&path);
+                    rebuild_edges();
                 }
             }
             *EDITING_NODE.write().unwrap() = None;
