@@ -29,7 +29,6 @@ pub struct Node {
 pub struct Edge {
     pub n1: usize,
     pub n2: usize,
-    pub direction: i32,
 }
 
 pub fn generate_nodes_from_directory(dir: &Path) {
@@ -66,22 +65,24 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     rebuild_edges();
 }
 
-// Build edges from [[wikilink]] references in the .md files.
-// Edges are bidirectional: a link in file A to [[B]] connects A and B.
-// Duplicates and self-links are ignored.
+// Build directed edges from [[wikilink]] references in the .md files.
+// [[target]] in file A creates a directed edge A -> target.
+// The target must be the exact filename (with extension) of a file in the
+// base directory, e.g. [[lol.md]]. Targets that don't match a file (images,
+// missing notes, extension-less names) don't become edges.
+// Duplicate and self-links are ignored.
 pub fn rebuild_edges() {
     let nodes = NODES.read().unwrap();
     let mut edges = EDGES.write().unwrap();
     edges.clear();
 
-    // Map from normalized name (without .md) to node index
+    // Map from exact filename to node index
     let mut name_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (i, node) in nodes.iter().enumerate() {
-        let stem = node.name.trim_end_matches(".md").to_lowercase();
-        name_to_idx.insert(stem, i);
+        name_to_idx.insert(node.name.clone(), i);
     }
 
-    // Keep a set of existing undirected edges to avoid duplicates
+    // Keep a set of existing edges to avoid duplicates
     let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
 
     for (i, node) in nodes.iter().enumerate() {
@@ -89,19 +90,13 @@ pub fn rebuild_edges() {
         let links = filesystem::parse_links(&content);
 
         for link in links {
-            let target_stem = link.trim_end_matches(".md").to_lowercase();
-            if let Some(&j) = name_to_idx.get(&target_stem) {
+            if let Some(&j) = name_to_idx.get(&link) {
                 if i == j {
                     // Self-link, ignore
                     continue;
                 }
-                let key = if i < j { (i, j) } else { (j, i) };
-                if seen.insert(key) {
-                    edges.push(Edge {
-                        n1: key.0,
-                        n2: key.1,
-                        direction: 1,
-                    });
+                if seen.insert((i, j)) {
+                    edges.push(Edge { n1: i, n2: j });
                 }
             }
         }

@@ -54,7 +54,13 @@ fn main() {
             editor::input_handler::handle_input(&mut rl);
         }
         if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
-            editor_open = false;
+            let esc_consumed = {
+                let ac = editor::autocomplete::AUTOCOMPLETE.read().unwrap();
+                ac.esc_consumed
+            };
+            if !esc_consumed {
+                editor_open = false;
+            }
         }
 
         graph::input_handler::handle_input(&mut rl, &mut editor_open);

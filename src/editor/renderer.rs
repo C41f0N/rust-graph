@@ -120,6 +120,67 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                         font_color,
                     );
                 }
+
+                // Autocomplete popup (drawn below the cursor line)
+                let autocomplete = crate::editor::autocomplete::AUTOCOMPLETE.read().unwrap();
+                if autocomplete.active && !autocomplete.matches.is_empty() {
+                    let item_h = config::AUTOCOMPLETE_ITEM_HEIGHT;
+                    let mut box_w = 140;
+                    for name in autocomplete
+                        .matches
+                        .iter()
+                        .take(config::AUTOCOMPLETE_MAX_VISIBLE)
+                    {
+                        let w = d.measure_text(name, line_font_size) + 24;
+                        if w > box_w {
+                            box_w = w;
+                        }
+                    }
+                    let count = autocomplete
+                        .matches
+                        .len()
+                        .min(config::AUTOCOMPLETE_MAX_VISIBLE);
+                    let box_h = (count as i32) * item_h;
+
+                    let editor_right =
+                        editor_x + (editor_dimentions.x * config::WIDTH as f32) as i32;
+                    let editor_bottom =
+                        editor_y + (editor_dimentions.y * config::HEIGHT as f32) as i32;
+
+                    let mut pop_x = cursor_x_abs.min(editor_right - box_w - padding);
+                    let mut pop_y = cursor_y_abs + line_font_size + config::EDITOR_PADDING;
+                    if pop_y + box_h > editor_bottom - padding {
+                        pop_y = pop_y - box_h - line_font_size - config::EDITOR_PADDING;
+                    }
+                    pop_x = pop_x.max(editor_x + padding);
+
+                    d.draw_rectangle(pop_x, pop_y, box_w, box_h, config::AUTOCOMPLETE_BG);
+
+                    for (i, name) in autocomplete
+                        .matches
+                        .iter()
+                        .enumerate()
+                        .take(config::AUTOCOMPLETE_MAX_VISIBLE)
+                    {
+                        if i == autocomplete.selected {
+                            d.draw_rectangle(
+                                pop_x,
+                                pop_y + (i as i32) * item_h,
+                                box_w,
+                                item_h,
+                                config::AUTOCOMPLETE_SELECTED_BG,
+                            );
+                        }
+                        d.draw_text(
+                            name,
+                            pop_x + 10,
+                            pop_y + (i as i32) * item_h + 2,
+                            line_font_size,
+                            Color::WHITE,
+                        );
+                    }
+                }
+                drop(autocomplete);
             }
 
             d.draw_text(

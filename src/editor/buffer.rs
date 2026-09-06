@@ -140,7 +140,6 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
 
 pub fn load_from_file(path: &Path) {
     let content = filesystem::read_file(path);
-    println!("content: {}", content);
     let mut buffer = BUFFER.write().unwrap();
     let mut cursor_x = CURSOR_X.write().unwrap();
     let mut cursor_y = CURSOR_Y.write().unwrap();
@@ -155,10 +154,11 @@ pub fn load_from_file(path: &Path) {
             buffer.push(line.to_string());
         }
     }
-    *cursor_x = 0;
-    *cursor_y = 0;
-    *anchor_x = 0;
-    *anchor_y = 0;
+    // Place the cursor at the end of the file
+    *cursor_y = (buffer.len() - 1) as i32;
+    *cursor_x = buffer.last().map_or(0, |l| l.len() as i32);
+    *anchor_x = *cursor_x;
+    *anchor_y = *cursor_y;
 }
 
 pub fn save_to_file(path: &Path) {

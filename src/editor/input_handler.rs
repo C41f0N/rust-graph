@@ -1,5 +1,6 @@
 use raylib::prelude::*;
 
+use crate::editor::autocomplete;
 use crate::editor::buffer;
 
 fn prev_word_boundary(line: &str, x: usize) -> usize {
@@ -213,6 +214,67 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         *cursor_y = last as i32;
         *cursor_x = buffer[last].len() as i32;
         return;
+    }
+
+    // ------------------------------------------------------------
+    // Autocomplete: detect [[ ... and handle its keys
+    // ------------------------------------------------------------
+
+    autocomplete::refresh(&buffer, *cursor_y as usize, *cursor_x as usize);
+
+    {
+        let mut state = autocomplete::AUTOCOMPLETE.write().unwrap();
+        if state.active {
+            let up = rl.is_key_pressed(KeyboardKey::KEY_UP)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_UP);
+            let down = rl.is_key_pressed(KeyboardKey::KEY_DOWN)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_DOWN);
+            let tab = rl.is_key_pressed(KeyboardKey::KEY_TAB)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_TAB);
+            let enter = rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_ENTER);
+            let esc = rl.is_key_pressed(KeyboardKey::KEY_ESCAPE);
+
+            if (up || down || tab) && !state.matches.is_empty() {
+                let n = state.matches.len();
+                state.selected = if down || tab {
+                    if state.selected + 1 >= n {
+                        0
+                    } else {
+                        state.selected + 1
+                    }
+                } else if state.selected == 0 {
+                    n - 1
+                } else {
+                    state.selected - 1
+                };
+                return;
+            }
+
+            if enter && !state.matches.is_empty() {
+                let candidate = state.matches[state.selected].clone();
+                let filter_len = state.filter.len();
+                let y = *cursor_y as usize;
+                let x = *cursor_x as usize;
+                if x >= filter_len {
+                    let replacement = format!("{}]]", candidate);
+                    buffer[y].replace_range(x - filter_len..x, &replacement);
+                    *cursor_x = (x - filter_len + replacement.len()) as i32;
+                    *anchor_x = *cursor_x;
+                    *anchor_y = *cursor_y;
+                }
+                state.active = false;
+                return;
+            }
+
+            if esc {
+                state.active = false;
+                state.suppress = true;
+                state.suppress_filter = state.filter.clone();
+                state.esc_consumed = true;
+                return;
+            }
+        }
     }
 
     // ------------------------------------------------------------
