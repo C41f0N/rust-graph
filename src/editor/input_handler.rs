@@ -260,6 +260,8 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                 let y = *cursor_y as usize;
                 let x = *cursor_x as usize;
                 if x >= filter_len {
+                    // Links are written extension-less and resolve to the
+                    // .md file by name, so just close the bracket.
                     let replacement = format!("{}]]", candidate);
                     buffer[y].replace_range(x - filter_len..x, &replacement);
                     *cursor_x = (x - filter_len + replacement.len()) as i32;

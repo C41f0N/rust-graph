@@ -29,7 +29,7 @@ pub fn line_segments(line: &str) -> Vec<Segment> {
             if let Some(le) = find_closer_bytes(bytes, i + 2, b']', b']') {
                 flush_plain(&mut segments, line, plain_start, i);
                 segments.push(Segment {
-                    text: line[i..le].to_string(),
+                    text: display_link(&line[i..le]),
                     style: SegmentStyle::Link,
                 });
                 plain_start = le;
@@ -125,6 +125,19 @@ fn flush_plain(segments: &mut Vec<Segment>, line: &str, start: usize, end: usize
             text: line[start..end].to_string(),
             style: SegmentStyle::Plain,
         });
+    }
+}
+
+// The display form of a wikilink: the ".md" extension is hidden, so
+// [[alpha.md]] draws as [[alpha]]. `render_line` and `strip_inline` both
+// build on line_segments, so draw and measure stay in sync.
+fn display_link(text: &str) -> String {
+    if text.len() >= 4 && text.starts_with("[[") && text.ends_with("]]") {
+        let inner = &text[2..text.len() - 2];
+        let inner = inner.trim_end_matches(".md");
+        format!("[[{}]]", inner)
+    } else {
+        text.to_string()
     }
 }
 
@@ -324,7 +337,16 @@ mod tests {
                 SegmentStyle::Plain,
             ]
         );
-        assert_eq!(segs[1].text, "[[alpha.md]]");
+        assert_eq!(segs[1].text, "[[alpha]]");
+    }
+
+    #[test]
+    fn wikilink_hides_md_extension() {
+        assert_eq!(display_link("[[alpha.md]]"), "[[alpha]]");
+        assert_eq!(display_link("[[beta]]"), "[[beta]]");
+        assert_eq!(display_link("[[cat.png]]"), "[[cat.png]]");
+        assert_eq!(display_link("[[nested/deep.md]]"), "[[nested/deep]]");
+        assert_eq!(display_link("plain"), "plain");
     }
 
     #[test]

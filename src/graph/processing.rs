@@ -23,6 +23,7 @@ pub struct Node {
     pub position: Vector2,
     pub velocity: Vector2,
     pub name: String,
+    pub file_name: String,
     pub path: PathBuf,
 }
 
@@ -41,11 +42,8 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     edges.clear();
 
     for file in &files {
-        let name = file
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let file_name = file.file_name().unwrap().to_string_lossy().to_string();
+        let name = file_name.trim_end_matches(".md").to_string();
 
         nodes.push(Node {
             radius: 5.0,
@@ -56,6 +54,7 @@ pub fn generate_nodes_from_directory(dir: &Path) {
             ),
             velocity: Vector2::new(0.0, 0.0),
             name,
+            file_name,
             path: file.clone(),
         });
     }
@@ -63,23 +62,33 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     drop(nodes);
     drop(edges);
     rebuild_edges();
+
+    // Zoom the initial view out as more nodes appear so the whole graph fits
+    // on screen. Fewer nodes allow a closer, larger view.
+    let node_count = NODES.read().unwrap().len();
+    let zoom = (1.0 / (node_count as f32).sqrt()).clamp(0.15, 1.0);
+    let mut camera = crate::graph::renderer::CAMERA.write().unwrap();
+    camera.zoom = zoom;
 }
 
 // Build directed edges from [[wikilink]] references in the .md files.
 // [[target]] in file A creates a directed edge A -> target.
-// The target must be the exact filename (with extension) of a file in the
-// base directory, e.g. [[lol.md]]. Targets that don't match a file (images,
-// missing notes, extension-less names) don't become edges.
+// A link may name the target with or without the extension: [[x]] and
+// [[x.md]] both resolve to x.md, and any other extension (images, bare
+// names that match no file) never creates an edge.
 // Duplicate and self-links are ignored.
 pub fn rebuild_edges() {
     let nodes = NODES.read().unwrap();
     let mut edges = EDGES.write().unwrap();
     edges.clear();
 
-    // Map from exact filename to node index
+    // Map from both the exact filename and its bare stem (extension
+    // stripped) to node index, so extension-less [[x]] links resolve.
     let mut name_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (i, node) in nodes.iter().enumerate() {
-        name_to_idx.insert(node.name.clone(), i);
+        name_to_idx.insert(node.file_name.clone(), i);
+        let stem = node.file_name.trim_end_matches(".md");
+        name_to_idx.insert(stem.to_string(), i);
     }
 
     // Keep a set of existing edges to avoid duplicates
@@ -90,7 +99,9 @@ pub fn rebuild_edges() {
         let links = filesystem::parse_links(&content);
 
         for link in links {
-            if let Some(&j) = name_to_idx.get(&link) {
+            // Resolve with the extension if given, otherwise as a bare stem.
+            let target = link.strip_suffix(".md").unwrap_or(&link);
+            if let Some(&j) = name_to_idx.get(target) {
                 if i == j {
                     // Self-link, ignore
                     continue;
@@ -126,7 +137,8 @@ pub fn add_node(dir: &Path, filename: &str) -> usize {
             rng.random_range((HEIGHT as f32 / 2. - 50.)..(HEIGHT as f32 / 2. + 50.)),
         ),
         velocity: Vector2::new(0.0, 0.0),
-        name: filename,
+        name: stem.to_string(),
+        file_name: filename,
         path: file_path,
     });
 

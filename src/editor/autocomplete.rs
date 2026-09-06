@@ -78,19 +78,19 @@ pub fn refresh(buffer: &[String], cursor_y: usize, cursor_x: usize) {
 
     if let Some(f) = filter {
         state.filter = f;
-        let names = {
+        state.matches = {
             let nodes = crate::graph::processing::NODES.read().unwrap();
             let editing = crate::graph::processing::EDITING_NODE.read().unwrap();
             let current = (*editing)
                 .and_then(|i| nodes.get(i))
                 .map(|n| n.name.clone());
-            nodes
+            let names = nodes
                 .iter()
                 .filter(|n| Some(n.name.clone()) != current)
                 .map(|n| n.name.clone())
-                .collect::<Vec<String>>()
+                .collect::<Vec<String>>();
+            match_names(&names, &state.filter)
         };
-        state.matches = match_names(&names, &state.filter);
         state.active = !state.matches.is_empty();
     }
 }
@@ -126,10 +126,10 @@ mod tests {
     #[test]
     fn match_prefix_case_insensitive() {
         let names = vec![
-            "Alpha.md".to_string(),
-            "beta.md".to_string(),
-            "alice.md".to_string(),
+            "Alpha".to_string(),
+            "beta".to_string(),
+            "alice".to_string(),
         ];
-        assert_eq!(match_names(&names, "al"), vec!["Alpha.md", "alice.md"]);
+        assert_eq!(match_names(&names, "al"), vec!["Alpha", "alice"]);
     }
 }
