@@ -33,6 +33,20 @@ pub fn selection_range(ax: i32, ay: i32, cx: i32, cy: i32) -> Option<(usize, usi
     }
 }
 
+// The editor always has a trailing empty line to move down into, like other
+// block editors. Callers must not hold a BUFFER lock; reuse
+// ensure_trailing_newline_locked() when a guard is already live.
+pub fn ensure_trailing_newline() {
+    let mut buffer = BUFFER.write().unwrap();
+    ensure_trailing_newline_locked(&mut buffer);
+}
+
+fn ensure_trailing_newline_locked(buffer: &mut Vec<String>) {
+    if buffer.is_empty() || !buffer.last().unwrap().is_empty() {
+        buffer.push(String::new());
+    }
+}
+
 pub fn delete_selection(
     buffer: &mut Vec<String>,
     start_y: usize,
@@ -242,6 +256,7 @@ pub fn load_from_file(path: &Path) {
     *cursor_x = buffer.last().map_or(0, |l| l.len() as i32);
     *anchor_x = *cursor_x;
     *anchor_y = *cursor_y;
+    ensure_trailing_newline_locked(&mut buffer);
 }
 
 pub fn save_to_file(path: &Path) {
@@ -275,6 +290,22 @@ mod tests {
         for vl in &vls {
             assert_eq!(vl.indent, 0);
         }
+    }
+
+    #[test]
+    fn load_keeps_trailing_empty_line() {
+        *BUFFER.write().unwrap() = vec!["a".into(), "b".into()];
+        ensure_trailing_newline();
+        let b = BUFFER.read().unwrap();
+        assert_eq!(&b[..], &["a".to_string(), "b".to_string(), String::new()]);
+    }
+
+    #[test]
+    fn trailing_empty_line_is_not_duplicated() {
+        *BUFFER.write().unwrap() = vec!["a".into(), String::new()];
+        ensure_trailing_newline();
+        let b = BUFFER.read().unwrap();
+        assert_eq!(&b[..], &["a".to_string(), String::new()]);
     }
 
     #[test]

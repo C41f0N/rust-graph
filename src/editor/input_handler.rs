@@ -64,6 +64,9 @@ fn next_word_boundary(line: &str, x: usize) -> usize {
 }
 
 pub fn handle_input(rl: &mut RaylibHandle) {
+    // Keep a trailing empty line reachable before any navigation this frame.
+    buffer::ensure_trailing_newline();
+
     let visual_lines = buffer::VISUAL_LINES.lock().unwrap();
     let mut buffer = buffer::BUFFER.write().unwrap();
     let mut cursor_x = buffer::CURSOR_X.write().unwrap();
@@ -275,6 +278,39 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                 return;
             }
         }
+    }
+
+    // ------------------------------------------------------------
+    // Tab / Shift+Tab = indent / unindent with a real tab character
+    // ------------------------------------------------------------
+
+    if rl.is_key_pressed(KeyboardKey::KEY_TAB) {
+        let shift = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+            || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+
+        if let Some((sy, sx, ey, ex)) = sel {
+            let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
+            *cursor_x = nx;
+            *cursor_y = ny;
+        }
+
+        let y = *cursor_y as usize;
+        let x = *cursor_x as usize;
+
+        if shift {
+            // Remove one tab immediately before the cursor.
+            if x > 0 && buffer[y].as_bytes().get(x - 1) == Some(&b'\t') {
+                buffer[y].remove(x - 1);
+                *cursor_x -= 1;
+            }
+        } else {
+            buffer[y].insert(x, '\t');
+            *cursor_x += 1;
+        }
+
+        *anchor_x = *cursor_x;
+        *anchor_y = *cursor_y;
+        return;
     }
 
     // ------------------------------------------------------------
