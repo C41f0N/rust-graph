@@ -17,6 +17,12 @@ pub static DELETE_PENDING: RwLock<bool> = RwLock::new(false);
 pub static ADDING_NOTE: RwLock<bool> = RwLock::new(false);
 pub static ADDING_NAME: RwLock<String> = RwLock::new(String::new());
 
+// Right-click context menu on the graph.
+pub static CONTEXT_NODE: RwLock<Option<usize>> = RwLock::new(None);
+pub static CONTEXT_POS: RwLock<(i32, i32)> = RwLock::new((0, 0));
+pub static RENAMING: RwLock<bool> = RwLock::new(false);
+pub static RENAME_NAME: RwLock<String> = RwLock::new(String::new());
+
 pub struct Node {
     pub radius: f32,
     pub color: Color,
@@ -168,6 +174,26 @@ pub fn remove_node(idx: usize) {
             edge.n2 -= 1;
         }
     }
+}
+
+// Rename a note's .md file (and its node label) to `new_name`. Returns
+// false if the new name is empty or the target file already exists.
+pub fn rename_node(idx: usize, new_name: &str) -> bool {
+    let mut nodes = NODES.write().unwrap();
+    if idx >= nodes.len() {
+        return false;
+    }
+    let old_path = nodes[idx].path.clone();
+    if !filesystem::rename_file(&old_path, new_name) {
+        return false;
+    }
+    let new_stem = new_name.trim().trim_end_matches(".md").to_string();
+    nodes[idx].file_name = format!("{}.md", new_stem);
+    nodes[idx].name = new_stem;
+    nodes[idx].path = old_path.with_file_name(nodes[idx].file_name.clone());
+    drop(nodes);
+    rebuild_edges();
+    true
 }
 
 pub fn update_forces(rl: &mut RaylibHandle) {

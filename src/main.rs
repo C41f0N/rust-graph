@@ -43,6 +43,9 @@ fn main() {
     generate_nodes_from_directory(&dir_path);
 
     let mut editor_was_open = false;
+    // Autosave fires when the buffer has edits and no input has happened for
+    // this many milliseconds (a "typing pause").
+    let autosave_pause_ms: u64 = 2000;
 
     // 2. The Main Game Loop
     while !rl.window_should_close() {
@@ -63,7 +66,48 @@ fn main() {
             }
         }
 
+        // Close button in the editor heading bar
+        if editor::CLOSE_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            editor_open = false;
+        }
+
         graph::input_handler::handle_input(&mut rl, &mut editor_open);
+
+        // Ctrl+S = save the open editor buffer immediately
+        if editor_open
+            && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+                || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
+            && rl.is_key_pressed(KeyboardKey::KEY_S)
+        {
+            if let Some(idx) = *EDITING_NODE.read().unwrap() {
+                let nodes = NODES.read().unwrap();
+                if idx < nodes.len() {
+                    let path = nodes[idx].path.clone();
+                    drop(nodes);
+                    editor::buffer::save_to_file(&path);
+                    rebuild_edges();
+                }
+            }
+        }
+
+        // Autosave: after a typing pause, save if the buffer is dirty.
+        if editor_open && editor::DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
+            let now_ms = (rl.get_time() * 1000.0) as u64;
+            let last_edit =
+                editor::LAST_EDIT_MILLIS.load(std::sync::atomic::Ordering::Relaxed);
+            if last_edit > 0 && now_ms.saturating_sub(last_edit) >= autosave_pause_ms {
+                if let Some(idx) = *EDITING_NODE.read().unwrap() {
+                    let nodes = NODES.read().unwrap();
+                    if idx < nodes.len() {
+                        let path = nodes[idx].path.clone();
+                        drop(nodes);
+                        editor::buffer::save_to_file(&path);
+                        rebuild_edges();
+                    }
+                }
+            }
+        }
+
         update_forces(&mut rl);
 
         // Detect transitions AFTER all input has been processed

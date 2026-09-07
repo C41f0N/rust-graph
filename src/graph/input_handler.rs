@@ -17,12 +17,83 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     let mut editing_node = EDITING_NODE.write().unwrap();
     let mut adding_note = ADDING_NOTE.write().unwrap();
     let mut adding_name = ADDING_NAME.write().unwrap();
+    let mut context_node = CONTEXT_NODE.write().unwrap();
+    let mut context_pos = CONTEXT_POS.write().unwrap();
+    let mut renaming = RENAMING.write().unwrap();
+    let mut rename_name = RENAME_NAME.write().unwrap();
     let dir_path = DIR_PATH.read().unwrap();
     let camera = CAMERA.read().unwrap();
 
     let mouse_pos = rl.get_screen_to_world2D(rl.get_mouse_position(), *camera);
 
     drop(camera);
+
+    // ------------------------------------------------------------
+    // Rename-note name prompt mode
+    // ------------------------------------------------------------
+
+    if *renaming && !*editor_open {
+        // Char input appends to the name
+        while let Some(ch) = rl.get_char_pressed() {
+            let c = char::from_u32(ch as u32).unwrap();
+            if !c.is_control() {
+                rename_name.push(c);
+            }
+        }
+
+        // Backspace removes last char
+        if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_BACKSPACE)
+        {
+            rename_name.pop();
+        }
+
+        // Enter confirms and renames the note
+        if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_ENTER)
+        {
+            let mut index = None;
+            if let Some(idx) = *context_node {
+                index = Some(idx);
+            }
+            let name = rename_name.clone();
+            if let Some(idx) = index {
+                drop(nodes);
+                drop(dragging_node);
+                drop(hover_node);
+                drop(selected_node);
+                drop(delete_pending);
+                drop(editing_node);
+                drop(adding_note);
+                drop(adding_name);
+                drop(context_node);
+                drop(context_pos);
+                drop(renaming);
+                drop(rename_name);
+                drop(dir_path);
+                if rename_node(idx, &name) {
+                    *SELECTED_NODE.write().unwrap() = Some(idx);
+                }
+                // Reset menu state
+                *CONTEXT_NODE.write().unwrap() = None;
+                *RENAMING.write().unwrap() = false;
+                *RENAME_NAME.write().unwrap() = String::new();
+                return;
+            }
+            *renaming = false;
+            *rename_name = String::new();
+            *context_node = None;
+        }
+
+        // Escape cancels the rename
+        if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            *renaming = false;
+            *rename_name = String::new();
+            *context_node = None;
+        }
+
+        return;
+    }
 
     // ------------------------------------------------------------
     // Add-note name prompt mode
@@ -137,9 +208,76 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         return;
     }
 
+    // Escape dismisses an open context menu
+    if context_node.is_some() && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+        *context_node = None;
+        return;
+    }
+
     // ------------------------------------------------------------
     // Mouse click handling
     // ------------------------------------------------------------
+
+    let screen_mouse = rl.get_mouse_position();
+
+    // Right-click: open the context menu for a node under the cursor.
+    if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT) {
+        let mut clicked: Option<usize> = None;
+        for (i, node) in nodes.iter().enumerate() {
+            if (node.position - mouse_pos).length() <= node.radius {
+                clicked = Some(i);
+                break;
+            }
+        }
+        if let Some(i) = clicked {
+            *selected_node = Some(i);
+            *context_node = Some(i);
+            *context_pos = (screen_mouse.x as i32, screen_mouse.y as i32);
+            *renaming = false;
+        } else {
+            *context_node = None;
+        }
+    }
+
+    // While the context menu is open, a left click either picks an item or
+    // dismisses the menu (anything that isn't the menu closes it).
+    if context_node.is_some() && rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+        let menu_w = 140;
+        let item_h = 30;
+        let (mx, my) = *context_pos;
+        let clicked_rename = screen_mouse.x as i32 >= mx
+            && screen_mouse.x as i32 <= mx + menu_w
+            && screen_mouse.y as i32 >= my
+            && screen_mouse.y as i32 <= my + item_h;
+        let clicked_delete = screen_mouse.x as i32 >= mx
+            && screen_mouse.x as i32 <= mx + menu_w
+            && screen_mouse.y as i32 >= my + item_h
+            && screen_mouse.y as i32 <= my + 2 * item_h;
+
+        if clicked_rename {
+            // Start rename prompt pre-filled with the current stem. Keep
+            // context_node set so the prompt knows which node to rename.
+            let idx = *context_node;
+            if let Some(idx) = idx {
+                if let Some(node) = nodes.get(idx) {
+                    *rename_name = node.name.clone();
+                }
+            }
+            *renaming = true;
+            return;
+        } else if clicked_delete {
+            if let Some(idx) = *context_node {
+                *selected_node = Some(idx);
+                *delete_pending = true;
+            }
+            *context_node = None;
+            return;
+        } else {
+            // Click anywhere else dismisses the menu.
+            *context_node = None;
+            return;
+        }
+    }
 
     if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
         let current_time = rl.get_time();
@@ -161,6 +299,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 // Double-click: open editor
                 *editing_node = Some(i);
                 *editor_open = true;
+                *context_node = None;
                 LAST_CLICK_NODE.set(None);
             } else {
                 // Single click: select + start drag

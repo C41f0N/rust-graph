@@ -33,6 +33,21 @@ pub fn selection_range(ax: i32, ay: i32, cx: i32, cy: i32) -> Option<(usize, usi
     }
 }
 
+// Record that the buffer was just edited. Flags it dirty and stamps the
+// current time (raylib GetTime scaled to milliseconds) so the main loop can
+// autosave once typing has paused.
+pub fn mark_modified() {
+    crate::editor::DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::editor::LAST_EDIT_MILLIS.store(
+        (rl_get_time() * 1000.0) as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn rl_get_time() -> f64 {
+    unsafe { raylib::ffi::GetTime() }
+}
+
 // The editor always has a trailing empty line to move down into, like other
 // block editors. Callers must not hold a BUFFER lock; reuse
 // ensure_trailing_newline_locked() when a guard is already live.
@@ -257,6 +272,8 @@ pub fn load_from_file(path: &Path) {
     *anchor_x = *cursor_x;
     *anchor_y = *cursor_y;
     ensure_trailing_newline_locked(&mut buffer);
+    crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::editor::LAST_EDIT_MILLIS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn save_to_file(path: &Path) {
@@ -264,6 +281,7 @@ pub fn save_to_file(path: &Path) {
     let content = buffer.join("\n");
     drop(buffer);
     filesystem::write_file(path, &content);
+    crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[cfg(test)]

@@ -202,6 +202,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
 
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
+            buffer::mark_modified();
         }
         return;
     }
@@ -267,6 +268,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                     *cursor_x = (x - filter_len + replacement.len()) as i32;
                     *anchor_x = *cursor_x;
                     *anchor_y = *cursor_y;
+                    buffer::mark_modified();
                 }
                 state.active = false;
                 return;
@@ -312,6 +314,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
 
         *anchor_x = *cursor_x;
         *anchor_y = *cursor_y;
+        buffer::mark_modified();
         return;
     }
 
@@ -334,6 +337,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             *cursor_x += 1;
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
+            buffer::mark_modified();
         }
     }
 
@@ -369,6 +373,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
         }
+        buffer::mark_modified();
         return;
     }
 
@@ -400,6 +405,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
         }
+        buffer::mark_modified();
         return;
     }
 
@@ -640,6 +646,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
         }
+        buffer::mark_modified();
     }
 
     // ------------------------------------------------------------
@@ -667,6 +674,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
         }
+        buffer::mark_modified();
     }
 
     // ------------------------------------------------------------
@@ -712,6 +720,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         *cursor_x = 0;
         *anchor_x = 0;
         *anchor_y = *cursor_y;
+        buffer::mark_modified();
     }
 
     // ------------------------------------------------------------

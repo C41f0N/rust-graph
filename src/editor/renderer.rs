@@ -1,6 +1,7 @@
 use raylib::prelude::*;
 
 use crate::config;
+use crate::editor;
 use crate::editor::blocks;
 use crate::editor::buffer;
 use crate::editor::markdown;
@@ -32,6 +33,72 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         let editor_y = ((1.0 - editor_dimentions.y) * 0.5 * config::HEIGHT as f32) as i32;
 
         let max_width = (editor_dimentions.x * config::WIDTH as f32) as i32 - 2 * padding;
+        let editor_width = max_width + 2 * padding;
+
+        // --- Heading bar ---
+        let header_h = config::EDITOR_HEADER_HEIGHT;
+
+        // Header background (slightly lighter than the editor bg)
+        d.draw_rectangle(
+            editor_x,
+            editor_y,
+            editor_width,
+            header_h,
+            Color::new(30, 30, 35, 200),
+        );
+
+        // Note name on the left
+        let note_name = {
+            let editing = crate::graph::processing::EDITING_NODE.read().unwrap();
+            let nodes = crate::graph::processing::NODES.read().unwrap();
+            editing
+                .and_then(|i| nodes.get(i))
+                .map(|n| n.name.clone())
+                .unwrap_or_default()
+        };
+        let name_y = editor_y + (header_h - config::EDITOR_FONT_SIZE) / 2;
+        d.draw_text(
+            &note_name,
+            editor_x + padding,
+            name_y,
+            config::EDITOR_FONT_SIZE,
+            config::EDITOR_FONT_COLOR,
+        );
+
+        // Close X button on the right
+        let x_label = "X";
+        let x_w = d.measure_text(x_label, config::EDITOR_FONT_SIZE);
+        let x_x = editor_x + editor_width - padding - x_w;
+        let x_y = name_y;
+
+        let mouse = d.get_mouse_position();
+        let over_x = mouse.x as i32 >= x_x
+            && mouse.x as i32 <= x_x + x_w
+            && mouse.y as i32 >= x_y
+            && mouse.y as i32 <= x_y + config::EDITOR_FONT_SIZE;
+
+        let x_color = if over_x {
+            Color::RED
+        } else {
+            Color::new(180, 180, 180, 255)
+        };
+        d.draw_text(x_label, x_x, x_y, config::EDITOR_FONT_SIZE, x_color);
+
+        if over_x && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            editor::CLOSE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Separator line below the header
+        d.draw_line(
+            editor_x,
+            editor_y + header_h,
+            editor_x + editor_width,
+            editor_y + header_h,
+            Color::new(255, 255, 255, 40),
+        );
+
+        // --- Content area (shifted down by header) ---
+        let content_y = editor_y + header_h;
 
         let kinds = blocks::classify(&buf);
 
@@ -58,7 +125,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
             // Horizontal rule: draw a line instead of text.
             if !editing_line && matches!(kind, blocks::LineKind::HorizontalRule) {
-                let y_mid = editor_y + line_y + line_font_size / 2;
+                let y_mid = content_y + line_y + line_font_size / 2;
                 d.draw_line(
                     editor_x + padding,
                     y_mid,
@@ -74,7 +141,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             if is_fence && !editing_line {
                 d.draw_rectangle(
                     editor_x + padding,
-                    editor_y + line_y,
+                    content_y + line_y,
                     max_width,
                     line_font_size,
                     config::EDITOR_CODE_BG,
@@ -116,7 +183,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
                         d.draw_rectangle(
                             x_start,
-                            editor_y + line_y,
+                            content_y + line_y,
                             x_end - x_start,
                             line_font_size,
                             config::EDITOR_SELECTION_COLOR,
@@ -138,7 +205,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                         ),
                         line_font_size,
                     );
-                let cursor_y_abs = editor_y + line_y + padding / 2;
+                let cursor_y_abs = content_y + line_y + padding / 2;
 
                 let blink = ((d.get_time() * 2.0) as i32) % 2 == 0;
 
@@ -224,7 +291,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             // so a block reads as one continuous vertical bar. The rail is
             // hidden where the cursor is editing (raw markers are shown).
             if is_quote && !editing_line {
-                let (_, _, h) = quote_rail.get_or_insert((editor_x + padding, editor_y + line_y, 0));
+                let (_, _, h) = quote_rail.get_or_insert((editor_x + padding, content_y + line_y, 0));
                 *h += line_font_size + config::EDITOR_LINE_SPACING;
             } else {
                 if let Some((x, top, h)) = quote_rail.take() {
@@ -275,7 +342,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                             d.draw_text(
                                 disp,
                                 seg_x,
-                                editor_y + line_y + padding / 2,
+                                content_y + line_y + padding / 2,
                                 line_font_size,
                                 config::EDITOR_LIST_MARKER_COLOR,
                             );
@@ -304,7 +371,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 if seg.style == markdown::SegmentStyle::Code {
                     d.draw_rectangle(
                         seg_x,
-                        editor_y + line_y + padding / 2,
+                        content_y + line_y + padding / 2,
                         seg_w,
                         line_font_size,
                         config::EDITOR_CODE_BG,
@@ -314,7 +381,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 d.draw_text(
                     text,
                     seg_x,
-                    editor_y + line_y + padding / 2,
+                    content_y + line_y + padding / 2,
                     line_font_size,
                     color,
                 );

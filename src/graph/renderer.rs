@@ -120,4 +120,71 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let cursor_x = x + 10 + label_width + name_width;
         d.draw_rectangle(cursor_x, y + 5, 2, 20, Color::WHITE);
     }
+
+    // Right-click context menu (screen space)
+    let context_node = *crate::graph::processing::CONTEXT_NODE.read().unwrap();
+    let renaming = *crate::graph::processing::RENAMING.read().unwrap();
+    if context_node.is_some() && !renaming {
+        let (mx, my) = *crate::graph::processing::CONTEXT_POS.read().unwrap();
+        let menu_w = 140;
+        let item_h = 30;
+        let screen_mouse = d.get_mouse_position();
+
+        // Bar
+        let hover_rename = screen_mouse.x as i32 >= mx
+            && screen_mouse.x as i32 <= mx + menu_w
+            && screen_mouse.y as i32 >= my
+            && screen_mouse.y as i32 <= my + item_h;
+        let hover_delete = screen_mouse.x as i32 >= mx
+            && screen_mouse.x as i32 <= mx + menu_w
+            && screen_mouse.y as i32 >= my + item_h
+            && screen_mouse.y as i32 <= my + 2 * item_h;
+
+        d.draw_rectangle(mx, my, menu_w, 2 * item_h, Color::new(20, 20, 20, 235));
+
+        d.draw_rectangle(
+            mx,
+            my,
+            menu_w,
+            item_h,
+            if hover_rename {
+                Color::new(76, 128, 204, 160)
+            } else {
+                Color::new(0, 0, 0, 0)
+            },
+        );
+        d.draw_text("Rename", mx + 10, my + 6, 18, Color::WHITE);
+
+        d.draw_rectangle(
+            mx,
+            my + item_h,
+            menu_w,
+            item_h,
+            if hover_delete {
+                Color::new(200, 60, 60, 160)
+            } else {
+                Color::new(0, 0, 0, 0)
+            },
+        );
+        d.draw_text("Delete", mx + 10, my + item_h + 6, 18, Color::WHITE);
+
+        d.draw_line(mx, my + item_h, mx + menu_w, my + item_h, Color::new(60, 60, 60, 255));
+    }
+
+    // Rename-note name prompt (screen space)
+    if renaming {
+        let rename_name = crate::graph::processing::RENAME_NAME.read().unwrap();
+        let prompt_base = "Rename to: ";
+        let full = format!("{}{}", prompt_base, rename_name);
+        let label_width = d.measure_text(prompt_base, 20);
+        let text_width = d.measure_text(&full, 20);
+        let x = (WIDTH - text_width) / 2 - 10;
+        let y = 10;
+        d.draw_rectangle(x, y, text_width + 20, 30, Color::BLACK.alpha(0.7));
+        d.draw_text(prompt_base, x + 10, y + 15, 20, Color::WHITE);
+        d.draw_text(&rename_name, x + 10 + label_width, y + 15, 20, Color::SKYBLUE);
+        let name_width = d.measure_text(&rename_name, 20);
+        let cursor_x = x + 10 + label_width + name_width;
+        d.draw_rectangle(cursor_x, y + 5, 2, 20, Color::WHITE);
+    }
 }
