@@ -4,6 +4,7 @@ use crate::frontmatter;
 use rand::prelude::*;
 use raylib::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::RwLock;
 
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
@@ -18,8 +19,11 @@ pub static DELETE_PENDING: RwLock<bool> = RwLock::new(false);
 pub static ADDING_NOTE: RwLock<bool> = RwLock::new(false);
 pub static ADDING_NAME: RwLock<String> = RwLock::new(String::new());
 
-// Right-click context menu on the graph.
+// Right-click context menu on the graph. CONTEXT_NODE targets a node;
+// CONTEXT_EMPTY is the empty-space menu (Add Node, more items may follow).
+// Exactly one of the two is open at a time.
 pub static CONTEXT_NODE: RwLock<Option<usize>> = RwLock::new(None);
+pub static CONTEXT_EMPTY: RwLock<bool> = RwLock::new(false);
 pub static CONTEXT_POS: RwLock<(i32, i32)> = RwLock::new((0, 0));
 pub static RENAMING: RwLock<bool> = RwLock::new(false);
 pub static RENAME_NAME: RwLock<String> = RwLock::new(String::new());
@@ -31,6 +35,17 @@ pub static NAV_STACK: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 // by the input handler so the click logic stays in the draw frame where
 // text::measure is available.
 pub static BREADCRUMB_CLICK: RwLock<Option<usize>> = RwLock::new(None);
+
+// Set by the node context menu's "Set Header Image" action; consumed once by
+// main.rs which spawns the native file dialog on a background thread.
+pub static HEADER_PICK_REQUEST: RwLock<Option<usize>> = RwLock::new(None);
+// Guards against stacking dialogs: set while a picker thread is live, cleared
+// by that thread when the dialog closes.
+pub static HEADER_PICK_ACTIVE: AtomicBool = AtomicBool::new(false);
+// (node index, absolute path of the chosen file) written by the picker
+// thread; consumed by main.rs on the main thread where file ops and GL
+// texture loading belong.
+pub static HEADER_PICK_RESULT: RwLock<Option<(usize, PathBuf)>> = RwLock::new(None);
 
 pub struct Node {
     pub radius: f32,
@@ -91,6 +106,7 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     *HOVER_NODE.write().unwrap() = None;
     *DELETE_PENDING.write().unwrap() = false;
     *CONTEXT_NODE.write().unwrap() = None;
+    *CONTEXT_EMPTY.write().unwrap() = false;
 
     // Zoom the initial view out as more nodes appear so the whole graph fits
     // on screen. Fewer nodes allow a closer, larger view.
@@ -120,6 +136,46 @@ pub fn navigate_to_level(level: usize) {
         stack.truncate(level);
         *DIR_PATH.write().unwrap() = new_dir;
     }
+}
+
+// The graph's root directory: the first breadcrumb entry when inside a
+// sub-graph, otherwise the current directory. Assets live under this root.
+pub fn project_root() -> PathBuf {
+    let stack = NAV_STACK.read().unwrap();
+    stack
+        .first()
+        .cloned()
+        .unwrap_or_else(|| DIR_PATH.read().unwrap().clone())
+}
+
+// Resolve a node header target (stored relative to the project root, e.g.
+// "assets/name.png") to an absolute path on disk.
+pub fn resolve_header_path(header: &str) -> Option<PathBuf> {
+    let h = header.trim();
+    if h.is_empty() {
+        return None;
+    }
+    Some(project_root().join(h))
+}
+
+// Write `raw_header` (a [[...]]-wrapped target) into the note's frontmatter
+// and refresh the node cache/edges so the graph picks up the change.
+pub fn attach_header(idx: usize, raw_header: &str) -> bool {
+    let path = {
+        let nodes = NODES.read().unwrap();
+        nodes.get(idx).map(|n| n.path.clone())
+    };
+    let Some(path) = path else {
+        return false;
+    };
+    let content = filesystem::read_file(&path);
+    let new_content = frontmatter::upsert_header(&content, raw_header);
+    if new_content == content {
+        return false;
+    }
+    filesystem::write_file(&path, &new_content);
+    rebuild_edges();
+    true
 }
 
 // Build directed edges from [[wikilink]] references in the .md files.
@@ -187,6 +243,17 @@ pub fn rebuild_edges() {
             }
         }
     }
+
+    // Size each node by how many children it has: a hub with more outgoing
+    // edges grows so the hierarchy reads at a glance. Re-run on every edge
+    // rebuild so add/remove/rename/navigation all keep sizes current.
+    let mut child_counts = vec![0u32; nodes.len()];
+    for edge in edges.iter() {
+        child_counts[edge.n1] += 1;
+    }
+    for (node, &count) in nodes.iter_mut().zip(&child_counts) {
+        node.radius = (5.0 + count as f32 * 1.5).min(16.0);
+    }
 }
 
 pub fn add_node(dir: &Path, filename: &str) -> usize {
@@ -247,10 +314,11 @@ pub fn remove_node(idx: usize) {
     }
 }
 
-// Rename a note's .md file (and its companion sub-graph folder, if any) and
-// its node label to `new_name`. Returns false if the new name is empty, the
-// target file exists, or (for notes with a sub-graph) the target folder
-// exists.
+// Rename a note's .md file (and its companion sub-graph folder, if any),
+// its node label, and every [[wikilink]] that points at it from the .md
+// files in the current directory. Returns false if the new name is empty,
+// the target file exists, or (for notes with a sub-graph) the target
+// folder exists.
 pub fn rename_node(idx: usize, new_name: &str) -> bool {
     let mut nodes = NODES.write().unwrap();
     if idx >= nodes.len() {
@@ -262,6 +330,10 @@ pub fn rename_node(idx: usize, new_name: &str) -> bool {
     }
 
     let old_path = nodes[idx].path.clone();
+    let old_stem = old_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
     let sub_folder = filesystem::subgraph_dir(&old_path);
     let has_sub = filesystem::is_dir(&sub_folder);
 
@@ -278,9 +350,19 @@ pub fn rename_node(idx: usize, new_name: &str) -> bool {
     // Rename the companion sub-graph folder. If this somehow fails, roll the
     // file rename back so the pair stays consistent.
     if has_sub && !filesystem::rename_dir(&sub_folder, &new_stem) {
-        let old_stem = old_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
         filesystem::rename_file(&old_path.with_file_name(format!("{}.md", new_stem)), &old_stem);
         return false;
+    }
+
+    // Rewire [[old_stem]] / [[old_stem.md]] references in every .md file in
+    // the current directory so they follow the note to its new name.
+    let dir = DIR_PATH.read().unwrap().clone();
+    for file in filesystem::scan_directory(&dir) {
+        let content = filesystem::read_file(&file);
+        let rewritten = filesystem::replace_links(&content, &old_stem, &new_stem);
+        if rewritten != content {
+            filesystem::write_file(&file, &rewritten);
+        }
     }
 
     nodes[idx].file_name = format!("{}.md", new_stem);
@@ -381,5 +463,64 @@ mod tests {
         // Out of range level is a no-op
         navigate_to_level(5);
         assert_eq!(*DIR_PATH.read().unwrap(), PathBuf::from("/root/a"));
+    }
+
+    #[test]
+    fn rename_rewrites_links_in_other_notes() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_rename_links_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("old-name.md"), "# Old\n");
+        filesystem::write_file(&dir.join("a.md"), "see [[old-name]] and [[old-name.md]]\n");
+        filesystem::write_file(&dir.join("b.md"), "keep [[other]]\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        generate_nodes_from_directory(&dir);
+        let idx = NODES
+            .read().unwrap()
+            .iter().position(|n| n.name == "old-name")
+            .expect("node not found");
+
+        assert!(rename_node(idx, "new-name"));
+
+        assert_eq!(
+            filesystem::read_file(&dir.join("a.md")),
+            "see [[new-name]] and [[new-name]]\n"
+        );
+        assert_eq!(filesystem::read_file(&dir.join("b.md")), "keep [[other]]\n");
+        assert!(dir.join("new-name.md").exists());
+        assert!(!dir.join("old-name.md").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn attach_header_writes_frontmatter_and_refreshes_cache() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_attach_header_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("a.md"), "# A\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\nlink [[a.md]]\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+        let idx = NODES
+            .read().unwrap()
+            .iter().position(|n| n.name == "a")
+            .expect("node not found");
+
+        assert!(attach_header(idx, "[[assets/pic.png]]"));
+        assert_eq!(
+            filesystem::read_file(&dir.join("a.md")),
+            "---\nheader: [[assets/pic.png]]\n---\n# A\n"
+        );
+        // rebuild_edges refreshed the node cache.
+        let node = &NODES.read().unwrap()[idx];
+        assert_eq!(node.header.as_deref(), Some("assets/pic.png"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

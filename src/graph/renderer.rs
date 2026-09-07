@@ -23,7 +23,6 @@ pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
 });
 
 pub fn draw(d: &mut RaylibDrawHandle) {
-    let dragging_node = DRAGGING_NODE.read().unwrap();
     let hover_node = HOVER_NODE.read().unwrap();
     let selected_node = SELECTED_NODE.read().unwrap();
     let delete_pending = DELETE_PENDING.read().unwrap();
@@ -38,28 +37,36 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     for edge in edges.iter() {
         let n1 = &nodes[edge.n1];
         let n2 = &nodes[edge.n2];
-        mode.draw_line_ex(n1.position, n2.position, 2., Color::new(110, 110, 110, 255));
+        let edge_color = Color::new(110, 110, 110, 255);
+
+        let from = n1.position;
+        let to = n2.position;
+
+        mode.draw_line_ex(from, to, 2., edge_color);
+
+        // A small filled dot at the child end: a plain circle reads as the
+        // edge's destination without the visual weight of an arrowhead. It
+        // sits just outside the state discs so halos never clip it.
+        let axis = to - from;
+        let len = axis.length();
+        if len > 0.0 {
+            let dir = axis * (1.0 / len);
+            let dot_center = to - dir * (n2.radius + 4.0);
+            mode.draw_circle_v(dot_center, 3.0, edge_color);
+        }
     }
 
     for (i, node) in nodes.iter().enumerate() {
-        let is_dragging = *dragging_node == Some(i);
         let is_hover = *hover_node == Some(i);
         let is_selected = *selected_node == Some(i);
 
-        let draw_radius = if is_dragging {
-            node.radius * 1.5
-        } else {
-            node.radius
-        };
+        // Node size comes from its child count (set in rebuild_edges).
+        let draw_radius = node.radius;
 
         // State discs are filled and drawn BEHIND the node body: the node
         // covers their centre, so only the margin reads as a ring around it.
         // Drawn largest-first so a smaller disc never overlaps a bigger one.
 
-        // Selection: broad white halo (the strongest emphasis, still B/W).
-        if is_selected {
-            mode.draw_circle_v(node.position, draw_radius + 4.0, Color::WHITE);
-        }
         // Sub-graph: dim gray disc, subtler than selection.
         if node.has_subgraph {
             mode.draw_circle_v(node.position, draw_radius + 2.5, Color::new(160, 160, 160, 200));
@@ -69,7 +76,29 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             mode.draw_circle_v(node.position, draw_radius + 1.5, Color::new(255, 255, 255, 90));
         }
 
-        mode.draw_circle_v(node.position, draw_radius, node.color);
+        // Selection is signaled by the node body flipping to light pink.
+        let node_color = if is_selected {
+            Color::LIGHTPINK
+        } else {
+            node.color
+        };
+        mode.draw_circle_v(node.position, draw_radius, node_color);
+
+        // A header image (frontmatter `header:` pointing into assets/) is
+        // drawn centred inside the node circle, inset so the circle reads as
+        // a frame around it.
+        if let Some(header) = &node.header {
+            if crate::editor::images::is_image_target(header) {
+                if let Some(path) = resolve_header_path(header) {
+                    if crate::editor::images::has_texture(&path) {
+                        let box_side = (draw_radius * 1.6) as i32;
+                        let x = (node.position.x - box_side as f32 / 2.0) as i32;
+                        let y = (node.position.y - box_side as f32 / 2.0) as i32;
+                        crate::editor::images::draw(&mut mode, &path, x, y, box_side, box_side);
+                    }
+                }
+            }
+        }
 
         let text_w = text::measure(&mode, &node.name, 5);
 
@@ -120,13 +149,29 @@ pub fn draw(d: &mut RaylibDrawHandle) {
 
     // Right-click context menu (screen space)
     let context_node = *crate::graph::processing::CONTEXT_NODE.read().unwrap();
+    let context_empty = *crate::graph::processing::CONTEXT_EMPTY.read().unwrap();
     let renaming = *crate::graph::processing::RENAMING.read().unwrap();
-    if context_node.is_some() && !renaming {
+    if (context_node.is_some() || context_empty) && !renaming {
         let (mx, my) = *crate::graph::processing::CONTEXT_POS.read().unwrap();
         let screen_mouse = d.get_mouse_position();
 
-        // Determine sub-graph availability for this node
-        let node_name = context_node
+        if context_empty {
+            // Empty-space menu: a single "Add Node" action for now; this is
+            // where more global actions can hang in the future.
+            let menu_h = config::CONTEXT_MENU_ITEM_H;
+            d.draw_rectangle(mx, my, config::CONTEXT_MENU_W, menu_h, Color::new(20, 20, 20, 235));
+            let hover = screen_mouse.x as i32 >= mx
+                && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+                && screen_mouse.y as i32 >= my
+                && screen_mouse.y as i32 <= my + config::CONTEXT_MENU_ITEM_H;
+            d.draw_rectangle(
+                mx, my, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+                if hover { Color::new(76, 180, 120, 160) } else { Color::new(0, 0, 0, 0) },
+            );
+            text::draw(d, "Add Node", mx + 10, my + 6, 18, Color::WHITE);
+        } else {
+            // Determine sub-graph availability for this node
+            let node_name = context_node
             .and_then(|i| nodes.get(i))
             .map(|n| n.name.clone())
             .unwrap_or_default();
@@ -137,9 +182,9 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let show_create = !subgraph_exists;
         let show_open = subgraph_exists;
 
-        // Compute menu height: Rename + Delete always present, plus one
-        // of the sub-graph items when applicable.
-        let mut item_count = 2i32;
+        // Compute menu height: Rename + Delete + Set Header Image always present,
+        // plus one of the sub-graph items when applicable.
+        let mut item_count = 3i32;
         if show_create { item_count += 1; }
         if show_open { item_count += 1; }
         let menu_h = item_count * config::CONTEXT_MENU_ITEM_H;
@@ -203,6 +248,20 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                 if hover_open { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
             );
             text::draw(d, "Open Sub-Graph", mx + 10, my + y_off + 6, 18, Color::WHITE);
+            y_off += config::CONTEXT_MENU_ITEM_H;
+        }
+
+        // --- Row (last): Set Header Image ---
+        d.draw_line(mx, my + y_off, mx + config::CONTEXT_MENU_W, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
+        let hover_header = screen_mouse.x as i32 >= mx
+            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.y as i32 >= my + y_off
+            && screen_mouse.y as i32 <= my + y_off + config::CONTEXT_MENU_ITEM_H;
+        d.draw_rectangle(
+            mx, my + y_off, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+            if hover_header { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
+        );
+        text::draw(d, "Set Header Image", mx + 10, my + y_off + 6, 18, Color::WHITE);
         }
     }
 
@@ -276,6 +335,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                 // Only when no menu/modal is active, so the value can't be
                 // left stale by an input path that returns early.
                 if context_node.is_none()
+                    && !context_empty
                     && !renaming
                     && !adding_note
                     && !settings_open

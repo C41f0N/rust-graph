@@ -21,6 +21,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     let mut adding_note = ADDING_NOTE.write().unwrap();
     let mut adding_name = ADDING_NAME.write().unwrap();
     let mut context_node = CONTEXT_NODE.write().unwrap();
+    let mut context_empty = CONTEXT_EMPTY.write().unwrap();
     let mut context_pos = CONTEXT_POS.write().unwrap();
     let mut renaming = RENAMING.write().unwrap();
     let mut rename_name = RENAME_NAME.write().unwrap();
@@ -98,6 +99,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 drop(renaming);
                 drop(rename_name);
                 drop(dir_path);
+                drop(context_empty);
                 if rename_node(idx, &name) {
                     *SELECTED_NODE.write().unwrap() = Some(idx);
                 }
@@ -241,6 +243,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 drop(delete_pending);
                 drop(editing_node);
                 drop(dir_path);
+                drop(context_empty);
                 remove_node(idx);
                 // Re-acquire to clean up
                 let mut selected_node = SELECTED_NODE.write().unwrap();
@@ -283,8 +286,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     }
 
     // Escape dismisses an open context menu
-    if context_node.is_some() && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+    if (context_node.is_some() || *context_empty) && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
         *context_node = None;
+        *context_empty = false;
         return;
     }
 
@@ -294,7 +298,8 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
     let screen_mouse = rl.get_mouse_position();
 
-    // Right-click: open the context menu for a node under the cursor.
+    // Right-click: open the context menu for a node under the cursor, or an
+    // empty-space menu (Add Node) when the cursor is over nothing.
     if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT) {
         let mut clicked: Option<usize> = None;
         for (i, node) in nodes.iter().enumerate() {
@@ -308,15 +313,100 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             *context_node = Some(i);
             *context_pos = (screen_mouse.x as i32, screen_mouse.y as i32);
             *renaming = false;
+            *context_empty = false;
         } else {
             *context_node = None;
+            *context_empty = true;
+            *context_pos = (screen_mouse.x as i32, screen_mouse.y as i32);
         }
     }
 
-    // While the context menu is open, a left click either picks an item or
+    // Middle-click on a node that owns a sub-graph navigates into it.
+    if context_node.is_none()
+        && !*context_empty
+        && rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_MIDDLE)
+    {
+        let mut nav_name: Option<String> = None;
+        for node in nodes.iter() {
+            if (node.position - mouse_pos).length() <= node.radius {
+                if node.has_subgraph {
+                    nav_name = Some(node.name.clone());
+                }
+                break;
+            }
+        }
+        if let Some(name) = nav_name {
+            drop(nodes);
+            drop(dragging_node);
+            drop(hover_node);
+            drop(selected_node);
+            drop(delete_pending);
+            drop(editing_node);
+            drop(adding_note);
+            drop(adding_name);
+            drop(context_node);
+            drop(context_pos);
+            drop(renaming);
+            drop(rename_name);
+            drop(dir_path);
+            drop(context_empty);
+            navigate_into(&name);
+            // Regenerate nodes/edges (also resets camera + zoom).
+            generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+            return;
+        }
+    }
+
+    // Alt + left click leaves the current sub-graph for its parent.
+    if (rl.is_key_down(KeyboardKey::KEY_LEFT_ALT) || rl.is_key_down(KeyboardKey::KEY_RIGHT_ALT))
+        && rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+    {
+        let parent = {
+            let stack = NAV_STACK.read().unwrap();
+            stack.len().checked_sub(1)
+        };
+        if let Some(level) = parent {
+            drop(nodes);
+            drop(dragging_node);
+            drop(hover_node);
+            drop(selected_node);
+            drop(delete_pending);
+            drop(editing_node);
+            drop(adding_note);
+            drop(adding_name);
+            drop(context_node);
+            drop(context_pos);
+            drop(renaming);
+            drop(rename_name);
+            drop(dir_path);
+            drop(context_empty);
+            navigate_to_level(level);
+            generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+        }
+        return;
+    }
+
+    // While a context menu is open, a left click either picks an item or
     // dismisses the menu (anything that isn't the menu closes it).
-    if context_node.is_some() && rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+    if (context_node.is_some() || *context_empty)
+        && rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+    {
         let (mx, my) = *context_pos;
+
+        if *context_empty {
+            // Empty-space menu: Add Node for now; more items plug in here.
+            let clicked_add = screen_mouse.x as i32 >= mx
+                && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+                && screen_mouse.y as i32 >= my
+                && screen_mouse.y as i32 <= my + config::CONTEXT_MENU_ITEM_H;
+            if clicked_add {
+                *adding_name = String::new();
+                *adding_note = true;
+            }
+            *context_node = None;
+            *context_empty = false;
+            return;
+        }
 
         // Compute which items are visible (mirrors the renderer logic)
         let node_name = context_node
@@ -356,6 +446,14 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             && screen_mouse.y as i32 >= y_open
             && screen_mouse.y as i32 <= y_open + config::CONTEXT_MENU_ITEM_H;
 
+        // Row (last): Set Header Image (always at 3*ITEM_H; exactly one of the
+        // create/open sub-graph rows is shown, so the layout is fixed).
+        let y_header = my + 3 * config::CONTEXT_MENU_ITEM_H;
+        let clicked_header = screen_mouse.x as i32 >= mx
+            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.y as i32 >= y_header
+            && screen_mouse.y as i32 <= y_header + config::CONTEXT_MENU_ITEM_H;
+
         if clicked_rename {
             let idx = *context_node;
             if let Some(idx) = idx {
@@ -391,6 +489,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 drop(renaming);
                 drop(rename_name);
                 drop(dir_path);
+                drop(context_empty);
                 if !name.is_empty() {
                     let dir = DIR_PATH.read().unwrap().clone();
                     filesystem::create_dir(&dir.join(&name));
@@ -421,6 +520,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 drop(renaming);
                 drop(rename_name);
                 drop(dir_path);
+                drop(context_empty);
                 if !name.is_empty() {
                     navigate_into(&name);
                     // Regenerate nodes/edges (also resets camera + zoom).
@@ -428,6 +528,18 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 }
                 return;
             }
+            return;
+        } else if clicked_header {
+            // Defer to main.rs: it spawns the native file dialog on a worker
+            // thread, then copies the pick into assets/ and attaches it as
+            // the note header. Skip if a dialog is already in flight.
+            if let Some(idx) = *context_node {
+                *selected_node = Some(idx);
+                if !HEADER_PICK_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+                    *HEADER_PICK_REQUEST.write().unwrap() = Some(idx);
+                }
+            }
+            *context_node = None;
             return;
         } else {
             // Click anywhere else dismisses the menu.
@@ -467,6 +579,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             drop(renaming);
             drop(rename_name);
             drop(dir_path);
+                drop(context_empty);
             navigate_to_level(level);
             // Regenerate nodes/edges (also resets camera + zoom).
             generate_nodes_from_directory(&*DIR_PATH.read().unwrap());

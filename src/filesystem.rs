@@ -87,6 +87,26 @@ pub fn rename_file(old: &Path, new_stem: &str) -> bool {
     false
 }
 
+// Copy `src` into `dst_dir` (created if missing), keeping its file name and
+// de-duplicating collisions with `_1`, `_2`, ... suffixes. Returns the path
+// the file was written to, or None if it could not be copied.
+pub fn copy_file_unique(src: &Path, dst_dir: &Path) -> Option<PathBuf> {
+    let name = src.file_name()?.to_string_lossy().to_string();
+    create_dir(dst_dir);
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) => (name[..i].to_string(), name[i..].to_string()),
+        None => (name.clone(), String::new()),
+    };
+    let mut dst = dst_dir.join(&name);
+    let mut n = 1;
+    while dst.exists() {
+        dst = dst_dir.join(format!("{}_{}{}", stem, n, ext));
+        n += 1;
+    }
+    fs::copy(src, &dst).ok()?;
+    Some(dst)
+}
+
 pub fn unique_filename(dir: &Path, stem: &str) -> String {
     let candidate = format!("{}.md", stem);
     if !dir.join(&candidate).exists() {
@@ -99,6 +119,51 @@ pub fn unique_filename(dir: &Path, stem: &str) -> String {
         }
     }
     unreachable!()
+}
+
+// Rewrite every [[wikilink]] whose (trimmed) target is old_stem -- with or
+// without a ".md" extension -- to new_stem. Other links and unclosed
+// brackets pass through unchanged.
+pub fn replace_links(content: &str, old_stem: &str, new_stem: &str) -> String {
+    let old_md = format!("{}.md", old_stem);
+    let mut out = String::with_capacity(content.len());
+    let bytes = content.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // A lone "[" or unpaired bracket: copy the byte through unaltered.
+        if !(i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[') {
+            let ch = content[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+
+        // Find the closing "]]".
+        let mut j = i + 2;
+        while j + 1 < bytes.len() && !(bytes[j] == b']' && bytes[j + 1] == b']') {
+            j += 1;
+        }
+        let closed = j + 1 < bytes.len() && bytes[j] == b']' && bytes[j + 1] == b']';
+        if !closed {
+            let ch = content[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+
+        let inner = content[i + 2..j].trim();
+        if inner == old_stem || inner == old_md.as_str() {
+            out.push_str("[[");
+            out.push_str(new_stem);
+            out.push_str("]]");
+        } else {
+            out.push_str(&content[i..j + 2]);
+        }
+        i = j + 2;
+    }
+
+    out
 }
 
 pub fn parse_links(content: &str) -> Vec<String> {
@@ -172,6 +237,29 @@ mod tests {
     }
 
     #[test]
+    fn replace_links_rewrites_only_matching_targets() {
+        assert_eq!(
+            replace_links("see [[alpha]] and [[alpha.md]] here", "alpha", "beta"),
+            "see [[beta]] and [[beta]] here"
+        );
+        // Whitespace inside the brackets is tolerated.
+        assert_eq!(
+            replace_links("a [[ alpha ]] b", "alpha", "beta"),
+            "a [[beta]] b"
+        );
+        // Prefix names and unrelated links survive.
+        assert_eq!(
+            replace_links("[[alphabeta]] [[x]]", "alpha", "beta"),
+            "[[alphabeta]] [[x]]"
+        );
+        // Unclosed brackets pass through.
+        assert_eq!(
+            replace_links("no [[alpha here", "alpha", "beta"),
+            "no [[alpha here"
+        );
+    }
+
+    #[test]
     fn creates_and_detects_directories() {
         let dir = std::env::temp_dir().join("rg_is_dir_test");
         let _ = std::fs::remove_dir_all(&dir);
@@ -217,6 +305,27 @@ mod tests {
         // Rejects colliding with an existing folder.
         create_dir(&dir.join("other"));
         assert!(!rename_dir(&dir.join("new"), "other"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copies_files_into_directory_with_unique_names() {
+        let dir = std::env::temp_dir().join("rg_copy_file_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        create_dir(&dir);
+        let src = dir.join("pic.png");
+        std::fs::write(&src, "img-bytes").unwrap();
+        let assets = dir.join("assets");
+
+        let first = copy_file_unique(&src, &assets).unwrap();
+        assert_eq!(first, assets.join("pic.png"));
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "img-bytes");
+
+        // A second copy of the same file gets a numeric suffix.
+        let second = copy_file_unique(&src, &assets).unwrap();
+        assert_eq!(second, assets.join("pic_1.png"));
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "img-bytes");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

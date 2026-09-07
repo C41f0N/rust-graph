@@ -80,6 +80,41 @@ fn main() {
 
         graph::input_handler::handle_input(&mut rl, &mut editor_open);
 
+        // A finished header-picker dialog (background thread) left a result: copy
+// the chosen file into the project's assets/ folder and write it into the
+// note's frontmatter header. Runs here, on the main thread, because both the
+// file ops and the GL texture load must not race the render loop.
+if let Some((idx, src)) = HEADER_PICK_RESULT.write().unwrap().take() {
+    let root = project_root();
+    if let Some(dst) = filesystem::copy_file_unique(&src, &root.join("assets")) {
+        if let Ok(rel) = dst.strip_prefix(&root) {
+            let header_rel = rel.to_string_lossy().to_string();
+            if attach_header(idx, &format!("[[{}]]", header_rel)) {
+                editor::images::ensure_loaded(&mut rl, &thread, &dst);
+            }
+        }
+    }
+}
+
+// A "Set Header Image" click: spawn the (blocking) native file dialog on a
+// background thread so the app keeps redrawing; the chosen path comes back
+// through HEADER_PICK_RESULT above.
+if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
+    if !HEADER_PICK_ACTIVE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        std::thread::spawn(move || {
+            let chosen = rfd::FileDialog::new()
+                .set_title("Select header image")
+                .add_filter(
+                    "Images",
+                    &["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "ico"],
+                )
+                .pick_file();
+            *HEADER_PICK_RESULT.write().unwrap() = chosen.map(|p| (idx, p));
+            HEADER_PICK_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+}
+
         // Ctrl+S = save the open editor buffer immediately
         if editor_open
             && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
@@ -177,6 +212,22 @@ fn main() {
                 for target in filesystem::parse_links(line) {
                     if editor::images::is_image_target(&target) {
                         if let Some(path) = editor::images::resolve_path(&target) {
+                            editor::images::ensure_loaded(&mut rl, &thread, &path);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Preload node header images (frontmatter `header:` targets) so the
+        // graph can draw them inside the node circles. Cheap: the cache
+        // short-circuits once a texture is loaded.
+        {
+            let nodes = NODES.read().unwrap();
+            for node in nodes.iter() {
+                if let Some(header) = &node.header {
+                    if editor::images::is_image_target(header) {
+                        if let Some(path) = resolve_header_path(header) {
                             editor::images::ensure_loaded(&mut rl, &thread, &path);
                         }
                     }

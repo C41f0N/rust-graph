@@ -105,6 +105,56 @@ pub fn parse(content: &str) -> Option<Frontmatter> {
     Some(fm)
 }
 
+fn join_frontmatter(lines: &[String], original: &str) -> String {
+    let mut out = lines.join("\n");
+    if original.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+// Update (or insert) the `header:` field in the note's frontmatter, creating
+// a frontmatter block when the note has none. `raw_value` is stored verbatim;
+// callers usually pass a `[[wikilink]]`-wrapped target.
+pub fn upsert_header(content: &str, raw_value: &str) -> String {
+    let has_fm = content
+        .lines()
+        .next()
+        .map_or(false, |l| delimiter(l.trim_start_matches('\u{feff}')));
+    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+
+    if has_fm {
+        let mut end = None;
+        for (i, l) in lines.iter().enumerate().skip(1) {
+            if delimiter(l) {
+                end = Some(i);
+                break;
+            }
+        }
+        if let Some(end) = end {
+            // Find an existing `header:` line (indices 1..end are the body
+            // of the block).
+            let mut header_pos = None;
+            for (i, l) in lines.iter().enumerate().skip(1).take(end.saturating_sub(1)) {
+                let trimmed = l.trim();
+                if trimmed == "header:" || trimmed.strip_prefix("header:").is_some() {
+                    header_pos = Some(i);
+                    break;
+                }
+            }
+            let new_line = format!("header: {}", raw_value);
+            match header_pos {
+                Some(pos) => lines[pos] = new_line,
+                None => lines.insert(end, new_line),
+            }
+            return join_frontmatter(&lines, content);
+        }
+    }
+
+    // No frontmatter block: prepend one.
+    format!("---\nheader: {}\n---\n{}", raw_value, content)
+}
+
 // Inclusive range (start, end) of buffer line indices the frontmatter block
 // occupies, when the buffer starts with a closed block. Used by the editor to
 // treat the whole block as one editing unit (and hide it as one bar).
@@ -204,5 +254,23 @@ mod tests {
         let b = lines(&["---", "header: [[x]]", "---", "body"]);
         assert_eq!(line_range(&b), Some((0, 2)));
         assert_eq!(line_range(&lines(&["# t", "---"])), None);
+    }
+
+    #[test]
+    fn upsert_replaces_existing_header_line() {
+        let out = upsert_header("---\nheader: [[old.png]]\n---\n# T\n", "[[assets/new.png]]");
+        assert_eq!(out, "---\nheader: [[assets/new.png]]\n---\n# T\n");
+    }
+
+    #[test]
+    fn upsert_inserts_header_when_block_has_none() {
+        let out = upsert_header("---\ntitle: Hub\n---\n# T\n", "[[assets/pic.png]]");
+        assert_eq!(out, "---\ntitle: Hub\nheader: [[assets/pic.png]]\n---\n# T\n");
+    }
+
+    #[test]
+    fn upsert_prepends_block_when_no_frontmatter() {
+        let out = upsert_header("# T\nbody\n", "[[a.png]]");
+        assert_eq!(out, "---\nheader: [[a.png]]\n---\n# T\nbody\n");
     }
 }
