@@ -9,6 +9,8 @@ pub const EDITOR_PADDING: i32 = 12;
 pub const EDITOR_LINE_SPACING: i32 = 2;
 pub const EDITOR_CURSOR_HEIGHT_RATIO: f32 = 0.8;
 pub const EDITOR_HEADER_HEIGHT: i32 = 40;
+// Maximum height a whole-line image link is scaled down to in the editor.
+pub const EDITOR_IMAGE_MAX_HEIGHT: i32 = 320;
 
 pub const EDITOR_FONT_COLOR: Color = Color::WHITE;
 pub const EDITOR_SELECTION_COLOR: Color = Color::new(76, 128, 204, 102);

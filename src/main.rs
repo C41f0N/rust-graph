@@ -164,6 +164,22 @@ fn main() {
 
         editor_was_open = editor_open;
 
+        // Preload images referenced by the open note so the editor can draw
+        // whole-line [[file.png]] links as their image. Needs the raylib
+        // handle, so it happens here before drawing on the GL context thread.
+        if editor_open {
+            let buffer = editor::buffer::BUFFER.read().unwrap();
+            for line in buffer.iter() {
+                for target in filesystem::parse_links(line) {
+                    if editor::images::is_image_target(&target) {
+                        if let Some(path) = editor::images::resolve_path(&target) {
+                            editor::images::ensure_loaded(&mut rl, &thread, &path);
+                        }
+                    }
+                }
+            }
+        }
+
         let mut d = rl.begin_drawing(&thread);
 
         graph::renderer::draw(&mut d);

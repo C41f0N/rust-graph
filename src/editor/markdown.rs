@@ -311,6 +311,30 @@ pub fn list_marker_display(line: &str) -> Option<(String, usize)> {
     Some((disp, skip))
 }
 
+// If `line` consists of exactly one image wikilink (optionally with leading
+// list/quotation markers, e.g. `- [[assets/pic.png]]`), return the link
+// target (e.g. "assets/pic.png"). Embedded links ("see [[pic.png]] here")
+// are not images.
+pub fn image_link_target(line: &str) -> Option<String> {
+    let mut s = line.trim_start();
+    // Consume blockquote rail(s): ">" optionally followed by a space.
+    while let Some(rest) = s.strip_prefix('>') {
+        s = rest.strip_prefix(' ').unwrap_or(rest).trim_start();
+    }
+    // Consume one list marker.
+    if let Some(skip) = list_info(s) {
+        s = s[skip..].trim_start();
+    }
+    if !(s.starts_with("[[") && s.ends_with("]]") && s.len() >= 5) {
+        return None;
+    }
+    let inner = s[2..s.len() - 2].trim();
+    if inner.is_empty() || !crate::editor::images::is_image_target(inner) {
+        return None;
+    }
+    Some(inner.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +527,40 @@ mod tests {
         assert_eq!(raw.len(), 1);
         assert_eq!(raw[0].style, SegmentStyle::Plain);
         assert_eq!(raw[0].text, "**bold** [[x]] `c` - item");
+    }
+
+    #[test]
+    fn whole_line_image_links() {
+        assert_eq!(image_link_target("[[cat.png]]"), Some("cat.png".to_string()));
+        assert_eq!(
+            image_link_target("[[assets/image.png]]"),
+            Some("assets/image.png".to_string())
+        );
+        assert_eq!(
+            image_link_target("- [[cat.png]]"),
+            Some("cat.png".to_string())
+        );
+        assert_eq!(
+            image_link_target("> [[cat.png]]"),
+            Some("cat.png".to_string())
+        );
+        assert_eq!(
+            image_link_target("  > [[img.jpeg]]"),
+            Some("img.jpeg".to_string())
+        );
+        assert_eq!(
+            image_link_target("[[cat.PNG]]"),
+            Some("cat.PNG".to_string())
+        );
+    }
+
+    #[test]
+    fn non_image_lines() {
+        assert_eq!(image_link_target("see [[cat.png]] here"), None);
+        assert_eq!(image_link_target("[[cat.md]]"), None);
+        assert_eq!(image_link_target("[[cat]]"), None);
+        assert_eq!(image_link_target("[[cat.png]] extra"), None);
+        assert_eq!(image_link_target("plain text"), None);
+        assert_eq!(image_link_target(""), None);
     }
 }

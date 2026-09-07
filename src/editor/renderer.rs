@@ -124,6 +124,30 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
             let content_x = editor_x + padding + line.indent;
 
+            // A whole line that is a single image link (e.g. `[[pic.png]]`)
+            // renders as its image once loaded; missing/failed loads fall
+            // through to the normal link text. The advanced line height is
+            // also used for the blockquote rail accumulation below.
+            let mut image: Option<(std::path::PathBuf, i32, i32)> = None;
+            let mut line_advance_h = line_font_size;
+            if !editing_line && line.start == 0 {
+                if let Some(target) = markdown::image_link_target(&buf[line.line]) {
+                    if let Some(path) = crate::editor::images::resolve_path(&target) {
+                        if crate::editor::images::has_texture(&path) {
+                            let avail_w = (editor_x + padding + max_width - content_x).max(1);
+                            if let Some((w, h)) = crate::editor::images::fit(
+                                &path,
+                                avail_w,
+                                config::EDITOR_IMAGE_MAX_HEIGHT,
+                            ) {
+                                image = Some((path, w, h));
+                                line_advance_h = h;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Horizontal rule: draw a line instead of text.
             if !editing_line && matches!(kind, blocks::LineKind::HorizontalRule) {
                 let y_mid = content_y + line_y + line_font_size / 2;
@@ -151,7 +175,18 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
             // Draw selection highlight for this visual line
             if let Some((sy, sx, ey, ex)) = sel {
-                if line.line >= sy && line.line <= ey {
+                if let Some((_, iw, ih)) = &image {
+                    if line.line >= sy && line.line <= ey {
+                        d.draw_rectangle(
+                            content_x,
+                            content_y + line_y,
+                            *iw,
+                            *ih,
+                            config::EDITOR_SELECTION_COLOR,
+                        );
+                    }
+                } else {
+                    if line.line >= sy && line.line <= ey {
                     // Determine the selection range within this visual line
                     let vis_sel_start = if line.line == sy {
                         sx.max(line.start)
@@ -189,6 +224,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                             line_font_size,
                             config::EDITOR_SELECTION_COLOR,
                         );
+                    }
                     }
                 }
             }
@@ -284,8 +320,6 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 drop(autocomplete);
             }
 
-            let slice_text = buf[line.line][line.start..line.end].to_string();
-
             let is_quote = matches!(kind, blocks::LineKind::Blockquote);
 
             // Accumulate the quote rail across contiguous quote visual lines
@@ -293,7 +327,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             // hidden where the cursor is editing (raw markers are shown).
             if is_quote && !editing_line {
                 let (_, _, h) = quote_rail.get_or_insert((editor_x + padding, content_y + line_y, 0));
-                *h += line_font_size + config::EDITOR_LINE_SPACING;
+                *h += line_advance_h + config::EDITOR_LINE_SPACING;
             } else {
                 if let Some((x, top, h)) = quote_rail.take() {
                     d.draw_rectangle(x, top, 3, h, config::EDITOR_BLOCKQUOTE_BAR);
@@ -306,90 +340,119 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 None
             };
 
-            let fence_color = if is_fence {
-                if matches!(kind, blocks::LineKind::FenceDelimiter) {
-                    Some(config::EDITOR_FENCE_COLOR)
-                } else {
-                    Some(config::EDITOR_CODE_COLOR)
+            if let Some((path, iw, ih)) = &image {
+                // A whole-line image link is drawn as its image. Any leading
+                // list marker is drawn first, then the image is scaled down
+                // to fit the available width and max image height.
+                let mut img_x = content_x;
+                if let Some((disp, _)) = &list_marker {
+                    text::draw(
+                        &mut d,
+                        disp,
+                        img_x,
+                        content_y + line_y + padding / 2,
+                        line_font_size,
+                        config::EDITOR_LIST_MARKER_COLOR,
+                    );
+                    img_x += text::measure(&d, disp, line_font_size);
                 }
+                crate::editor::images::draw(
+                    &mut d,
+                    path,
+                    img_x,
+                    content_y + line_y + padding / 2,
+                    (editor_x + padding + max_width - img_x).max(1),
+                    config::EDITOR_IMAGE_MAX_HEIGHT,
+                );
+                let _ = (*iw, *ih);
             } else {
-                None
-            };
+                let slice_text = buf[line.line][line.start..line.end].to_string();
 
-            let segments = markdown::render_line(&slice_text, format);
-            let mut seg_x = content_x;
+                let fence_color = if is_fence {
+                    if matches!(kind, blocks::LineKind::FenceDelimiter) {
+                        Some(config::EDITOR_FENCE_COLOR)
+                    } else {
+                        Some(config::EDITOR_CODE_COLOR)
+                    }
+                } else {
+                    None
+                };
 
-            for (si, seg) in segments.iter().enumerate() {
-                let mut text = seg.text.as_str();
-                if si == 0 {
-                    // Quotes: the whole marker prefix (`>`, optionally
-                    // preceded by spaces) is display-only in view mode; the
-                    // rail replaces it and the text keeps its indent.
-                    if is_quote && !editing_line && line.start == 0 {
-                        if let Some(skip) = markdown::blockquote_marker_len(&buf[line.line]) {
-                            if skip <= text.as_bytes().len()
-                                && text.as_bytes()[..skip]
-                                    == buf[line.line].as_bytes()[..skip]
+                let segments = markdown::render_line(&slice_text, format);
+                let mut seg_x = content_x;
+
+                for (si, seg) in segments.iter().enumerate() {
+                    let mut text = seg.text.as_str();
+                    if si == 0 {
+                        // Quotes: the whole marker prefix (`>`, optionally
+                        // preceded by spaces) is display-only in view mode; the
+                        // rail replaces it and the text keeps its indent.
+                        if is_quote && !editing_line && line.start == 0 {
+                            if let Some(skip) = markdown::blockquote_marker_len(&buf[line.line]) {
+                                if skip <= text.as_bytes().len()
+                                    && text.as_bytes()[..skip]
+                                        == buf[line.line].as_bytes()[..skip]
+                                {
+                                    text = &text[skip..];
+                                }
+                            }
+                        }
+                        if let Some((disp, raw_len)) = &list_marker {
+                            if text.as_bytes().len() >= *raw_len
+                                && text.as_bytes()[..*raw_len]
+                                    == buf[line.line].as_bytes()[..*raw_len]
                             {
-                                text = &text[skip..];
+                                text::draw(&mut d, 
+                                    disp,
+                                    seg_x,
+                                    content_y + line_y + padding / 2,
+                                    line_font_size,
+                                    config::EDITOR_LIST_MARKER_COLOR,
+                                );
+                                seg_x += text::measure(&d, disp, line_font_size);
+                                text = &text[*raw_len..];
                             }
                         }
                     }
-                    if let Some((disp, raw_len)) = &list_marker {
-                        if text.as_bytes().len() >= *raw_len
-                            && text.as_bytes()[..*raw_len]
-                                == buf[line.line].as_bytes()[..*raw_len]
-                        {
-                            text::draw(&mut d, 
-                                disp,
-                                seg_x,
-                                content_y + line_y + padding / 2,
-                                line_font_size,
-                                config::EDITOR_LIST_MARKER_COLOR,
-                            );
-                            seg_x += text::measure(&d, disp, line_font_size);
-                            text = &text[*raw_len..];
+                    let color = match seg.style {
+                        markdown::SegmentStyle::Plain
+                        | markdown::SegmentStyle::Bold
+                        | markdown::SegmentStyle::Italic => {
+                            if let Some(fc) = fence_color {
+                                fc
+                            } else if is_quote {
+                                config::EDITOR_BLOCKQUOTE_COLOR
+                            } else {
+                                font_color
+                            }
                         }
-                    }
-                }
-                let color = match seg.style {
-                    markdown::SegmentStyle::Plain
-                    | markdown::SegmentStyle::Bold
-                    | markdown::SegmentStyle::Italic => {
-                        if let Some(fc) = fence_color {
-                            fc
-                        } else if is_quote {
-                            config::EDITOR_BLOCKQUOTE_COLOR
-                        } else {
-                            font_color
-                        }
-                    }
-                    markdown::SegmentStyle::Link => config::EDITOR_LINK_COLOR,
-                    markdown::SegmentStyle::Code => config::EDITOR_CODE_COLOR,
-                };
-                let seg_w = text::measure(&d, text, line_font_size);
+                        markdown::SegmentStyle::Link => config::EDITOR_LINK_COLOR,
+                        markdown::SegmentStyle::Code => config::EDITOR_CODE_COLOR,
+                    };
+                    let seg_w = text::measure(&d, text, line_font_size);
 
-                if seg.style == markdown::SegmentStyle::Code {
-                    d.draw_rectangle(
+                    if seg.style == markdown::SegmentStyle::Code {
+                        d.draw_rectangle(
+                            seg_x,
+                            content_y + line_y + padding / 2,
+                            seg_w,
+                            line_font_size,
+                            config::EDITOR_CODE_BG,
+                        );
+                    }
+
+                    text::draw(&mut d, 
+                        text,
                         seg_x,
                         content_y + line_y + padding / 2,
-                        seg_w,
                         line_font_size,
-                        config::EDITOR_CODE_BG,
+                        color,
                     );
+                    seg_x += seg_w;
                 }
-
-                text::draw(&mut d, 
-                    text,
-                    seg_x,
-                    content_y + line_y + padding / 2,
-                    line_font_size,
-                    color,
-                );
-                seg_x += seg_w;
             }
 
-            line_y += line_font_size + config::EDITOR_LINE_SPACING;
+            line_y += line_advance_h + config::EDITOR_LINE_SPACING;
         }
 
         if let Some((x, top, h)) = quote_rail.take() {
