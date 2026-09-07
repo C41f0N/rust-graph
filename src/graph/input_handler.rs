@@ -1,4 +1,5 @@
 use crate::config;
+use crate::filesystem;
 use crate::graph::processing::*;
 use crate::graph::renderer::*;
 use crate::graph::settings;
@@ -315,21 +316,47 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     // While the context menu is open, a left click either picks an item or
     // dismisses the menu (anything that isn't the menu closes it).
     if context_node.is_some() && rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
-        let menu_w = 140;
-        let item_h = 30;
         let (mx, my) = *context_pos;
+
+        // Compute which items are visible (mirrors the renderer logic)
+        let node_name = context_node
+            .and_then(|i| nodes.get(i))
+            .map(|n| n.name.clone())
+            .unwrap_or_default();
+        let subgraph_exists = filesystem::is_dir(&dir_path.join(&node_name));
+        let show_create = !subgraph_exists;
+        let show_open = subgraph_exists;
+
+        // Row 0: Rename (always present)
         let clicked_rename = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + menu_w
+            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
             && screen_mouse.y as i32 >= my
-            && screen_mouse.y as i32 <= my + item_h;
+            && screen_mouse.y as i32 <= my + config::CONTEXT_MENU_ITEM_H;
+
+        // Row 1: Delete (always present)
+        let y_delete = my + config::CONTEXT_MENU_ITEM_H;
         let clicked_delete = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + menu_w
-            && screen_mouse.y as i32 >= my + item_h
-            && screen_mouse.y as i32 <= my + 2 * item_h;
+            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.y as i32 >= y_delete
+            && screen_mouse.y as i32 <= y_delete + config::CONTEXT_MENU_ITEM_H;
+
+        // Row 2 (conditional): Create Sub-Graph
+        let y_subgraph = y_delete + config::CONTEXT_MENU_ITEM_H;
+        let clicked_create = show_create
+            && screen_mouse.x as i32 >= mx
+            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.y as i32 >= y_subgraph
+            && screen_mouse.y as i32 <= y_subgraph + config::CONTEXT_MENU_ITEM_H;
+
+        // Row 2/3 (conditional): Open Sub-Graph
+        let y_open = if show_create { y_subgraph + config::CONTEXT_MENU_ITEM_H } else { y_subgraph };
+        let clicked_open = show_open
+            && screen_mouse.x as i32 >= mx
+            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.y as i32 >= y_open
+            && screen_mouse.y as i32 <= y_open + config::CONTEXT_MENU_ITEM_H;
 
         if clicked_rename {
-            // Start rename prompt pre-filled with the current stem. Keep
-            // context_node set so the prompt knows which node to rename.
             let idx = *context_node;
             if let Some(idx) = idx {
                 if let Some(node) = nodes.get(idx) {
@@ -344,6 +371,63 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 *delete_pending = true;
             }
             *context_node = None;
+            return;
+        } else if clicked_create {
+            // Create the sub-graph folder, then navigate into it immediately.
+            let idx = *context_node;
+            *context_node = None;
+            if let Some(idx) = idx {
+                let name = nodes.get(idx).map(|n| n.name.clone()).unwrap_or_default();
+                drop(nodes);
+                drop(dragging_node);
+                drop(hover_node);
+                drop(selected_node);
+                drop(delete_pending);
+                drop(editing_node);
+                drop(adding_note);
+                drop(adding_name);
+                drop(context_node);
+                drop(context_pos);
+                drop(renaming);
+                drop(rename_name);
+                drop(dir_path);
+                if !name.is_empty() {
+                    let dir = DIR_PATH.read().unwrap().clone();
+                    filesystem::create_dir(&dir.join(&name));
+                    drop(dir);
+                    navigate_into(&name);
+                    // Regenerate nodes/edges (also resets camera + zoom).
+                    generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+                }
+                return;
+            }
+            return;
+        } else if clicked_open {
+            // Navigate into the sub-graph folder immediately.
+            let idx = *context_node;
+            *context_node = None;
+            if let Some(idx) = idx {
+                let name = nodes.get(idx).map(|n| n.name.clone()).unwrap_or_default();
+                drop(nodes);
+                drop(dragging_node);
+                drop(hover_node);
+                drop(selected_node);
+                drop(delete_pending);
+                drop(editing_node);
+                drop(adding_note);
+                drop(adding_name);
+                drop(context_node);
+                drop(context_pos);
+                drop(renaming);
+                drop(rename_name);
+                drop(dir_path);
+                if !name.is_empty() {
+                    navigate_into(&name);
+                    // Regenerate nodes/edges (also resets camera + zoom).
+                    generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+                }
+                return;
+            }
             return;
         } else {
             // Click anywhere else dismisses the menu.
@@ -363,6 +447,29 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         {
             let mut open = settings::SETTINGS_OPEN.write().unwrap();
             *open = !*open;
+            return;
+        }
+
+        // Breadcrumb trail click: set by the renderer in the same frame
+        // where it draws the breadcrumb (it has text::measure access).
+        let bc_click = BREADCRUMB_CLICK.write().unwrap().take();
+        if let Some(level) = bc_click {
+            drop(nodes);
+            drop(dragging_node);
+            drop(hover_node);
+            drop(selected_node);
+            drop(delete_pending);
+            drop(editing_node);
+            drop(adding_note);
+            drop(adding_name);
+            drop(context_node);
+            drop(context_pos);
+            drop(renaming);
+            drop(rename_name);
+            drop(dir_path);
+            navigate_to_level(level);
+            // Regenerate nodes/edges (also resets camera + zoom).
+            generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
             return;
         }
 

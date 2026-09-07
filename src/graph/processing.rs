@@ -24,6 +24,14 @@ pub static CONTEXT_POS: RwLock<(i32, i32)> = RwLock::new((0, 0));
 pub static RENAMING: RwLock<bool> = RwLock::new(false);
 pub static RENAME_NAME: RwLock<String> = RwLock::new(String::new());
 
+// Sub-graph navigation: stack of previous directory paths so the breadcrumb
+// trail can jump back to any ancestor level.
+pub static NAV_STACK: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
+// Set by the renderer when a breadcrumb component is clicked; consumed once
+// by the input handler so the click logic stays in the draw frame where
+// text::measure is available.
+pub static BREADCRUMB_CLICK: RwLock<Option<usize>> = RwLock::new(None);
+
 pub struct Node {
     pub radius: f32,
     pub color: Color,
@@ -33,6 +41,7 @@ pub struct Node {
     pub file_name: String,
     pub path: PathBuf,
     pub header: Option<String>,
+    pub has_subgraph: bool,
 }
 
 pub struct Edge {
@@ -65,6 +74,7 @@ pub fn generate_nodes_from_directory(dir: &Path) {
             file_name,
             path: file.clone(),
             header: None,
+            has_subgraph: filesystem::is_dir(&filesystem::subgraph_dir(file)),
         });
     }
 
@@ -72,12 +82,44 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     drop(edges);
     rebuild_edges();
 
+    // The whole node set was rebuilt, so any index into the previous set is
+    // stale. Clear selection/drag/context state to avoid pointing at the
+    // wrong node (the delete prompt in particular indexes nodes[idx]).
+    *SELECTED_NODE.write().unwrap() = None;
+    *EDITING_NODE.write().unwrap() = None;
+    *DRAGGING_NODE.write().unwrap() = None;
+    *HOVER_NODE.write().unwrap() = None;
+    *DELETE_PENDING.write().unwrap() = false;
+    *CONTEXT_NODE.write().unwrap() = None;
+
     // Zoom the initial view out as more nodes appear so the whole graph fits
     // on screen. Fewer nodes allow a closer, larger view.
     let node_count = NODES.read().unwrap().len();
     let zoom = (1.0 / (node_count as f32).sqrt()).clamp(0.15, 1.0);
     let mut camera = crate::graph::renderer::CAMERA.write().unwrap();
     camera.zoom = zoom;
+    // Re-centre the camera so the new graph appears in the middle of the
+    // screen regardless of where the previous graph was panned.
+    camera.target = Vector2::new(WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0);
+}
+
+// Navigate into a sub-graph folder. Pushes the current directory onto the
+// navigation stack so the breadcrumb trail can later return here.
+pub fn navigate_into(subdir_name: &str) {
+    let mut stack = NAV_STACK.write().unwrap();
+    let mut dir = DIR_PATH.write().unwrap();
+    stack.push(dir.clone());
+    *dir = dir.join(subdir_name);
+}
+
+// Jump back to a specific ancestor level in the breadcrumb trail (0 = root).
+pub fn navigate_to_level(level: usize) {
+    let mut stack = NAV_STACK.write().unwrap();
+    if level < stack.len() {
+        let new_dir = stack[level].clone();
+        stack.truncate(level);
+        *DIR_PATH.write().unwrap() = new_dir;
+    }
 }
 
 // Build directed edges from [[wikilink]] references in the .md files.
@@ -108,6 +150,10 @@ pub fn rebuild_edges() {
     let mut fm_headers: Vec<Option<String>> = Vec::with_capacity(nodes.len());
     for (i, node) in nodes.iter_mut().enumerate() {
         let content = filesystem::read_file(&node.path);
+
+        // Re-check whether a companion sub-graph folder exists (rename/delete
+        // can change it) so the graph always reflects the filesystem.
+        node.has_subgraph = filesystem::is_dir(&filesystem::subgraph_dir(&node.path));
 
         // Parse frontmatter and cache the header target on the node.
         let fm = frontmatter::parse(&content);
@@ -170,6 +216,7 @@ pub fn add_node(dir: &Path, filename: &str) -> usize {
         file_name: filename,
         path: file_path,
         header: None,
+        has_subgraph: false,
     });
 
     idx
@@ -200,21 +247,46 @@ pub fn remove_node(idx: usize) {
     }
 }
 
-// Rename a note's .md file (and its node label) to `new_name`. Returns
-// false if the new name is empty or the target file already exists.
+// Rename a note's .md file (and its companion sub-graph folder, if any) and
+// its node label to `new_name`. Returns false if the new name is empty, the
+// target file exists, or (for notes with a sub-graph) the target folder
+// exists.
 pub fn rename_node(idx: usize, new_name: &str) -> bool {
     let mut nodes = NODES.write().unwrap();
     if idx >= nodes.len() {
         return false;
     }
-    let old_path = nodes[idx].path.clone();
-    if !filesystem::rename_file(&old_path, new_name) {
+    let new_stem = new_name.trim().trim_end_matches(".md").to_string();
+    if new_stem.is_empty() {
         return false;
     }
-    let new_stem = new_name.trim().trim_end_matches(".md").to_string();
+
+    let old_path = nodes[idx].path.clone();
+    let sub_folder = filesystem::subgraph_dir(&old_path);
+    let has_sub = filesystem::is_dir(&sub_folder);
+
+    // A note with a sub-graph needs the destination folder free too; bail
+    // before touching the file so the note survives a conflicting name.
+    if has_sub && sub_folder.with_file_name(&new_stem).exists() {
+        return false;
+    }
+
+    if !filesystem::rename_file(&old_path, &new_stem) {
+        return false;
+    }
+
+    // Rename the companion sub-graph folder. If this somehow fails, roll the
+    // file rename back so the pair stays consistent.
+    if has_sub && !filesystem::rename_dir(&sub_folder, &new_stem) {
+        let old_stem = old_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        filesystem::rename_file(&old_path.with_file_name(format!("{}.md", new_stem)), &old_stem);
+        return false;
+    }
+
     nodes[idx].file_name = format!("{}.md", new_stem);
     nodes[idx].name = new_stem;
     nodes[idx].path = old_path.with_file_name(nodes[idx].file_name.clone());
+    nodes[idx].has_subgraph = has_sub;
     drop(nodes);
     rebuild_edges();
     true
@@ -270,5 +342,44 @@ pub fn update_forces(rl: &mut RaylibHandle) {
         }
         node.velocity = (node.velocity + forces[i] * delta_time) * damping;
         node.position += node.velocity * delta_time;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These tests drive the same process-global NAV_STACK/DIR_PATH statics, so
+    // cargo's parallel test threads would stomp on each other. Serialize them.
+    static TEST_NAV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn navigate_into_pushes_and_changes_dir() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        NAV_STACK.write().unwrap().clear();
+        *DIR_PATH.write().unwrap() = PathBuf::from("/root");
+
+        navigate_into("my-note");
+
+        assert_eq!(*DIR_PATH.read().unwrap(), PathBuf::from("/root/my-note"));
+        assert_eq!(*NAV_STACK.read().unwrap(), vec![PathBuf::from("/root")]);
+    }
+
+    #[test]
+    fn navigate_to_level_truncates_stack() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        NAV_STACK.write().unwrap().clear();
+        *DIR_PATH.write().unwrap() = PathBuf::from("/root");
+        navigate_into("a");
+        navigate_into("b");
+        navigate_into("c");
+
+        navigate_to_level(1);
+        assert_eq!(*DIR_PATH.read().unwrap(), PathBuf::from("/root/a"));
+        assert_eq!(*NAV_STACK.read().unwrap(), vec![PathBuf::from("/root")]);
+
+        // Out of range level is a no-op
+        navigate_to_level(5);
+        assert_eq!(*DIR_PATH.read().unwrap(), PathBuf::from("/root/a"));
     }
 }

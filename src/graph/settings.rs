@@ -2,10 +2,11 @@ use crate::config;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
-// Settings button (screen space, top-left of the graph view).
+// Settings button (screen space, top-right of the graph view). Top-left is
+// taken by the breadcrumb trail, so it lives in the opposite corner.
 pub const SETTINGS_BUTTON_W: i32 = 96;
 pub const SETTINGS_BUTTON_H: i32 = 32;
-pub const SETTINGS_BUTTON_X: i32 = 10;
+pub const SETTINGS_BUTTON_X: i32 = config::WIDTH - SETTINGS_BUTTON_W - 10;
 pub const SETTINGS_BUTTON_Y: i32 = 10;
 
 // Settings dialog / font picker geometry.

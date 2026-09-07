@@ -35,6 +35,39 @@ pub fn delete_file(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+pub fn create_dir(path: &Path) {
+    let _ = fs::create_dir_all(path);
+}
+
+pub fn is_dir(path: &Path) -> bool {
+    path.is_dir()
+}
+
+// The companion sub-graph folder for a note: same directory, same stem,
+// no extension. `note.md` owns the nested graph in `note/`.
+pub fn subgraph_dir(note_path: &Path) -> PathBuf {
+    let stem = note_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    note_path.parent().unwrap_or(Path::new(".")).join(stem)
+}
+
+pub fn rename_dir(old: &Path, new_name: &str) -> bool {
+    let new_name = new_name.trim();
+    if new_name.is_empty() {
+        return false;
+    }
+    if let Some(dir) = old.parent() {
+        let new_path = dir.join(new_name);
+        if new_path.exists() {
+            return false;
+        }
+        return fs::rename(old, &new_path).is_ok();
+    }
+    false
+}
+
 pub fn rename_file(old: &Path, new_stem: &str) -> bool {
     let new_stem = new_stem.trim();
     if new_stem.is_empty() {
@@ -136,5 +169,55 @@ mod tests {
         assert_eq!(parse_links("no [[links here"), Vec::<String>::new());
         assert_eq!(parse_links("[single] and plain text"), Vec::<String>::new());
         assert_eq!(parse_links("empty [[]]"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn creates_and_detects_directories() {
+        let dir = std::env::temp_dir().join("rg_is_dir_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!is_dir(&dir));
+        create_dir(&dir);
+        assert!(is_dir(&dir));
+        // A nested path also counts as a directory once created.
+        let child = dir.join("sub");
+        create_dir(&child);
+        assert!(is_dir(&child));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn subgraph_dir_names_folder_after_note_stem() {
+        let dir = std::env::temp_dir().join("rg_subgraph_dir_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        create_dir(&dir);
+
+        let note = dir.join("alpha.md");
+        assert_eq!(subgraph_dir(&note), dir.join("alpha"));
+
+        // Creating that companion folder makes the note "have" a sub-graph.
+        create_dir(&dir.join("alpha"));
+        assert!(is_dir(&subgraph_dir(&note)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn renames_directories_same_folder() {
+        let dir = std::env::temp_dir().join("rg_rename_dir_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        create_dir(&dir);
+        create_dir(&dir.join("old"));
+
+        assert!(rename_dir(&dir.join("old"), "new"));
+        assert!(is_dir(&dir.join("new")));
+        assert!(!dir.join("old").exists());
+
+        // Rejects empty names.
+        assert!(!rename_dir(&dir.join("new"), "  "));
+        // Rejects colliding with an existing folder.
+        create_dir(&dir.join("other"));
+        assert!(!rename_dir(&dir.join("new"), "other"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

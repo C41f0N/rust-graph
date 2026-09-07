@@ -42,3 +42,12 @@ pub const AUTOCOMPLETE_MAX_VISIBLE: usize = 8;
 pub const AUTOCOMPLETE_ITEM_HEIGHT: i32 = 18;
 pub const AUTOCOMPLETE_BG: Color = Color::new(20, 20, 20, 235);
 pub const AUTOCOMPLETE_SELECTED_BG: Color = Color::new(76, 128, 204, 160);
+
+// Context menu
+pub const CONTEXT_MENU_W: i32 = 180;
+pub const CONTEXT_MENU_ITEM_H: i32 = 30;
+pub const CONTEXT_MENU_SEP_COLOR: Color = Color::new(60, 60, 60, 255);
+
+// Breadcrumb trail
+pub const BREADCRUMB_Y: i32 = 10;
+pub const BREADCRUMB_PAD: i32 = 8;

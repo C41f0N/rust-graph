@@ -1,8 +1,10 @@
 use std::sync::RwLock;
 
+use crate::config;
 use crate::config::HEIGHT;
 use crate::config::WIDTH;
 use crate::editor::text;
+use crate::filesystem;
 use crate::graph::processing::*;
 use crate::graph::settings;
 use raylib::prelude::*;
@@ -36,7 +38,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     for edge in edges.iter() {
         let n1 = &nodes[edge.n1];
         let n2 = &nodes[edge.n2];
-        mode.draw_line_ex(n1.position, n2.position, 2., Color::LIGHTGRAY);
+        mode.draw_line_ex(n1.position, n2.position, 2., Color::new(110, 110, 110, 255));
     }
 
     for (i, node) in nodes.iter().enumerate() {
@@ -44,27 +46,30 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let is_hover = *hover_node == Some(i);
         let is_selected = *selected_node == Some(i);
 
-        let mut node_color = node.color;
-        if is_hover {
-            node_color = Color::LIGHTPINK;
-        }
-
         let draw_radius = if is_dragging {
             node.radius * 1.5
         } else {
             node.radius
         };
 
-        mode.draw_circle_v(node.position, draw_radius, node_color);
+        // State discs are filled and drawn BEHIND the node body: the node
+        // covers their centre, so only the margin reads as a ring around it.
+        // Drawn largest-first so a smaller disc never overlaps a bigger one.
 
-        // Draw selection ring
+        // Selection: broad white halo (the strongest emphasis, still B/W).
         if is_selected {
-            mode.draw_circle_lines_v(
-                node.position,
-                draw_radius + 3.0,
-                Color::YELLOW,
-            );
+            mode.draw_circle_v(node.position, draw_radius + 4.0, Color::WHITE);
         }
+        // Sub-graph: dim gray disc, subtler than selection.
+        if node.has_subgraph {
+            mode.draw_circle_v(node.position, draw_radius + 2.5, Color::new(160, 160, 160, 200));
+        }
+        // Hover: faint near-invisible halo so it reads as "active" only.
+        if is_hover {
+            mode.draw_circle_v(node.position, draw_radius + 1.5, Color::new(255, 255, 255, 90));
+        }
+
+        mode.draw_circle_v(node.position, draw_radius, node.color);
 
         let text_w = text::measure(&mode, &node.name, 5);
 
@@ -118,49 +123,87 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     let renaming = *crate::graph::processing::RENAMING.read().unwrap();
     if context_node.is_some() && !renaming {
         let (mx, my) = *crate::graph::processing::CONTEXT_POS.read().unwrap();
-        let menu_w = 140;
-        let item_h = 30;
         let screen_mouse = d.get_mouse_position();
 
-        // Bar
+        // Determine sub-graph availability for this node
+        let node_name = context_node
+            .and_then(|i| nodes.get(i))
+            .map(|n| n.name.clone())
+            .unwrap_or_default();
+        let dir = crate::graph::processing::DIR_PATH.read().unwrap();
+        let subgraph_exists = filesystem::is_dir(&dir.join(&node_name));
+        drop(dir);
+
+        let show_create = !subgraph_exists;
+        let show_open = subgraph_exists;
+
+        // Compute menu height: Rename + Delete always present, plus one
+        // of the sub-graph items when applicable.
+        let mut item_count = 2i32;
+        if show_create { item_count += 1; }
+        if show_open { item_count += 1; }
+        let menu_h = item_count * config::CONTEXT_MENU_ITEM_H;
+
+        // Background
+        d.draw_rectangle(mx, my, config::CONTEXT_MENU_W, menu_h, Color::new(20, 20, 20, 235));
+
+        // --- Row 0: Rename ---
         let hover_rename = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + menu_w
+            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
             && screen_mouse.y as i32 >= my
-            && screen_mouse.y as i32 <= my + item_h;
-        let hover_delete = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + menu_w
-            && screen_mouse.y as i32 >= my + item_h
-            && screen_mouse.y as i32 <= my + 2 * item_h;
-
-        d.draw_rectangle(mx, my, menu_w, 2 * item_h, Color::new(20, 20, 20, 235));
-
+            && screen_mouse.y as i32 <= my + config::CONTEXT_MENU_ITEM_H;
         d.draw_rectangle(
-            mx,
-            my,
-            menu_w,
-            item_h,
-            if hover_rename {
-                Color::new(76, 128, 204, 160)
-            } else {
-                Color::new(0, 0, 0, 0)
-            },
+            mx, my, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+            if hover_rename { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
         );
         text::draw(d, "Rename", mx + 10, my + 6, 18, Color::WHITE);
 
-        d.draw_rectangle(
-            mx,
-            my + item_h,
-            menu_w,
-            item_h,
-            if hover_delete {
-                Color::new(200, 60, 60, 160)
-            } else {
-                Color::new(0, 0, 0, 0)
-            },
-        );
-        text::draw(d, "Delete", mx + 10, my + item_h + 6, 18, Color::WHITE);
+        let mut y_off = config::CONTEXT_MENU_ITEM_H;
+        d.draw_line(mx, my + y_off, mx + config::CONTEXT_MENU_W, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
 
-        d.draw_line(mx, my + item_h, mx + menu_w, my + item_h, Color::new(60, 60, 60, 255));
+        // --- Row 1: Delete ---
+        let hover_delete = screen_mouse.x as i32 >= mx
+            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.y as i32 >= my + y_off
+            && screen_mouse.y as i32 <= my + y_off + config::CONTEXT_MENU_ITEM_H;
+        d.draw_rectangle(
+            mx, my + y_off, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+            if hover_delete { Color::new(200, 60, 60, 160) } else { Color::new(0, 0, 0, 0) },
+        );
+        text::draw(d, "Delete", mx + 10, my + y_off + 6, 18, Color::WHITE);
+        y_off += config::CONTEXT_MENU_ITEM_H;
+
+        // Separator before sub-graph items (only when at least one is shown)
+        if show_create || show_open {
+            d.draw_line(mx, my + y_off, mx + config::CONTEXT_MENU_W, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
+        }
+
+        // --- Row 2 (conditional): Create Sub-Graph ---
+        if show_create {
+            let hover_create = screen_mouse.x as i32 >= mx
+                && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+                && screen_mouse.y as i32 >= my + y_off
+                && screen_mouse.y as i32 <= my + y_off + config::CONTEXT_MENU_ITEM_H;
+            d.draw_rectangle(
+                mx, my + y_off, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+                if hover_create { Color::new(76, 180, 120, 160) } else { Color::new(0, 0, 0, 0) },
+            );
+            text::draw(d, "Create Sub-Graph", mx + 10, my + y_off + 6, 18, Color::WHITE);
+            y_off += config::CONTEXT_MENU_ITEM_H;
+        }
+
+        // --- Row 2/3 (conditional): Open Sub-Graph ---
+        if show_open {
+            let hover_open = screen_mouse.x as i32 >= mx
+                && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+                && screen_mouse.y as i32 >= my + y_off
+                && screen_mouse.y as i32 <= my + y_off + config::CONTEXT_MENU_ITEM_H;
+            d.draw_rectangle(
+                mx, my + y_off, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+                if hover_open { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
+            );
+            text::draw(d, "Open Sub-Graph", mx + 10, my + y_off + 6, 18, Color::WHITE);
+        }
     }
 
     // Rename-note name prompt (screen space)
@@ -178,6 +221,75 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let name_width = text::measure(d, &rename_name, 20);
         let cursor_x = x + 10 + label_width + name_width;
         d.draw_rectangle(cursor_x, y + 5, 2, 20, Color::WHITE);
+    }
+
+    // Breadcrumb trail (only when inside a sub-graph)
+    let nav_stack = crate::graph::processing::NAV_STACK.read().unwrap();
+    if !nav_stack.is_empty() {
+        let dir = crate::graph::processing::DIR_PATH.read().unwrap();
+        let screen_mouse = d.get_mouse_position();
+        let settings_open = *crate::graph::settings::SETTINGS_OPEN.read().unwrap();
+
+        // Build path components with one entry per level: the root directory
+        // (level 0) uses its own folder name rather than a separate "Root"
+        // label, so the root doesn't appear twice when it also carries a name.
+        let mut components: Vec<String> = Vec::new();
+        if let Some(root) = nav_stack.first() {
+            let label = root
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Root".to_string());
+            components.push(label);
+        } else {
+            components.push("Root".to_string());
+        }
+        // Intermediate levels: folders the stack pushed between root and now.
+        for p in nav_stack.iter().skip(1) {
+            if let Some(name) = p.file_name() {
+                components.push(name.to_string_lossy().to_string());
+            }
+        }
+        // Current folder.
+        if let Some(name) = dir.file_name() {
+            components.push(name.to_string_lossy().to_string());
+        }
+        drop(dir);
+
+        let mut x = config::BREADCRUMB_PAD;
+        let text_color = Color::new(200, 200, 200, 220);
+        let total = components.len();
+
+        for (level, comp) in components.iter().enumerate() {
+            let label = if level == 0 { comp.clone() } else { format!("/{}", comp) };
+            let w = text::measure(d, &label, 16);
+            let is_current = level == total - 1;
+
+            if !is_current {
+                let hover = screen_mouse.x as i32 >= x
+                    && screen_mouse.x as i32 <= x + w
+                    && screen_mouse.y as i32 >= config::BREADCRUMB_Y
+                    && screen_mouse.y as i32 <= config::BREADCRUMB_Y + 20;
+                let color = if hover { Color::SKYBLUE } else { text_color };
+                text::draw(d, &label, x, config::BREADCRUMB_Y, 16, color);
+
+                // Detect click and store the level for the input handler.
+                // Only when no menu/modal is active, so the value can't be
+                // left stale by an input path that returns early.
+                if context_node.is_none()
+                    && !renaming
+                    && !adding_note
+                    && !settings_open
+                    && hover
+                    && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+                {
+                    *crate::graph::processing::BREADCRUMB_CLICK.write().unwrap() = Some(level);
+                }
+            } else {
+                text::draw(d, &label, x, config::BREADCRUMB_Y, 16, Color::WHITE);
+            }
+
+            x += w;
+        }
     }
 
     // Settings button (screen space, top-left)
