@@ -139,7 +139,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             &mut mode,
             &node.name,
             node.position.x - text_w / 2.0,
-            node.position.y + node.radius + 5.0,
+            node.position.y + node.radius + 6.0,
             5,
             Color::WHITE.alpha(((camera.zoom - 2.0) / 0.5).clamp(0.0, 1.0)),
         );
@@ -284,7 +284,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             y_off += config::CONTEXT_MENU_ITEM_H;
         }
 
-        // --- Row (last): Set Header Image ---
+        // --- Row (last): Set Header ---
         d.draw_line(mx, my + y_off, mx + config::CONTEXT_MENU_W, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
         let hover_header = screen_mouse.x as i32 >= mx
             && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
@@ -294,7 +294,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             mx, my + y_off, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
             if hover_header { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
         );
-        text::draw(d, "Set Header Image", mx + 10, my + y_off + 6, 18, Color::WHITE);
+        text::draw(d, "Set Header", mx + 10, my + y_off + 6, 18, Color::WHITE);
         }
     }
 

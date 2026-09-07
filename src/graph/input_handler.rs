@@ -446,7 +446,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             && screen_mouse.y as i32 >= y_open
             && screen_mouse.y as i32 <= y_open + config::CONTEXT_MENU_ITEM_H;
 
-        // Row (last): Set Header Image (always at 3*ITEM_H; exactly one of the
+        // Row (last): Set Header (always at 3*ITEM_H; exactly one of the
         // create/open sub-graph rows is shown, so the layout is fixed).
         let y_header = my + 3 * config::CONTEXT_MENU_ITEM_H;
         let clicked_header = screen_mouse.x as i32 >= mx

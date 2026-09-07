@@ -7,6 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::RwLock;
 
+// Base node disc radius (world units). Large enough that nodes read clearly at
+// the default zoom, yet below the spring rest length so force-laid-out graphs
+// don't overlap.
+pub const NODE_BASE_RADIUS: f32 = 7.0;
+pub const NODE_MAX_RADIUS: f32 = 15.0;
+// Radius growth per child: BASE + GROWTH*sqrt(children). Sub-linear on
+// purpose, so node size still signals hub-ness without exploding linearly.
+pub const NODE_RADIUS_GROWTH: f32 = 2.0;
+
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static HOVER_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static NODES: RwLock<Vec<Node>> = RwLock::new(Vec::<Node>::new());
@@ -78,7 +87,7 @@ pub fn generate_nodes_from_directory(dir: &Path) {
         let name = file_name.trim_end_matches(".md").to_string();
 
         nodes.push(Node {
-            radius: 5.0,
+            radius: NODE_BASE_RADIUS,
             color: Color::WHITE,
             position: Vector2::new(
                 rng.random_range((WIDTH as f32 / 2. - 100.)..(WIDTH as f32 / 2. + 100.)),
@@ -108,10 +117,12 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     *CONTEXT_NODE.write().unwrap() = None;
     *CONTEXT_EMPTY.write().unwrap() = false;
 
-    // Zoom the initial view out as more nodes appear so the whole graph fits
-    // on screen. Fewer nodes allow a closer, larger view.
+    // Frame the freshly-laid-out graph at a comfortable default zoom. Fewer
+    // nodes allow a closer view; the baseline (the max) keeps small graphs from
+    // looking like a tiny speck in the middle of the screen. Node discs are
+    // NODE_BASE_RADIUS, so zoom scales them to readable on-screen sizes.
     let node_count = NODES.read().unwrap().len();
-    let zoom = (1.0 / (node_count as f32).sqrt()).clamp(0.15, 1.0);
+    let zoom = (2.2_f32 / (node_count as f32).sqrt()).clamp(0.3, 2.2);
     let mut camera = crate::graph::renderer::CAMERA.write().unwrap();
     camera.zoom = zoom;
     // Re-centre the camera so the new graph appears in the middle of the
@@ -245,14 +256,18 @@ pub fn rebuild_edges() {
     }
 
     // Size each node by how many children it has: a hub with more outgoing
-    // edges grows so the hierarchy reads at a glance. Re-run on every edge
-    // rebuild so add/remove/rename/navigation all keep sizes current.
+    // edges grows so the hierarchy reads at a glance. The growth is
+    // sub-linear (sqrt of the child count) so hubs still stand out but
+    // diminishing returns stop a 20-child note from dominating the graph.
+    // Re-run on every edge rebuild so add/remove/rename/navigation all keep
+    // sizes current.
     let mut child_counts = vec![0u32; nodes.len()];
     for edge in edges.iter() {
         child_counts[edge.n1] += 1;
     }
     for (node, &count) in nodes.iter_mut().zip(&child_counts) {
-        node.radius = (5.0 + count as f32 * 1.5).min(16.0);
+        node.radius =
+            (NODE_BASE_RADIUS + NODE_RADIUS_GROWTH * (count as f32).sqrt()).min(NODE_MAX_RADIUS);
     }
 }
 
@@ -272,7 +287,7 @@ pub fn add_node(dir: &Path, filename: &str) -> usize {
 
     let idx = nodes.len();
     nodes.push(Node {
-        radius: 5.0,
+        radius: NODE_BASE_RADIUS,
         color: Color::WHITE,
         position: Vector2::new(
             rng.random_range((WIDTH as f32 / 2. - 50.)..(WIDTH as f32 / 2. + 50.)),
@@ -383,7 +398,9 @@ pub fn update_forces(rl: &mut RaylibHandle) {
 
     let repulsion_k = 25000.0_f32;
     let spring_k = 0.90;
-    let rest_length = 20.0_f32;
+    // Rest length exceeds two node radii so connected nodes don't overlap once
+    // the layout settles (nodes are NODE_BASE_RADIUS ~ 15).
+    let rest_length = 60.0_f32;
     let damping = 0.95;
     let mut forces = vec![Vector2::zero(); nodes.len()];
 

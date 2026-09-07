@@ -12,6 +12,20 @@ unsafe impl Sync for FontSlot {}
 
 static ACTIVE_FONT: FontSlot = FontSlot(RwLock::new(Vec::new()));
 
+// raylib's built-in font, captured once at startup. Like the atlases above it
+// is not Send/Sync (it references the GL context), modelled the same way.
+struct DefaultFontSlot(RwLock<Option<WeakFont>>);
+unsafe impl Send for DefaultFontSlot {}
+unsafe impl Sync for DefaultFontSlot {}
+
+static DEFAULT_FONT: DefaultFontSlot = DefaultFontSlot(RwLock::new(None));
+
+// Record the built-in font (from rl.get_font_default()) so text can be drawn
+// at subpixel positions even when no custom atlas is active.
+pub fn capture_default_font(font: WeakFont) {
+    *DEFAULT_FONT.0.write().unwrap() = Some(font);
+}
+
 // One glyph atlas per size class actually drawn in the app. A single atlas
 // rasterized at one size and scaled to the rest turns out blurry/pixelated
 // (the editor body is 20px but markdown headings go up to 70px). Rasterizing
@@ -119,10 +133,21 @@ pub fn measure_f<D>(_d: &D, text: &str, font_size: i32) -> f32 {
     let slot = ACTIVE_FONT.0.read().unwrap();
     match slot.get(nearest_size_index(font_size)).and_then(|f| f.as_ref()) {
         Some(font) => font.measure_text(text, font_size as f32, 0.0).x,
-        None => {
-            let c_text = CString::new(text).unwrap();
-            unsafe { raylib::ffi::MeasureText(c_text.as_ptr(), font_size) as f32 }
-        }
+        None => match DEFAULT_FONT.0.read().unwrap().as_ref() {
+            Some(font) => {
+                let c_text = CString::new(text).unwrap();
+                // SAFETY: `font` is raylib's built-in font, valid for the
+                // program's whole lifetime.
+                unsafe {
+                    raylib::ffi::MeasureTextEx(*font.as_ref(), c_text.as_ptr(), font_size as f32, 0.0)
+                        .x
+                }
+            }
+            None => {
+                let c_text = CString::new(text).unwrap();
+                unsafe { raylib::ffi::MeasureText(c_text.as_ptr(), font_size) as f32 }
+            }
+        },
     }
 }
 
@@ -160,6 +185,12 @@ pub fn draw_f(
             0.0,
             color,
         ),
-        None => d.draw_text(text, x.round() as i32, y.round() as i32, font_size, color),
+        // No custom atlas: draw with the captured built-in font at subpixel
+        // positions rather than raylib's integer draw_text, which would snap
+        // the label to the pixel grid and strobe against moving nodes.
+        None => match DEFAULT_FONT.0.read().unwrap().as_ref() {
+            Some(font) => d.draw_text_ex(font, text, Vector2::new(x, y), font_size as f32, 0.0, color),
+            None => d.draw_text(text, x.round() as i32, y.round() as i32, font_size, color),
+        },
     }
 }

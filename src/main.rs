@@ -42,6 +42,10 @@ fn main() {
 
     rl.set_target_fps(60);
 
+    // Capture raylib's built-in font so node labels can be drawn at subpixel
+    // positions even before the user picks a custom font in the settings.
+    editor::text::capture_default_font(rl.get_font_default());
+
     // Store the directory and generate nodes from it
     *DIR_PATH.write().unwrap() = dir_path.clone();
     generate_nodes_from_directory(&dir_path);
@@ -103,7 +107,7 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
     if !HEADER_PICK_ACTIVE.swap(true, std::sync::atomic::Ordering::SeqCst) {
         std::thread::spawn(move || {
             let chosen = rfd::FileDialog::new()
-                .set_title("Select header image")
+                .set_title("Select header file")
                 .add_filter(
                     "Images",
                     &["png", "jpg", "jpeg", "gif", "bmp", "tga", "ico"],
