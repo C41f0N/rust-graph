@@ -3,6 +3,16 @@ use raylib::prelude::*;
 pub const HEIGHT: i32 = 1080 * 3 / 4;
 pub const WIDTH: i32 = 1920 * 3 / 4;
 
+// The editor panel is a centered rectangle covering this fraction of the
+// screen. Shared so the graph input handler can tell "click on/off editor".
+pub const EDITOR_PANEL_FRACTION: f32 = 0.8;
+
+pub fn editor_panel_bounds() -> (i32, i32, i32, i32) {
+    let w = (WIDTH as f32 * EDITOR_PANEL_FRACTION) as i32;
+    let h = (HEIGHT as f32 * EDITOR_PANEL_FRACTION) as i32;
+    ((WIDTH - w) / 2, (HEIGHT - h) / 2, w, h)
+}
+
 pub const EDITOR_FONT_SIZE: i32 = 20;
 pub const EDITOR_HEADING_SIZE: [i32; 6] = [70, 52, 42, 33, 25, 21];
 pub const EDITOR_PADDING: i32 = 12;

@@ -23,6 +23,16 @@ pub static CURSOR_Y: RwLock<i32> = RwLock::new(0);
 pub static ANCHOR_X: RwLock<i32> = RwLock::new(0);
 pub static ANCHOR_Y: RwLock<i32> = RwLock::new(0);
 
+// Vertical scroll offset (pixels) of the editor content viewport. Clamped by
+// the renderer each frame to the actual content height, so the input handler
+// can nudge it freely (e.g. mouse wheel).
+pub static SCROLL_Y: RwLock<i32> = RwLock::new(0);
+
+// Position of the cursor as of the last rendered frame. The renderer only
+// auto-follows the cursor when it has moved since the previous frame, so a
+// wheel scroll (which leaves the cursor put) does not yank the view back.
+pub static LAST_CURSOR: RwLock<(i32, i32)> = RwLock::new((0, 0));
+
 pub fn selection_range(ax: i32, ay: i32, cx: i32, cy: i32) -> Option<(usize, usize, usize, usize)> {
     if ax == cx && ay == cy {
         return None;
@@ -260,6 +270,9 @@ pub fn load_from_file(path: &Path) {
     let mut anchor_y = ANCHOR_Y.write().unwrap();
 
     buffer.clear();
+    // Force a follow on the first rendered frame after opening: the cursor is
+    // about to move to the end of the (possibly new) file.
+    *LAST_CURSOR.write().unwrap() = (i32::MIN, i32::MIN);
     if content.is_empty() {
         buffer.push(String::new());
     } else {

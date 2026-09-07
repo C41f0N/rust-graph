@@ -27,7 +27,10 @@ fn main() {
     }
 
     let mut editor_open = false;
-    let editor_dimentions = Vector2::new(0.8, 0.8);
+    let editor_dimentions = Vector2::new(
+        config::EDITOR_PANEL_FRACTION,
+        config::EDITOR_PANEL_FRACTION,
+    );
 
     // 1. Initialize the Raylib window and context
     let (mut rl, thread) = raylib::init()

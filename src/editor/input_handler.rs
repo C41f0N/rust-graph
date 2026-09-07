@@ -1,5 +1,6 @@
 use raylib::prelude::*;
 
+use crate::config;
 use crate::editor::autocomplete;
 use crate::editor::buffer;
 
@@ -86,6 +87,18 @@ pub fn handle_input(rl: &mut RaylibHandle) {
 
     // Compute selection state once
     let sel = buffer::selection_range(*anchor_x, *anchor_y, *cursor_x, *cursor_y);
+
+    // Mouse wheel scrolls the content viewport. The renderer clamps the
+    // offset to the real content height each frame, so we just nudge it.
+    let wheel = rl.get_mouse_wheel_move();
+    if wheel != 0.0 {
+        let step = config::EDITOR_FONT_SIZE as f32 * 3.0;
+        let mut scroll = buffer::SCROLL_Y.write().unwrap();
+        let delta = (wheel * step) as i32;
+        if delta != 0 {
+            *scroll -= delta;
+        }
+    }
 
     // ------------------------------------------------------------
     // Ctrl + C = copy

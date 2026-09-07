@@ -1,3 +1,4 @@
+use crate::config;
 use crate::graph::processing::*;
 use crate::graph::renderer::*;
 use crate::graph::settings;
@@ -28,6 +29,30 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     let mouse_pos = rl.get_screen_to_world2D(rl.get_mouse_position(), *camera);
 
     drop(camera);
+
+    // ------------------------------------------------------------
+    // While the editor is open the graph is inert: the editor owns all
+    // keyboard, wheel and click input, so nothing behind it can be selected,
+    // dragged or toggled. The one exception is a left click OUTSIDE the
+    // editor panel, which dismisses the editor (main.rs saves the buffer on
+    // the resulting open->closed transition). Clicks inside the panel are
+    // for the editor and never reach the graph.
+    // ------------------------------------------------------------
+
+    if *editor_open {
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            let (ex, ey, ew, eh) = config::editor_panel_bounds();
+            let m = rl.get_mouse_position();
+            let inside = m.x as i32 >= ex
+                && m.x as i32 <= ex + ew
+                && m.y as i32 >= ey
+                && m.y as i32 <= ey + eh;
+            if !inside {
+                *editor_open = false;
+            }
+        }
+        return;
+    }
 
     // ------------------------------------------------------------
     // Rename-note name prompt mode
@@ -401,8 +426,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
     let mut camera = CAMERA.write().unwrap();
 
-    // Zoom
-    if wheel != 0.0 {
+    // Zoom (suppressed while the editor is open: the wheel belongs to the
+    // editor's scrollview then).
+    if wheel != 0.0 && !*editor_open {
         camera.zoom = (camera.zoom + wheel * 0.1).clamp(0.1, 10.0);
     }
 
