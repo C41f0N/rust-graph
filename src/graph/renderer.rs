@@ -22,6 +22,34 @@ pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
     zoom: 1.0,
 });
 
+// How far (screen pixels) beyond each viewport edge content is preloaded.
+// Large enough that panning/zooming smoothly reveal already-decoded textures,
+// small enough that offscreen notes two screens away stay unloaded.
+const PRELOAD_MARGIN_PX: f32 = 150.0;
+
+// The world-space rectangle currently framed by the camera, expanded by
+// PRELOAD_MARGIN_PX (in world units) so items entering the frame are loaded a
+// frame before they become visible. world = (screen - offset) / zoom + target.
+pub fn world_view_bounds() -> Rectangle {
+    let cam = CAMERA.read().unwrap();
+    let m = PRELOAD_MARGIN_PX / cam.zoom;
+    let left = (-cam.offset.x) / cam.zoom + cam.target.x - m;
+    let top = (-cam.offset.y) / cam.zoom + cam.target.y - m;
+    let right = (WIDTH as f32 - cam.offset.x) / cam.zoom + cam.target.x + m;
+    let bottom = (HEIGHT as f32 - cam.offset.y) / cam.zoom + cam.target.y + m;
+    Rectangle::new(left, top, right - left, bottom - top)
+}
+
+// Does a disc (node) overlap the rectangle? The cheap clamp-to-rect distance
+// test covers both "center inside the rect" and "circle overlapping an edge".
+pub fn circle_intersects_rect(center: Vector2, radius: f32, rect: Rectangle) -> bool {
+    let cx = center.x.clamp(rect.x, rect.x + rect.width);
+    let cy = center.y.clamp(rect.y, rect.y + rect.height);
+    let dx = center.x - cx;
+    let dy = center.y - cy;
+    dx * dx + dy * dy <= radius * radius
+}
+
 pub fn draw(d: &mut RaylibDrawHandle) {
     let hover_node = HOVER_NODE.read().unwrap();
     let selected_node = SELECTED_NODE.read().unwrap();
@@ -85,16 +113,21 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         mode.draw_circle_v(node.position, draw_radius, node_color);
 
         // A header image (frontmatter `header:` pointing into assets/) is
-        // drawn centred inside the node circle, inset so the circle reads as
-        // a frame around it.
+        // drawn centred inside the node circle as a disc that nearly matches
+        // the node's own radius, so it reads as the node's face rather than a
+        // small icon floating in it.
         if let Some(header) = &node.header {
             if crate::editor::images::is_image_target(header) {
                 if let Some(path) = resolve_header_path(header) {
-                    if crate::editor::images::has_texture(&path) {
-                        let box_side = (draw_radius * 1.6) as i32;
-                        let x = (node.position.x - box_side as f32 / 2.0) as i32;
-                        let y = (node.position.y - box_side as f32 / 2.0) as i32;
-                        crate::editor::images::draw(&mut mode, &path, x, y, box_side, box_side);
+                    if crate::editor::images::has_thumb(&path) {
+                        let disc = (draw_radius * 1.9) as i32;
+                        crate::editor::images::draw_thumb(
+                            &mut mode,
+                            &path,
+                            node.position.x as i32,
+                            node.position.y as i32,
+                            disc,
+                        );
                     }
                 }
             }
@@ -452,5 +485,62 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             text::draw(&mut sc, &fam.name, px + 12, row_y + (settings::SETTINGS_ROW_H - 16) / 2, 16, color);
         }
         drop(sc);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn circle_rect_intersection_cases() {
+        let rect = Rectangle::new(10.0, 20.0, 100.0, 50.0);
+        // Center inside.
+        assert!(circle_intersects_rect(Vector2::new(60.0, 45.0), 5.0, rect));
+        // Overlapping an edge (center just outside).
+        assert!(circle_intersects_rect(Vector2::new(110.0, 45.0), 5.0, rect));
+        // Touching exactly.
+        assert!(circle_intersects_rect(Vector2::new(115.0, 45.0), 5.0, rect));
+        // Clear of the rect.
+        assert!(!circle_intersects_rect(Vector2::new(200.0, 45.0), 5.0, rect));
+        // Far corner miss.
+        assert!(!circle_intersects_rect(Vector2::new(-30.0, -30.0), 5.0, rect));
+        // A huge radius covers a distant rect.
+        assert!(circle_intersects_rect(Vector2::new(-40.0, -40.0), 500.0, rect));
+    }
+
+    #[test]
+    fn world_bounds_follow_camera() {
+        let w = crate::config::WIDTH as f32;
+        let h = crate::config::HEIGHT as f32;
+
+        // Zoom 1, centered: the whole window centered on the origin, expanded
+        // by the preload margin on every side.
+        *CAMERA.write().unwrap() = Camera2D {
+            target: Vector2::new(0.0, 0.0),
+            offset: Vector2::new(w / 2.0, h / 2.0),
+            rotation: 0.0,
+            zoom: 1.0,
+        };
+        let m = PRELOAD_MARGIN_PX;
+        let b = world_view_bounds();
+        assert!((b.x - (-(w / 2.0 + m))).abs() < 0.001);
+        assert!((b.y - (-(h / 2.0 + m))).abs() < 0.001);
+        assert!((b.width - (w + 2.0 * m)).abs() < 0.001);
+        assert!((b.height - (h + 2.0 * m)).abs() < 0.001);
+
+        // Zoom 2: the pen sees half the world, and the margin shrinks too.
+        *CAMERA.write().unwrap() = Camera2D {
+            target: Vector2::new(0.0, 0.0),
+            offset: Vector2::new(w / 2.0, h / 2.0),
+            rotation: 0.0,
+            zoom: 2.0,
+        };
+        let m = PRELOAD_MARGIN_PX / 2.0;
+        let b = world_view_bounds();
+        assert!((b.x - (-(w / 4.0 + m))).abs() < 0.001);
+        assert!((b.y - (-(h / 4.0 + m))).abs() < 0.001);
+        assert!((b.width - (w / 2.0 + 2.0 * m)).abs() < 0.001);
+        assert!((b.height - (h / 2.0 + 2.0 * m)).abs() < 0.001);
     }
 }

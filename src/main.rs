@@ -106,7 +106,7 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
                 .set_title("Select header image")
                 .add_filter(
                     "Images",
-                    &["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "ico"],
+                    &["png", "jpg", "jpeg", "gif", "bmp", "tga", "ico"],
                 )
                 .pick_file();
             *HEADER_PICK_RESULT.write().unwrap() = chosen.map(|p| (idx, p));
@@ -203,32 +203,49 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
 
         editor_was_open = editor_open;
 
-        // Preload images referenced by the open note so the editor can draw
-        // whole-line [[file.png]] links as their image. Needs the raylib
-        // handle, so it happens here before drawing on the GL context thread.
+        // Preload images referenced by the note the editor is showing, but
+        // only on lines the user can actually see (the renderer records which
+        // source lines it drew last frame). A two-line margin keeps images
+        // decoded before they scroll into view. Needs the raylib handle, so it
+        // happens here before drawing on the GL context thread.
         if editor_open {
-            let buffer = editor::buffer::BUFFER.read().unwrap();
-            for line in buffer.iter() {
-                for target in filesystem::parse_links(line) {
-                    if editor::images::is_image_target(&target) {
-                        if let Some(path) = editor::images::resolve_path(&target) {
-                            editor::images::ensure_loaded(&mut rl, &thread, &path);
+            let range = *editor::buffer::DRAW_LINE_RANGE.read().unwrap();
+            let buf = editor::buffer::BUFFER.read().unwrap();
+            if let Some((start, end)) = editor::buffer::clamp_line_range(
+                range.0.saturating_sub(2),
+                range.1.saturating_add(2),
+                buf.len(),
+            ) {
+                for line in &buf[start..=end] {
+                    for target in filesystem::parse_links(line) {
+                        if editor::images::is_image_target(&target) {
+                            if let Some(path) = editor::images::resolve_path(&target) {
+                                editor::images::ensure_loaded(&mut rl, &thread, &path);
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Preload node header images (frontmatter `header:` targets) so the
-        // graph can draw them inside the node circles. Cheap: the cache
-        // short-circuits once a texture is loaded.
-        {
+        // Preload node header images (frontmatter `header:` targets) for the
+        // graph, but only for nodes inside the camera's viewport plus a small
+        // margin, so panning through a large graph never decodes offscreen
+        // images. Headers render from small circular thumbnails (persisted
+        // under assets/thumbnails/), so after the first visit this is just a
+        // cheap 256x256 PNG load; the thumbnail cache short-circuits once a
+        // texture is loaded.
+        if !editor_open {
+            let bounds = graph::renderer::world_view_bounds();
             let nodes = NODES.read().unwrap();
             for node in nodes.iter() {
+                if !graph::renderer::circle_intersects_rect(node.position, node.radius, bounds) {
+                    continue;
+                }
                 if let Some(header) = &node.header {
                     if editor::images::is_image_target(header) {
                         if let Some(path) = resolve_header_path(header) {
-                            editor::images::ensure_loaded(&mut rl, &thread, &path);
+                            editor::images::ensure_thumb_loaded(&mut rl, &thread, &path);
                         }
                     }
                 }

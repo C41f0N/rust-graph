@@ -28,6 +28,12 @@ pub static ANCHOR_Y: RwLock<i32> = RwLock::new(0);
 // can nudge it freely (e.g. mouse wheel).
 pub static SCROLL_Y: RwLock<i32> = RwLock::new(0);
 
+// Inclusive range of source-line indices that were on screen in the last
+// rendered frame, set by the editor renderer. The main loop preloads only the
+// images within this range, so scrolling through a long note does not decode
+// every image it references.
+pub static DRAW_LINE_RANGE: RwLock<(usize, usize)> = RwLock::new((0, 0));
+
 // Position of the cursor as of the last rendered frame. The renderer only
 // auto-follows the cursor when it has moved since the previous frame, so a
 // wheel scroll (which leaves the cursor put) does not yank the view back.
@@ -42,6 +48,21 @@ pub fn selection_range(ax: i32, ay: i32, cx: i32, cy: i32) -> Option<(usize, usi
     } else {
         Some((cy as usize, cx as usize, ay as usize, ax as usize))
     }
+}
+
+// Clamp an inclusive (start, end) source-line range to a buffer of `len`
+// lines. Returns None when there is nothing clamped to (empty buffer or
+// start after end).
+pub fn clamp_line_range(start: usize, end: usize, len: usize) -> Option<(usize, usize)> {
+    if len == 0 {
+        return None;
+    }
+    let start = start.min(len - 1);
+    let end = end.min(len - 1);
+    if start > end {
+        return None;
+    }
+    Some((start, end))
 }
 
 // Record that the buffer was just edited. Flags it dirty and stamps the
@@ -395,5 +416,16 @@ mod tests {
         assert_eq!(vls.len(), 1);
         assert_eq!(vls[0].line, 3);
         assert_eq!(vls[0].indent, 0);
+    }
+
+    #[test]
+    fn clamp_line_range_bounds_and_none() {
+        // In-bounds range is kept as-is.
+        assert_eq!(clamp_line_range(3, 7, 10), Some((3, 7)));
+        // The range is clamped to the buffer length.
+        assert_eq!(clamp_line_range(8, 90, 10), Some((8, 9)));
+        // Empty buffer and inverted ranges have nothing to load.
+        assert_eq!(clamp_line_range(0, 0, 0), None);
+        assert_eq!(clamp_line_range(5, 2, 10), None);
     }
 }

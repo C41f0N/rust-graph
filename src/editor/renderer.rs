@@ -207,6 +207,26 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         let max_scroll = (total_h - viewport_h).max(0);
         let mut scroll = (*buffer::SCROLL_Y.read().unwrap()).clamp(0, max_scroll);
 
+        // Record which source lines fall inside the scrolled viewport so the
+        // main loop's image preload only decodes what the user can see. The
+        // same layout data as the draw loop: a visual line is visible when its
+        // [line_y, line_y + advance) band overlaps [scroll, scroll + viewport_h).
+        {
+            let mut min_line = usize::MAX;
+            let mut max_line = 0usize;
+            let mut line_y: i32 = 0;
+            for (vi, vl) in vlines.iter().enumerate() {
+                let advance = layouts[vi].1;
+                if line_y + advance >= scroll && line_y <= scroll + viewport_h {
+                    min_line = min_line.min(vl.line);
+                    max_line = max_line.max(vl.line);
+                }
+                line_y += advance + config::EDITOR_LINE_SPACING;
+            }
+            *buffer::DRAW_LINE_RANGE.write().unwrap() =
+                if min_line == usize::MAX { (0, 0) } else { (min_line, max_line) };
+        }
+
         // --- Scrollbar (right edge, draggable) ---
         let bar_w = 6;
         let bar_x = editor_x + editor_width - bar_w - padding;

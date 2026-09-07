@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 fontdb = "0.24.0"
 rand = "0.10.1"
-raylib = "6.0.0"
+raylib = { version = "6.0.0", features = ["SUPPORT_FILEFORMAT_JPG", "SUPPORT_FILEFORMAT_BMP", "SUPPORT_FILEFORMAT_TGA", "SUPPORT_IMAGE_GENERATION"] }
 raylib_imgui = "1.0.1"
 rfd = "0.15"
 #raylib-rs = "0.1.0"
