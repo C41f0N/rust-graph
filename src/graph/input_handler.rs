@@ -1,5 +1,6 @@
 use crate::graph::processing::*;
 use crate::graph::renderer::*;
+use crate::graph::settings;
 use raylib::prelude::*;
 use std::cell::Cell;
 
@@ -154,6 +155,53 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     }
 
     // ------------------------------------------------------------
+    // Settings dialog mode (modal, blocks graph interaction)
+    // ------------------------------------------------------------
+
+    let settings_open = *settings::SETTINGS_OPEN.read().unwrap();
+    if settings_open && !*editor_open {
+        if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            *settings::SETTINGS_OPEN.write().unwrap() = false;
+            return;
+        }
+
+        let fonts_len = settings::FONTS.read().unwrap().len();
+
+        // Mouse wheel scrolls the font list.
+        let wheel = rl.get_mouse_wheel_move();
+        if wheel != 0.0 {
+            let max_scroll = fonts_len.saturating_sub(settings::SETTINGS_VISIBLE_ROWS);
+            let mut scroll = settings::SETTINGS_SCROLL.write().unwrap();
+            *scroll = (*scroll as i32 - wheel as i32).clamp(0, max_scroll as i32) as usize;
+            return;
+        }
+
+        let mouse = rl.get_mouse_position();
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            let (px, py) = (settings::panel_x(), settings::panel_y());
+            let inside = mouse.x as i32 >= px
+                && mouse.x as i32 <= px + settings::SETTINGS_PANEL_W
+                && mouse.y as i32 >= py
+                && mouse.y as i32 <= py + settings::SETTINGS_PANEL_H;
+            if inside {
+                // Click on a row picks that font; main.rs loads it next frame.
+                let list_top = py + settings::SETTINGS_TITLE_H;
+                let row = (mouse.y as i32 - list_top) / settings::SETTINGS_ROW_H;
+                let idx = *settings::SETTINGS_SCROLL.read().unwrap() as i32 + row;
+                if row >= 0 && idx >= 0 && (idx as usize) < fonts_len {
+                    *settings::SELECTED_FONT.write().unwrap() = Some(idx as usize);
+                    *settings::REQUEST_LOAD_FONT.write().unwrap() = Some(idx as usize);
+                }
+            } else {
+                *settings::SETTINGS_OPEN.write().unwrap() = false;
+            }
+            return;
+        }
+
+        return;
+    }
+
+    // ------------------------------------------------------------
     // Delete confirmation keys
     // ------------------------------------------------------------
 
@@ -280,6 +328,19 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     }
 
     if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+        let click = rl.get_mouse_position();
+
+        // Settings button (screen space, top-left) toggles the dialog.
+        if click.x as i32 >= settings::SETTINGS_BUTTON_X
+            && click.x as i32 <= settings::SETTINGS_BUTTON_X + settings::SETTINGS_BUTTON_W
+            && click.y as i32 >= settings::SETTINGS_BUTTON_Y
+            && click.y as i32 <= settings::SETTINGS_BUTTON_Y + settings::SETTINGS_BUTTON_H
+        {
+            let mut open = settings::SETTINGS_OPEN.write().unwrap();
+            *open = !*open;
+            return;
+        }
+
         let current_time = rl.get_time();
         let mut clicked_node: Option<usize> = None;
 

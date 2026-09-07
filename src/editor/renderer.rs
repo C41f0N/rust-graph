@@ -5,6 +5,7 @@ use crate::editor;
 use crate::editor::blocks;
 use crate::editor::buffer;
 use crate::editor::markdown;
+use crate::editor::text;
 
 pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
     let buf = buffer::BUFFER.read().unwrap();
@@ -57,7 +58,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 .unwrap_or_default()
         };
         let name_y = editor_y + (header_h - config::EDITOR_FONT_SIZE) / 2;
-        d.draw_text(
+        text::draw(&mut d, 
             &note_name,
             editor_x + padding,
             name_y,
@@ -67,7 +68,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         // Close X button on the right
         let x_label = "X";
-        let x_w = d.measure_text(x_label, config::EDITOR_FONT_SIZE);
+        let x_w = text::measure(&d, x_label, config::EDITOR_FONT_SIZE);
         let x_x = editor_x + editor_width - padding - x_w;
         let x_y = name_y;
 
@@ -82,7 +83,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         } else {
             Color::new(180, 180, 180, 255)
         };
-        d.draw_text(x_label, x_x, x_y, config::EDITOR_FONT_SIZE, x_color);
+        text::draw(&mut d, x_label, x_x, x_y, config::EDITOR_FONT_SIZE, x_color);
 
         if over_x && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
             editor::CLOSE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -165,7 +166,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
                     if vis_sel_start < vis_sel_end || (vis_sel_start == vis_sel_end && line.start == line.end && vis_sel_start == line.start) {
                         let x_start = content_x
-                            + d.measure_text(
+                            + text::measure(&d, 
                                 &markdown::measure_line(
                                     &buf[line.line][line.start..vis_sel_start],
                                     format,
@@ -173,7 +174,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                                 line_font_size,
                             );
                         let x_end = content_x
-                            + d.measure_text(
+                            + text::measure(&d, 
                                 &markdown::measure_line(
                                     &buf[line.line][line.start..vis_sel_end],
                                     format,
@@ -198,7 +199,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 && *cursor_x <= line.end as i32
             {
                 let cursor_x_abs = content_x
-                    + d.measure_text(
+                    + text::measure(&d, 
                         &markdown::measure_line(
                             &buf[line.line][line.start..*cursor_x as usize],
                             format,
@@ -231,7 +232,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                         .iter()
                         .take(config::AUTOCOMPLETE_MAX_VISIBLE)
                     {
-                        let w = d.measure_text(name, line_font_size) + 24;
+                        let w = text::measure(&d, name, line_font_size) + 24;
                         if w > box_w {
                             box_w = w;
                         }
@@ -271,7 +272,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                                 config::AUTOCOMPLETE_SELECTED_BG,
                             );
                         }
-                        d.draw_text(
+                        text::draw(&mut d, 
                             name,
                             pop_x + 10,
                             pop_y + (i as i32) * item_h + 2,
@@ -339,14 +340,14 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                             && text.as_bytes()[..*raw_len]
                                 == buf[line.line].as_bytes()[..*raw_len]
                         {
-                            d.draw_text(
+                            text::draw(&mut d, 
                                 disp,
                                 seg_x,
                                 content_y + line_y + padding / 2,
                                 line_font_size,
                                 config::EDITOR_LIST_MARKER_COLOR,
                             );
-                            seg_x += d.measure_text(disp, line_font_size);
+                            seg_x += text::measure(&d, disp, line_font_size);
                             text = &text[*raw_len..];
                         }
                     }
@@ -366,7 +367,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                     markdown::SegmentStyle::Link => config::EDITOR_LINK_COLOR,
                     markdown::SegmentStyle::Code => config::EDITOR_CODE_COLOR,
                 };
-                let seg_w = d.measure_text(text, line_font_size);
+                let seg_w = text::measure(&d, text, line_font_size);
 
                 if seg.style == markdown::SegmentStyle::Code {
                     d.draw_rectangle(
@@ -378,7 +379,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                     );
                 }
 
-                d.draw_text(
+                text::draw(&mut d, 
                     text,
                     seg_x,
                     content_y + line_y + padding / 2,

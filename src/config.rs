@@ -1,7 +1,7 @@
 use raylib::prelude::*;
 
-pub const HEIGHT: i32 = 1080;
-pub const WIDTH: i32 = 1920;
+pub const HEIGHT: i32 = 1080 * 3 / 4;
+pub const WIDTH: i32 = 1920 * 3 / 4;
 
 pub const EDITOR_FONT_SIZE: i32 = 20;
 pub const EDITOR_HEADING_SIZE: [i32; 6] = [70, 52, 42, 33, 25, 21];

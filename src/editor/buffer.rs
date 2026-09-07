@@ -1,5 +1,6 @@
 use crate::config;
 use crate::editor::markdown;
+use crate::editor::text;
 use crate::filesystem;
 use raylib::prelude::*;
 use std::path::Path;
@@ -105,12 +106,12 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
             let font_size = config::EDITOR_FONT_SIZE;
             match kind {
                 crate::editor::blocks::LineKind::List { depth } => {
-                    base_indent = d.measure_text("  ", font_size) * depth as i32;
-                    hang_indent = d.measure_text("    ", font_size);
+                    base_indent = text::measure(d, "  ", font_size) * depth as i32;
+                    hang_indent = text::measure(d, "    ", font_size);
                 }
                 crate::editor::blocks::LineKind::Blockquote => {
                     base_indent = markdown::blockquote_marker_len(line)
-                        .map(|len| d.measure_text(&line[..len], font_size))
+                        .map(|len| text::measure(d, &line[..len], font_size))
                         .unwrap_or(0);
                     hang_indent = 0;
                 }
@@ -133,7 +134,7 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
             base_indent,
             hang_indent,
             format,
-            |t, size| d.measure_text(t, size),
+            |t, size| text::measure(d, t, size),
         ));
     }
 }

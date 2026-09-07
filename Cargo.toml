@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+fontdb = "0.24.0"
 rand = "0.10.1"
 raylib = "6.0.0"
 raylib_imgui = "1.0.1"

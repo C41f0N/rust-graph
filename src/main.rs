@@ -42,6 +42,9 @@ fn main() {
     *DIR_PATH.write().unwrap() = dir_path.clone();
     generate_nodes_from_directory(&dir_path);
 
+    // Enumerate system fonts for the settings dialog's font picker.
+    graph::settings::build_font_list();
+
     let mut editor_was_open = false;
     // Autosave fires when the buffer has edits and no input has happened for
     // this many milliseconds (a "typing pause").
@@ -109,6 +112,30 @@ fn main() {
         }
 
         update_forces(&mut rl);
+
+        // Process a font selection from the settings dialog: load (or clear)
+        // the active custom font. Needs the raylib handle, so it happens here
+        // between input and drawing on the GL context thread.
+        let font_request = *graph::settings::REQUEST_LOAD_FONT.read().unwrap();
+        if let Some(idx) = font_request {
+            let fonts = graph::settings::FONTS.read().unwrap();
+            if let Some(fam) = fonts.get(idx) {
+                if idx == 0 {
+                    editor::text::clear_active_font();
+                } else {
+                    let loaded = if let Some(path) = &fam.path {
+                        editor::text::load_font_set(&mut rl, &thread, &path.to_string_lossy())
+                    } else if let Some(data) = &fam.data {
+                        editor::text::load_font_set_from_memory(&mut rl, &thread, ".ttf", data)
+                    } else {
+                        Vec::new()
+                    };
+                    editor::text::set_active_font(loaded);
+                }
+                *graph::settings::SELECTED_FONT.write().unwrap() = Some(idx);
+            }
+            *graph::settings::REQUEST_LOAD_FONT.write().unwrap() = None;
+        }
 
         // Detect transitions AFTER all input has been processed
         if editor_open && !was_open {
