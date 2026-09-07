@@ -148,12 +148,24 @@ pub fn ensure_thumb_loaded(rl: &mut RaylibHandle, thread: &RaylibThread, asset: 
     c.insert(asset.to_path_buf(), Slot(tex));
 }
 
+// Force bilinear filtering so a thumbnail scaled around a node (usually drawn
+// larger than its 256px backing) reads smooth rather than blocky. raylib's
+// default texture filter is point/nearest.
+fn set_bilinear(tex: &Texture2D) {
+    // SAFETY: tex is a loaded GPU texture owned by the main thread.
+    unsafe {
+        let t: &raylib::ffi::Texture2D = tex.as_ref();
+        raylib::ffi::SetTextureFilter(*t, 1); // TEXTURE_FILTER_BILINEAR
+    }
+}
+
 fn build_thumb(rl: &mut RaylibHandle, thread: &RaylibThread, asset: &Path) -> Option<Texture2D> {
     let thumb = thumb_path(asset);
 
     // Already generated on a previous run: load the small PNG directly.
     if thumb.exists() {
         if let Some(t) = rl.load_texture(thread, &thumb.to_string_lossy()).ok() {
+            set_bilinear(&t);
             return Some(t);
         }
     }
@@ -185,7 +197,10 @@ fn build_thumb(rl: &mut RaylibHandle, thread: &RaylibThread, asset: &Path) -> Op
     // back to the full-resolution image so the node still shows a header,
     // just as an unclipped square instead of a disc.
     match rl.load_texture(thread, &thumb.to_string_lossy()).ok() {
-        Some(t) => Some(t),
+        Some(t) => {
+            set_bilinear(&t);
+            Some(t)
+        }
         None => rl.load_texture(thread, &asset.to_string_lossy()).ok(),
     }
 }
@@ -210,9 +225,11 @@ pub fn has_thumb(path: &Path) -> bool {
         .is_some_and(|slot| slot.0.is_some())
 }
 
-// Draw the circular thumbnail for `path` as a disc of `side` pixels centred
-// on (cx, cy). Returns false if the thumbnail is not (yet) loaded.
-pub fn draw_thumb<D: RaylibDraw>(d: &mut D, path: &Path, cx: i32, cy: i32, side: i32) -> bool {
+// Draw the circular thumbnail for `path` as a disc of `side` pixels centred on
+// (cx, cy). Coordinates and size are f32 (like the node positions they follow)
+// so the disc tracks the node's smooth animation without pixel-grid snapping.
+// Returns false if the thumbnail is not (yet) loaded.
+pub fn draw_thumb<D: RaylibDraw>(d: &mut D, path: &Path, cx: f32, cy: f32, side: f32) -> bool {
     let cache = thumb_cache().read().unwrap();
     let Some(slot) = cache.get(path) else {
         return false;
@@ -220,12 +237,12 @@ pub fn draw_thumb<D: RaylibDraw>(d: &mut D, path: &Path, cx: i32, cy: i32, side:
     let Some(tex) = slot.0.as_ref() else {
         return false;
     };
-    let s = side.max(1);
+    let s = side.max(1.0);
     let (tw, th) = (tex.width, tex.height);
     d.draw_texture_pro(
         tex,
         Rectangle::new(0.0, 0.0, tw as f32, th as f32),
-        Rectangle::new((cx - s / 2) as f32, (cy - s / 2) as f32, s as f32, s as f32),
+        Rectangle::new(cx - s / 2.0, cy - s / 2.0, s, s),
         Vector2::zero(),
         0.0,
         Color::WHITE,

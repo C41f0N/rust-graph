@@ -120,12 +120,12 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             if crate::editor::images::is_image_target(header) {
                 if let Some(path) = resolve_header_path(header) {
                     if crate::editor::images::has_thumb(&path) {
-                        let disc = (draw_radius * 1.9) as i32;
+                        let disc = draw_radius * 1.9;
                         crate::editor::images::draw_thumb(
                             &mut mode,
                             &path,
-                            node.position.x as i32,
-                            node.position.y as i32,
+                            node.position.x,
+                            node.position.y,
                             disc,
                         );
                     }
@@ -133,13 +133,13 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             }
         }
 
-        let text_w = text::measure(&mode, &node.name, 5);
+        let text_w = text::measure_f(&mode, &node.name, 5);
 
-        text::draw(
+        text::draw_f(
             &mut mode,
             &node.name,
-            (node.position.x - text_w as f32 / 2.0) as i32,
-            (node.position.y + node.radius + 5.0) as i32,
+            node.position.x - text_w / 2.0,
+            node.position.y + node.radius + 5.0,
             5,
             Color::WHITE.alpha(((camera.zoom - 2.0) / 0.5).clamp(0.0, 1.0)),
         );

@@ -110,17 +110,24 @@ fn nearest_size_index(size: i32) -> usize {
 // handle is unused (both measuring paths are font-global) but kept in the
 // signature so call sites mirror `draw`.
 pub fn measure<D>(_d: &D, text: &str, font_size: i32) -> i32 {
+    measure_f(_d, text, font_size) as i32
+}
+
+// f32-precise measure for call sites that position via fractional pixels (a
+// node label centred on a moving node must not round before it even draws).
+pub fn measure_f<D>(_d: &D, text: &str, font_size: i32) -> f32 {
     let slot = ACTIVE_FONT.0.read().unwrap();
     match slot.get(nearest_size_index(font_size)).and_then(|f| f.as_ref()) {
-        Some(font) => font.measure_text(text, font_size as f32, 0.0).x as i32,
+        Some(font) => font.measure_text(text, font_size as f32, 0.0).x,
         None => {
             let c_text = CString::new(text).unwrap();
-            unsafe { raylib::ffi::MeasureText(c_text.as_ptr(), font_size) }
+            unsafe { raylib::ffi::MeasureText(c_text.as_ptr(), font_size) as f32 }
         }
     }
 }
 
 // Draw text with the closest custom atlas (or the default font when none set).
+// `x`/`y` are i32 for screen-space UI.
 pub fn draw(
     d: &mut impl RaylibDraw,
     text: &str,
@@ -129,16 +136,30 @@ pub fn draw(
     font_size: i32,
     color: impl Into<ffi::Color>,
 ) {
+    draw_f(d, text, x as f32, y as f32, font_size, color);
+}
+
+// Draw text at subpixel positions without snapping. Used for node labels so
+// they track the node's f32 animation smoothly instead of strobing on the
+// pixel grid as the camera pans/zooms.
+pub fn draw_f(
+    d: &mut impl RaylibDraw,
+    text: &str,
+    x: f32,
+    y: f32,
+    font_size: i32,
+    color: impl Into<ffi::Color>,
+) {
     let slot = ACTIVE_FONT.0.read().unwrap();
     match slot.get(nearest_size_index(font_size)).and_then(|f| f.as_ref()) {
         Some(font) => d.draw_text_ex(
             font,
             text,
-            Vector2::new(x as f32, y as f32),
+            Vector2::new(x, y),
             font_size as f32,
             0.0,
             color,
         ),
-        None => d.draw_text(text, x, y, font_size, color),
+        None => d.draw_text(text, x.round() as i32, y.round() as i32, font_size, color),
     }
 }
