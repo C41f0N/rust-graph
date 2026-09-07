@@ -6,6 +6,7 @@ use crate::editor::blocks;
 use crate::editor::buffer;
 use crate::editor::markdown;
 use crate::editor::text;
+use crate::frontmatter;
 
 use std::path::PathBuf;
 
@@ -17,6 +18,7 @@ use std::path::PathBuf;
 fn line_layout(
     line: &buffer::VisualLine,
     line_text: &str,
+    kind: blocks::LineKind,
     editing_line: bool,
     editor_x: i32,
     padding: i32,
@@ -31,6 +33,19 @@ fn line_layout(
 
     let mut advance = line_font_size;
     let mut image = None;
+
+    // A frontmatter block the cursor is NOT editing collapses to one bar for
+    // its whole extent: the opening delimiter line carries the bar height,
+    // every remaining line contributes nothing.
+    if kind == blocks::LineKind::Frontmatter && !editing_line {
+        if line.line == 0 && line.start == 0 {
+            advance = config::EDITOR_FRONTMATTER_HEIGHT;
+        } else {
+            advance = 0;
+        }
+        return (line_font_size, advance, image);
+    }
+
     if !editing_line && line.start == 0 {
         if let Some(target) = markdown::image_link_target(line_text) {
             if let Some(path) = crate::editor::images::resolve_path(&target) {
@@ -51,6 +66,23 @@ fn line_layout(
     }
 
     (line_font_size, advance, image)
+}
+
+// Whether a visual line renders as editable raw source. Normally that is
+// "the cursor is on this line"; a frontmatter line is also raw whenever the
+// cursor sits anywhere inside the block, so the header edits as one unit.
+fn line_editing(
+    line: &buffer::VisualLine,
+    fm_range: Option<(usize, usize)>,
+    cursor_y: i32,
+) -> bool {
+    if let Some((start, end)) = fm_range {
+        let cy = cursor_y as usize;
+        if cy >= start && cy <= end && line.line >= start && line.line <= end {
+            return true;
+        }
+    }
+    cursor_y as usize == line.line
 }
 
 pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
@@ -151,6 +183,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         let content_y = editor_y + header_h;
 
         let kinds = blocks::classify(&buf);
+        let fm_range = frontmatter::line_range(&buf);
 
         crate::editor::buffer::generate_visual_lines(max_width, &mut d);
 
@@ -162,9 +195,9 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             Vec::with_capacity(vlines.len());
         let mut total_h: i32 = 0;
         for vl in vlines.iter() {
-            let editing_line = *cursor_y as usize == vl.line;
+            let editing = line_editing(vl, fm_range, *cursor_y);
             let (fsz, adv, img) =
-                line_layout(vl, &buf[vl.line], editing_line, editor_x, padding, max_width);
+                line_layout(vl, &buf[vl.line], kinds.get(vl.line).copied().unwrap_or(blocks::LineKind::Paragraph), editing, editor_x, padding, max_width);
             total_h += adv + config::EDITOR_LINE_SPACING;
             layouts.push((fsz, adv, img));
         }
@@ -219,7 +252,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
             for (vi, line) in vlines.iter().enumerate() {
                 let (line_font_size, advance, ref image) = layouts[vi];
-                let editing_line = *cursor_y as usize == line.line;
+                let editing_line = line_editing(line, fm_range, *cursor_y);
                 let kind = kinds
                     .get(line.line)
                     .copied()
@@ -228,9 +261,36 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                     matches!(kind, blocks::LineKind::FencedCode | blocks::LineKind::FenceDelimiter);
                 let format = !editing_line && !is_fence;
 
+                // Hidden frontmatter bar: collapsed when the cursor is outside
+                // the block. Shown on the very first visual line (line 0,
+                // start 0); all remaining block lines contribute zero height
+                // from the layout pass and fall through here.
+                if kind == blocks::LineKind::Frontmatter && !editing_line {
+                    if line.line == 0 && line.start == 0 {
+                        let draw_top = content_y + line_y - scroll;
+                        s.draw_rectangle(
+                            editor_x + padding,
+                            draw_top,
+                            max_width,
+                            config::EDITOR_FRONTMATTER_HEIGHT,
+                            config::EDITOR_FRONTMATTER_BG,
+                        );
+                        text::draw(
+                            &mut s,
+                            "--- frontmatter ---",
+                            editor_x + padding + 6,
+                            draw_top + 4,
+                            config::EDITOR_FONT_SIZE - 2,
+                            config::EDITOR_FRONTMATTER_COLOR,
+                        );
+                    }
+                    line_y += advance + config::EDITOR_LINE_SPACING;
+                    continue;
+                }
+
                 // Record where the cursor's visual line sits so the view can
                 // follow it after this frame.
-                if *cursor_y as usize == line.line
+                if editing_line
                     && *cursor_x as usize >= line.start
                     && *cursor_x as usize <= line.end
                 {

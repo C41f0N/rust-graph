@@ -21,6 +21,11 @@ pub const EDITOR_CURSOR_HEIGHT_RATIO: f32 = 0.8;
 pub const EDITOR_HEADER_HEIGHT: i32 = 40;
 // Maximum height a whole-line image link is scaled down to in the editor.
 pub const EDITOR_IMAGE_MAX_HEIGHT: i32 = 320;
+// Collapsed frontmatter block: shown as a single bar of this height when the
+// cursor is outside it, so the dead-metadata lines never scroll through.
+pub const EDITOR_FRONTMATTER_HEIGHT: i32 = 22;
+pub const EDITOR_FRONTMATTER_BG: Color = Color::new(60, 60, 72, 160);
+pub const EDITOR_FRONTMATTER_COLOR: Color = Color::new(150, 158, 190, 255);
 
 pub const EDITOR_FONT_COLOR: Color = Color::WHITE;
 pub const EDITOR_SELECTION_COLOR: Color = Color::new(76, 128, 204, 102);

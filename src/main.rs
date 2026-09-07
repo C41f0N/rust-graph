@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod config;
 mod editor;
 mod filesystem;
+mod frontmatter;
 mod graph;
 
 use graph::processing::*;

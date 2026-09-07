@@ -7,6 +7,7 @@
 // a single line can't describe (fenced code spans, nested list depth).
 
 use crate::editor::markdown;
+use crate::frontmatter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
@@ -18,6 +19,7 @@ pub enum LineKind {
     List { depth: u32 },
     FencedCode,
     FenceDelimiter,
+    Frontmatter,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +30,7 @@ pub enum BlockKind {
     Blockquote,
     ListItem { depth: u32 },
     FencedCode,
+    Frontmatter,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +84,20 @@ pub fn parse_blocks(lines: &[String]) -> Vec<Block> {
 
     while i < lines.len() {
         let line = &lines[i];
+
+        // A leading, closed frontmatter block (`---` ... `---`) is metadata,
+        // not a horizontal rule. It only applies at the very start of file.
+        if i == 0 && line.trim().trim_start_matches('\u{feff}').trim() == "---" {
+            if let Some((_, end)) = frontmatter::line_range(lines) {
+                blocks.push(Block {
+                    kind: BlockKind::Frontmatter,
+                    start: 0,
+                    end: end + 1,
+                });
+                i = end + 1;
+                continue;
+            }
+        }
 
         if let Some((fence_char, fence_len)) = fence_opening(line) {
             // Fenced code: spans until a closing fence with the same char,
@@ -175,6 +192,7 @@ impl LineKind {
                     LineKind::FencedCode
                 }
             }
+            BlockKind::Frontmatter => LineKind::Frontmatter,
         }
     }
 }
@@ -286,5 +304,21 @@ mod tests {
         assert_eq!(blocks[0].kind, BlockKind::FencedCode);
         assert_eq!(blocks[0].start, 0);
         assert_eq!(blocks[0].end, 3);
+    }
+
+    #[test]
+    fn leading_frontmatter_is_its_own_block() {
+        let k = classify(&s(&["---", "header: [[banner.png]]", "---", "# Body"]));
+        assert_eq!(k[0], LineKind::Frontmatter);
+        assert_eq!(k[1], LineKind::Frontmatter);
+        assert_eq!(k[2], LineKind::Frontmatter);
+        assert_eq!(k[3], LineKind::Heading { level: 1 });
+    }
+
+    #[test]
+    fn lone_hr_is_not_frontmatter() {
+        let k = classify(&s(&["---", "section below"]));
+        assert_eq!(k[0], LineKind::HorizontalRule);
+        assert_eq!(k[1], LineKind::Paragraph);
     }
 }

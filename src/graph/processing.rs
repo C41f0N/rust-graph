@@ -1,5 +1,6 @@
 use crate::config::*;
 use crate::filesystem;
+use crate::frontmatter;
 use rand::prelude::*;
 use raylib::prelude::*;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,7 @@ pub struct Node {
     pub name: String,
     pub file_name: String,
     pub path: PathBuf,
+    pub header: Option<String>,
 }
 
 pub struct Edge {
@@ -62,6 +64,7 @@ pub fn generate_nodes_from_directory(dir: &Path) {
             name,
             file_name,
             path: file.clone(),
+            header: None,
         });
     }
 
@@ -84,7 +87,7 @@ pub fn generate_nodes_from_directory(dir: &Path) {
 // names that match no file) never creates an edge.
 // Duplicate and self-links are ignored.
 pub fn rebuild_edges() {
-    let nodes = NODES.read().unwrap();
+    let mut nodes = NODES.write().unwrap();
     let mut edges = EDGES.write().unwrap();
     edges.clear();
 
@@ -100,9 +103,29 @@ pub fn rebuild_edges() {
     // Keep a set of existing edges to avoid duplicates
     let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
 
-    for (i, node) in nodes.iter().enumerate() {
+    // Re-parse every node: update header from frontmatter, build edges only
+    // from the body (everything after the frontmatter block).
+    let mut fm_headers: Vec<Option<String>> = Vec::with_capacity(nodes.len());
+    for (i, node) in nodes.iter_mut().enumerate() {
         let content = filesystem::read_file(&node.path);
-        let links = filesystem::parse_links(&content);
+
+        // Parse frontmatter and cache the header target on the node.
+        let fm = frontmatter::parse(&content);
+        node.header = fm.as_ref().and_then(|f| f.header.clone());
+        fm_headers.push(node.header.clone());
+
+        // Slice past frontmatter for content-link extraction.
+        let body = if let Some(fm) = &fm {
+            if fm.end_byte <= content.len() {
+                &content[fm.end_byte..]
+            } else {
+                &content
+            }
+        } else {
+            &content
+        };
+
+        let links = filesystem::parse_links(body);
 
         for link in links {
             // Resolve with the extension if given, otherwise as a bare stem.
@@ -146,6 +169,7 @@ pub fn add_node(dir: &Path, filename: &str) -> usize {
         name: stem.to_string(),
         file_name: filename,
         path: file_path,
+        header: None,
     });
 
     idx
