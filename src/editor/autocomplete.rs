@@ -95,6 +95,31 @@ pub fn refresh(buffer: &[String], cursor_y: usize, cursor_x: usize) {
     }
 }
 
+// Replace the in-progress [[ filter ]] with the completion at `state.selected`
+// (Enter or a click on the popup). Returns the new cursor X; the caller must
+// also set cursor_y/anchor and call buffer::mark_modified() when the buffer
+// actually changed.
+pub fn apply_selection(
+    state: &mut AutocompleteState,
+    buffer: &mut Vec<String>,
+    y: usize,
+    x: usize,
+) -> i32 {
+    if let Some(candidate) = state.matches.get(state.selected) {
+        let filter_len = state.filter.len();
+        if x >= filter_len {
+            // Links are written extension-less and resolve to the .md file
+            // by name, so just close the bracket.
+            let replacement = format!("{}]]", candidate);
+            buffer[y].replace_range(x - filter_len..x, &replacement);
+            state.active = false;
+            return (x - filter_len + replacement.len()) as i32;
+        }
+    }
+    state.active = false;
+    x as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +156,41 @@ mod tests {
             "alice".to_string(),
         ];
         assert_eq!(match_names(&names, "al"), vec!["Alpha", "alice"]);
+    }
+
+    #[test]
+    fn apply_selection_replaces_filter() {
+        let mut buf = vec!["see [[alp".to_string()];
+        let mut st = AutocompleteState {
+            active: true,
+            filter: "alp".into(),
+            selected: 0,
+            matches: vec!["Alpha".to_string()],
+            esc_consumed: false,
+            suppress: false,
+            suppress_filter: String::new(),
+        };
+        let nx = apply_selection(&mut st, &mut buf, 0, 9);
+        assert_eq!(buf[0], "see [[Alpha]]");
+        assert_eq!(nx, 13);
+        assert!(!st.active);
+    }
+
+    #[test]
+    fn apply_selection_no_match_keeps_buffer() {
+        let mut buf = vec!["see [[alp".to_string()];
+        let mut st = AutocompleteState {
+            active: true,
+            filter: "alp".into(),
+            selected: 0,
+            matches: Vec::new(),
+            esc_consumed: false,
+            suppress: false,
+            suppress_filter: String::new(),
+        };
+        let nx = apply_selection(&mut st, &mut buf, 0, 9);
+        assert_eq!(nx, 9);
+        assert_eq!(buf[0], "see [[alp");
+        assert!(!st.active);
     }
 }

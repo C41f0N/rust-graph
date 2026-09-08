@@ -290,6 +290,10 @@ pub fn load_from_file(path: &Path) {
     let mut anchor_x = ANCHOR_X.write().unwrap();
     let mut anchor_y = ANCHOR_Y.write().unwrap();
 
+    // A drag or double-click chain started before the editor closed must not
+    // leak into the freshly loaded buffer.
+    crate::editor::hit_test::reset_click_state();
+
     buffer.clear();
     // Force a follow on the first rendered frame after opening: the cursor is
     // about to move to the end of the (possibly new) file.

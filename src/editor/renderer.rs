@@ -4,6 +4,7 @@ use crate::config;
 use crate::editor;
 use crate::editor::blocks;
 use crate::editor::buffer;
+use crate::editor::hit_test;
 use crate::editor::markdown;
 use crate::editor::text;
 use crate::frontmatter;
@@ -201,6 +202,56 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             total_h += adv + config::EDITOR_LINE_SPACING;
             layouts.push((fsz, adv, img));
         }
+
+        // Hit-test table for the input handler (consumed on the next frame,
+        // so mouse clicks land on exactly what this frame drew). `top` is in
+        // content-relative pixels, matching the draw loop's `line_y`.
+        {
+            let mut hits = Vec::with_capacity(vlines.len());
+            let mut line_y: i32 = 0;
+            for (vi, vl) in vlines.iter().enumerate() {
+                let (fsz, adv, ref img) = layouts[vi];
+                if adv > 0 {
+                    let editing = line_editing(vl, fm_range, *cursor_y);
+                    let kind = kinds
+                        .get(vl.line)
+                        .copied()
+                        .unwrap_or(blocks::LineKind::Paragraph);
+                    let is_fence = matches!(
+                        kind,
+                        blocks::LineKind::FencedCode | blocks::LineKind::FenceDelimiter
+                    );
+                    let view_mode = !editing && !is_fence;
+                    let quote_skip = if view_mode
+                        && matches!(kind, blocks::LineKind::Blockquote)
+                        && vl.start == 0
+                    {
+                        markdown::blockquote_marker_len(&buf[vl.line]).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    hits.push(hit_test::HitRow {
+                        line: vl.line,
+                        start: vl.start,
+                        end: vl.end,
+                        indent_px: vl.indent,
+                        font_size: fsz,
+                        top: line_y,
+                        advance: adv,
+                        view_mode,
+                        quote_skip,
+                        image: img.is_some(),
+                        fm_bar: kind == blocks::LineKind::Frontmatter && !editing,
+                    });
+                }
+                line_y += adv + config::EDITOR_LINE_SPACING;
+            }
+            *hit_test::VISUAL_HIT.lock().unwrap() = hits;
+        }
+
+        // Only the current frame's popup is clickable; cleared before the
+        // draw loop so a stale rect from a scrolled-away popup never lingers.
+        *hit_test::AUTOCOMPLETE_RECT.lock().unwrap() = None;
 
         // Clamp the scroll offset to the real content height.
         let viewport_h = (editor_height - header_h - padding).max(1);
@@ -464,6 +515,8 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                         if pop_y + box_h > editor_bottom {
                             pop_y = (editor_bottom - box_h).max(content_y);
                         }
+
+                        *hit_test::AUTOCOMPLETE_RECT.lock().unwrap() = Some((pop_x, pop_y, box_w, box_h));
 
                         s.draw_rectangle(pop_x, pop_y, box_w, box_h, config::AUTOCOMPLETE_BG);
 

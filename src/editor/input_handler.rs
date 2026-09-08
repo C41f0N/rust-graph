@@ -3,6 +3,9 @@ use raylib::prelude::*;
 use crate::config;
 use crate::editor::autocomplete;
 use crate::editor::buffer;
+use crate::editor::hit_test;
+use crate::editor::text;
+use crate::frontmatter;
 
 fn prev_word_boundary(line: &str, x: usize) -> usize {
     let bytes = line.as_bytes();
@@ -97,6 +100,193 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         let delta = (wheel * step) as i32;
         if delta != 0 {
             *scroll -= delta;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Mouse: click to place the caret, drag to select, double/triple-click
+    // for word/line selection, click to accept an autocomplete row, and
+    // click on the collapsed frontmatter bar to expand it.
+    // ------------------------------------------------------------
+
+    {
+        let (ex, ey, ew, eh) = config::editor_panel_bounds();
+        let header_h = config::EDITOR_HEADER_HEIGHT;
+        let content_top = ey + header_h;
+        let content_h = eh - header_h;
+        let bar_w = 6;
+        let bar_x = ex + ew - bar_w - config::EDITOR_PADDING;
+
+        // --- Left press ---
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            let m = rl.get_mouse_position();
+
+            // Click inside the autocomplete popup accepts that row.
+            let ac_rect = hit_test::AUTOCOMPLETE_RECT.lock().unwrap();
+            if let Some((rx, ry, rw, rh)) = *ac_rect {
+                if m.x as i32 >= rx
+                    && m.x as i32 <= rx + rw
+                    && m.y as i32 >= ry
+                    && m.y as i32 <= ry + rh
+                {
+                    let mut ac = autocomplete::AUTOCOMPLETE.write().unwrap();
+                    if ac.active && !ac.matches.is_empty() {
+                        let idx = m.y as i32 - ry;
+                        let row = (idx.max(0) as usize).min(ac.matches.len().saturating_sub(1));
+                        ac.selected = row;
+                        let y = *cursor_y as usize;
+                        let x = *cursor_x as usize;
+                        let nx = autocomplete::apply_selection(&mut ac, &mut buffer, y, x);
+                        *cursor_x = nx;
+                        *anchor_x = *cursor_x;
+                        *anchor_y = *cursor_y;
+                        if nx != x as i32 {
+                            buffer::mark_modified();
+                        }
+                    }
+                    return;
+                }
+            }
+            drop(ac_rect);
+
+            let inside_content =
+                m.y as i32 >= content_top && (m.y as i32) < content_top + content_h;
+
+            // A click close to the scrollbar is the scrollbar's: the renderer
+            // drags it on the following frames, so just don't place a caret.
+            let over_bar =
+                m.x as i32 >= bar_x - 4 && m.x as i32 <= bar_x + bar_w + 4;
+
+            if inside_content && !over_bar {
+                let scroll = *buffer::SCROLL_Y.read().unwrap();
+                let rel_y = m.y as i32 - content_top + scroll;
+                let hits = hit_test::VISUAL_HIT.lock().unwrap();
+
+                if let Some(row) = hit_test::row_at_y(&hits, rel_y) {
+                    if row.fm_bar {
+                        // Place the caret at the end of the frontmatter block
+                        // so opening the note's collapsed metadata expands it.
+                        if let Some((_, fm_end)) = frontmatter::line_range(&buffer) {
+                            let y = fm_end;
+                            let x = buffer[y].len();
+                            *cursor_y = y as i32;
+                            *cursor_x = x as i32;
+                            *anchor_x = x as i32;
+                            *anchor_y = y as i32;
+                        }
+                        drop(hits);
+                        hit_test::MOUSE_DRAGGING.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+
+                    if !row.image {
+                        let px = m.x as i32 - (ex + config::EDITOR_PADDING);
+                        let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s| {
+                            text::measure(&rl, t, s)
+                        });
+                        let off = off as i32;
+
+                        let now_ms = (rl.get_time() * 1000.0) as u64;
+                        let prev_time = hit_test::LAST_CLICK_TIME_MS.load(std::sync::atomic::Ordering::Relaxed);
+                        let prev_line = hit_test::LAST_CLICK_LINE.load(std::sync::atomic::Ordering::Relaxed);
+                        let prev_off = hit_test::LAST_CLICK_OFFSET.load(std::sync::atomic::Ordering::Relaxed);
+                        let prev_count = hit_test::CLICK_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+                        let same_pos = prev_line == row.line as i32 && prev_off == off;
+                        let count = hit_test::classify_click(now_ms, prev_time, same_pos, prev_count);
+
+                        let shift = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+                            || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+
+                        match count {
+                            2 => {
+                                // Double-click: select the word at the caret.
+                                let line = &buffer[row.line];
+                                let byte = off as usize;
+                                let start = prev_word_start(line, byte);
+                                let end = next_word_end(line, byte);
+                                *anchor_x = start as i32;
+                                *anchor_y = row.line as i32;
+                                *cursor_x = end as i32;
+                                *cursor_y = row.line as i32;
+                            }
+                            3 => {
+                                // Triple-click: select the whole source line.
+                                *anchor_x = 0;
+                                *anchor_y = row.line as i32;
+                                *cursor_x = buffer[row.line].len() as i32;
+                                *cursor_y = row.line as i32;
+                            }
+                            _ => {
+                                // Single click: place the caret (Shift+click
+                                // keeps the anchor so it extends the selection).
+                                *cursor_x = off;
+                                *cursor_y = row.line as i32;
+                                if !shift {
+                                    *anchor_x = off;
+                                    *anchor_y = row.line as i32;
+                                }
+                            }
+                        }
+
+                        hit_test::LAST_CLICK_TIME_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                        hit_test::LAST_CLICK_LINE.store(row.line as i32, std::sync::atomic::Ordering::Relaxed);
+                        hit_test::LAST_CLICK_OFFSET.store(off, std::sync::atomic::Ordering::Relaxed);
+                        hit_test::CLICK_COUNT.store(count, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    drop(hits);
+                    hit_test::MOUSE_DRAGGING.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
+            }
+
+            // Click on the scrollbar / outside the content area: no caret.
+            hit_test::MOUSE_DRAGGING.store(false, std::sync::atomic::Ordering::Relaxed);
+            hit_test::reset_click_state();
+            return;
+        }
+
+        // --- Left held after a press: drag to select ---
+        if rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT)
+            && hit_test::MOUSE_DRAGGING.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let m = rl.get_mouse_position();
+            if m.y as i32 >= content_top && (m.y as i32) < content_top + content_h {
+                {
+                    let scroll = *buffer::SCROLL_Y.read().unwrap();
+                    let rel_y = m.y as i32 - content_top + scroll;
+                    let hits = hit_test::VISUAL_HIT.lock().unwrap();
+
+                    if let Some(row) = hit_test::row_at_y(&hits, rel_y) {
+                        if !row.image && !row.fm_bar {
+                            let px = m.x as i32 - (ex + config::EDITOR_PADDING);
+                            let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s| {
+                                text::measure(&rl, t, s)
+                            });
+                            *cursor_x = off as i32;
+                            *cursor_y = row.line as i32;
+                        }
+                    }
+                }
+
+                // Autoscroll: dragging past the edge feeds the view through
+                // SCROLL_Y (the renderer clamps it to the content height).
+                let margin = 24;
+                let step = 16;
+                let mut scroll = buffer::SCROLL_Y.write().unwrap();
+                if (m.y as i32) < content_top + margin && *scroll > 0 {
+                    *scroll = (*scroll - step).max(0);
+                } else if m.y as i32 > content_top + content_h - margin {
+                    *scroll += step;
+                }
+            }
+            return;
+        }
+
+        // --- Release ends a drag ---
+        if rl.is_mouse_button_released(MouseButton::MOUSE_BUTTON_LEFT) {
+            if hit_test::MOUSE_DRAGGING.load(std::sync::atomic::Ordering::Relaxed) {
+                hit_test::MOUSE_DRAGGING.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
         }
     }
 
@@ -269,21 +459,15 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             }
 
             if enter && !state.matches.is_empty() {
-                let candidate = state.matches[state.selected].clone();
-                let filter_len = state.filter.len();
                 let y = *cursor_y as usize;
                 let x = *cursor_x as usize;
-                if x >= filter_len {
-                    // Links are written extension-less and resolve to the
-                    // .md file by name, so just close the bracket.
-                    let replacement = format!("{}]]", candidate);
-                    buffer[y].replace_range(x - filter_len..x, &replacement);
-                    *cursor_x = (x - filter_len + replacement.len()) as i32;
-                    *anchor_x = *cursor_x;
-                    *anchor_y = *cursor_y;
+                let nx = autocomplete::apply_selection(&mut state, &mut buffer, y, x);
+                *cursor_x = nx;
+                *anchor_x = *cursor_x;
+                *anchor_y = *cursor_y;
+                if nx != x as i32 {
                     buffer::mark_modified();
                 }
-                state.active = false;
                 return;
             }
 
