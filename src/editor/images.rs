@@ -262,19 +262,36 @@ fn set_bilinear(tex: &Texture2D) {
     }
 }
 
-// Build the disc-cropped variant the graph draws for node headers: take the
-// persisted general thumbnail, letterbox it onto a square black canvas (so an
-// image's own border can bleed into the circle), then mask everything outside
-// the inscribed disc to transparent.
-fn disc_crop_image(source: &Image, size: i32) -> Image {
-    let (nw, nh, ox, oy) = thumb_layout(source.width(), source.height(), size);
+// Fill the node disc with the image instead of letterboxing it: scale the
+// image up until its shorter side spans the disc, center-crop the excess, then
+// mask everything outside the disc to transparent. The image's own borders
+// bleed right up to the circle's rim; nothing black peeks in.
+fn disc_fill_image(source: &Image, size: i32) -> Image {
+    let (w, h) = (source.width(), source.height());
+    if w <= 0 || h <= 0 || size <= 0 {
+        return source.clone();
+    }
+    let (cw, ch, ox, oy) = cover_crop_rect(w, h, size);
     let mut work = source.clone();
-    work.resize(nw, nh);
-    work.resize_canvas(size, size, ox, oy, Color::BLACK);
+    work.resize(cw, ch);
+    work.crop(Rectangle::new(ox as f32, oy as f32, size as f32, size as f32));
     let mut mask = Image::gen_image_color(size, size, Color::BLACK);
     mask.draw_circle(size / 2, size / 2, (size / 2).max(1), Color::WHITE);
     work.alpha_mask(&mask);
     work
+}
+
+// The "cover" crop: upscale `w x h` until the shorter side spans `size`, then
+// centre the resulting `cw x ch` so a `size x size` window starting at
+// (ox, oy) holds the middle of the image. Pure so it can be unit-tested.
+fn cover_crop_rect(w: i32, h: i32, size: i32) -> (i32, i32, i32, i32) {
+    if w <= 0 || h <= 0 || size <= 0 {
+        return (w, h, 0, 0);
+    }
+    let scale = (size as f32 / w as f32).max(size as f32 / h as f32);
+    let (cw, ch) = ((w as f32 * scale) as i32, (h as f32 * scale) as i32);
+    let (ox, oy) = ((cw - size) / 2, (ch - size) / 2);
+    (cw, ch, ox, oy)
 }
 
 // Downscale `w x h` to have its longest side fit `size`, preserving aspect
@@ -333,19 +350,7 @@ fn build_node_thumb(asset: &Path) -> Option<Image> {
             .ok()
             .or_else(|| Image::load_image(&asset.to_string_lossy()).ok())?
     };
-    Some(disc_crop_image(&general, THUMB_SIZE as i32))
-}
-
-// Plane a `w x h` image onto a `size x size` square canvas: new dimensions
-// keeping aspect plus centred canvas offsets. Pure so it is unit-testable.
-fn thumb_layout(w: i32, h: i32, size: i32) -> (i32, i32, i32, i32) {
-    if w <= 0 || h <= 0 || size <= 0 {
-        return (1, 1, 0, 0);
-    }
-    let scale = (size as f32 / w as f32).min(size as f32 / h as f32);
-    let (nw, nh) = (((w as f32 * scale) as i32).max(1), ((h as f32 * scale) as i32).max(1));
-    let (ox, oy) = ((size - nw) / 2, (size - nh) / 2);
-    (nw, nh, ox, oy)
+    Some(disc_fill_image(&general, THUMB_SIZE as i32))
 }
 
 pub fn has_thumb(path: &Path) -> bool {
@@ -422,29 +427,34 @@ mod tests {
     }
 
     #[test]
-    fn thumbnail_layout_fits_any_aspect_into_a_square() {
-        // Square source fills the canvas with no offsets.
-        let (nw, nh, ox, oy) = thumb_layout(256, 256, 256);
-        assert_eq!((nw, nh), (256, 256));
+    fn cover_fills_the_disc_for_any_aspect() {
+        // Square source: exact cover, no excess to crop.
+        let (cw, ch, ox, oy) = cover_crop_rect(256, 256, 256);
+        assert_eq!((cw, ch), (256, 256));
         assert_eq!((ox, oy), (0, 0));
 
-        // Wide image: letterboxed on top and bottom.
-        let (nw, nh, ox, oy) = thumb_layout(1920, 1080, 256);
-        assert_eq!((nw, nh), (256, 144));
-        assert_eq!((ox, oy), (0, 56));
+        // Wide image: upscaled until the *height* spans the disc; the width
+        // overflows and is centre-cropped on the sides.
+        let (cw, ch, ox, oy) = cover_crop_rect(1920, 1080, 256);
+        assert_eq!(ch, 256);
+        assert!(cw > 256);
+        assert_eq!(oy, 0);
+        assert_eq!(ox, (cw - 256) / 2);
 
-        // Tall image: letterboxed on the sides.
-        let (nw, nh, ox, oy) = thumb_layout(1080, 1920, 256);
-        assert_eq!((nw, nh), (144, 256));
-        assert_eq!((ox, oy), (56, 0));
+        // Tall image: upscaled until the *width* spans the disc; height
+        // overflows and is centre-cropped on top/bottom.
+        let (cw, ch, ox, oy) = cover_crop_rect(1080, 1920, 256);
+        assert_eq!(cw, 256);
+        assert!(ch > 256);
+        assert_eq!(ox, 0);
+        assert_eq!(oy, (ch - 256) / 2);
 
-        // Everything stays inside the canvas.
-        for (w, h) in [(1920, 1080), (40, 100), (13, 7), (1, 1), (2048, 2048)] {
-            let (nw, nh, ox, oy) = thumb_layout(w, h, 256);
-            assert!(nw >= 1 && nh >= 1);
-            assert!(nw <= 256 && nh <= 256);
-            assert!(ox >= 0 && oy >= 0);
-            assert!(ox + nw <= 256 && oy + nh <= 256);
+        // The cropped window is always centred and fully inside the scaled image.
+        for (w, h) in [(1920, 1080), (40, 100), (13, 7), (1, 1), (2048, 2048), (256, 256)] {
+            let (cw, ch, ox, oy) = cover_crop_rect(w, h, 256);
+            assert!(cw >= 256 && ch >= 256, "{w}x{h}: cover must fill the disc");
+            let (ocw, och) = (ox as f32 + 256.0, oy as f32 + 256.0);
+            assert!(ox >= 0 && oy >= 0 && ocw <= cw as f32 + 1.0 && och <= ch as f32 + 1.0);
         }
     }
 
