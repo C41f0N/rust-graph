@@ -293,6 +293,8 @@ pub fn load_from_file(path: &Path) {
     // A drag or double-click chain started before the editor closed must not
     // leak into the freshly loaded buffer.
     crate::editor::hit_test::reset_click_state();
+    // A newly loaded note starts with a clean undo/redo history.
+    crate::editor::history::clear();
 
     buffer.clear();
     // Force a follow on the first rendered frame after opening: the cursor is

@@ -3,6 +3,7 @@ use raylib::prelude::*;
 use crate::config;
 use crate::editor::autocomplete;
 use crate::editor::buffer;
+use crate::editor::history;
 use crate::editor::hit_test;
 use crate::editor::text;
 use crate::frontmatter;
@@ -91,6 +92,9 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // Compute selection state once
     let sel = buffer::selection_range(*anchor_x, *anchor_y, *cursor_x, *cursor_y);
 
+    // Timestamp shared by all history snapshots this frame.
+    let edit_now_ms = (rl.get_time() * 1000.0) as u64;
+
     // Mouse wheel scrolls the content viewport. The renderer clamps the
     // offset to the real content height each frame, so we just nudge it.
     let wheel = rl.get_mouse_wheel_move();
@@ -131,6 +135,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                 {
                     let mut ac = autocomplete::AUTOCOMPLETE.write().unwrap();
                     if ac.active && !ac.matches.is_empty() {
+                        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
                         let idx = m.y as i32 - ry;
                         let row = (idx.max(0) as usize).min(ac.matches.len().saturating_sub(1));
                         ac.selected = row;
@@ -324,6 +329,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
 
     if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) && rl.is_key_pressed(KeyboardKey::KEY_X) {
         if let Some((sy, sx, ey, ex)) = sel {
+            history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
             let text = if sy == ey {
                 buffer[sy][sx..ex].to_string()
             } else {
@@ -356,6 +362,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // ------------------------------------------------------------
 
     if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) && rl.is_key_pressed(KeyboardKey::KEY_V) {
+        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
         // Delete selection first if active
         if let Some((sy, sx, ey, ex)) = sel {
             let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
@@ -424,6 +431,45 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     }
 
     // ------------------------------------------------------------
+    // Ctrl + Z = undo, Ctrl + Y / Ctrl + Shift + Z = redo
+    // ------------------------------------------------------------
+
+    {
+        let ctrl = rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+            || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL);
+        let shift = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+            || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+        let z = rl.is_key_pressed(KeyboardKey::KEY_Z);
+        let y = rl.is_key_pressed(KeyboardKey::KEY_Y);
+
+        if ctrl && (z || y) {
+            let caret = (*cursor_y, *cursor_x);
+            let hist = if y || (z && shift) {
+                history::redo(&buffer, caret)
+            } else {
+                history::undo(&buffer, caret)
+            };
+
+            if let Some(hist) = hist {
+                if !hist.lines.is_empty() {
+                    *buffer = hist.lines;
+                    *cursor_y = hist.cursor.0.min(buffer.len() as i32 - 1);
+                    *cursor_x = hist
+                        .cursor
+                        .1
+                        .min(buffer[*cursor_y as usize].len() as i32);
+                    *anchor_x = *cursor_x;
+                    *anchor_y = *cursor_y;
+                    // Force the renderer to follow the restored caret.
+                    *buffer::LAST_CURSOR.write().unwrap() = (i32::MIN, i32::MIN);
+                    buffer::mark_modified();
+                }
+            }
+            return;
+        }
+    }
+
+    // ------------------------------------------------------------
     // Autocomplete: detect [[ ... and handle its keys
     // ------------------------------------------------------------
 
@@ -459,6 +505,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             }
 
             if enter && !state.matches.is_empty() {
+                history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
                 let y = *cursor_y as usize;
                 let x = *cursor_x as usize;
                 let nx = autocomplete::apply_selection(&mut state, &mut buffer, y, x);
@@ -489,6 +536,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         let shift = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
             || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
 
+        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
         if let Some((sy, sx, ey, ex)) = sel {
             let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
             *cursor_x = nx;
@@ -519,10 +567,21 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // Text input
     // ------------------------------------------------------------
 
-    while let Some(ch) = rl.get_char_pressed() {
-        let c = char::from_u32(ch as u32).unwrap();
+    let typed: Vec<char> = {
+        let mut out = Vec::new();
+        while let Some(ch) = rl.get_char_pressed() {
+            if let Some(c) = char::from_u32(ch as u32) {
+                if !c.is_control() {
+                    out.push(c);
+                }
+            }
+        }
+        out
+    };
 
-        if !c.is_control() {
+    if !typed.is_empty() {
+        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::CharInsert, edit_now_ms);
+        for c in typed {
             if let Some((sy, sx, ey, ex)) = sel {
                 let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
                 *cursor_x = nx;
@@ -546,6 +605,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         && (rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_BACKSPACE))
     {
+        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
         if let Some((sy, sx, ey, ex)) = sel {
             let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
             *cursor_x = nx;
@@ -582,6 +642,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         && (rl.is_key_pressed(KeyboardKey::KEY_DELETE)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_DELETE))
     {
+        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
         if let Some((sy, sx, ey, ex)) = sel {
             let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
             *cursor_x = nx;
@@ -823,6 +884,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE)
         || rl.is_key_pressed_repeat(KeyboardKey::KEY_BACKSPACE)
     {
+        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
         if let Some((sy, sx, ey, ex)) = sel {
             let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
             *cursor_x = nx;
@@ -853,6 +915,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     if rl.is_key_pressed(KeyboardKey::KEY_DELETE)
         || rl.is_key_pressed_repeat(KeyboardKey::KEY_DELETE)
     {
+        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
         if let Some((sy, sx, ey, ex)) = sel {
             let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
             *cursor_x = nx;
@@ -903,6 +966,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // ------------------------------------------------------------
 
     if rl.is_key_pressed(KeyboardKey::KEY_ENTER) || rl.is_key_pressed_repeat(KeyboardKey::KEY_ENTER) {
+        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
         if let Some((sy, sx, ey, ex)) = sel {
             let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
             *cursor_x = nx;

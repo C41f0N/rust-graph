@@ -13,6 +13,7 @@ pub static LAST_EDIT_MILLIS: AtomicU64 = AtomicU64::new(0);
 pub mod autocomplete;
 pub mod blocks;
 pub mod buffer;
+pub mod history;
 pub mod hit_test;
 pub mod images;
 pub mod input_handler;
