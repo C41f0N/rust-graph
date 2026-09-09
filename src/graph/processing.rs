@@ -16,6 +16,19 @@ pub const NODE_MAX_RADIUS: f32 = 15.0;
 // purpose, so node size still signals hub-ness without exploding linearly.
 pub const NODE_RADIUS_GROWTH: f32 = 2.0;
 
+// Repulsion interaction radius (world units). Pairs closer than this feel
+// each other's repulsion; beyond it the force is zero. Because repulsion
+// falls off as 1/d^2, at this distance it is already negligible, so cutting
+// it off barely changes the settled layout while letting the force loop use a
+// spatial grid instead of checking every pair (O(n) instead of O(n^2)).
+const REPULSION_RADIUS: f32 = 130.0;
+// Excessively close (overlapping) nodes sit at or under this separation, so
+// the inverse-square law cannot explode and fling pairs apart.
+const REPULSION_MIN_DIST: f32 = 300.0;
+const REPULSION_K: f32 = 25000.0;
+// Cap on a single pair's repulsion acceleration, for the same reason.
+const REPULSION_MAX_MAG: f32 = 600.0;
+
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static HOVER_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static NODES: RwLock<Vec<Node>> = RwLock::new(Vec::<Node>::new());
@@ -389,6 +402,56 @@ pub fn rename_node(idx: usize, new_name: &str) -> bool {
     true
 }
 
+// Repulsion between every pair closer than REPULSION_RADIUS, computed with a
+// spatial grid. Cell size equals the interaction radius, so a repelling pair
+// can only occupy the same cell or two adjacent ones: scanning the 3x3 cell
+// neighborhood of each node finds every pair within range (and none beyond,
+// where the force would be zero anyway). Returns one accumulated force per
+// node. Pure and unit-testable; the graph's own repulsion constants are used.
+fn repulsion_forces(positions: &[Vector2]) -> Vec<Vector2> {
+    let mut forces = vec![Vector2::zero(); positions.len()];
+
+    let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
+        std::collections::HashMap::with_capacity(positions.len());
+    for (i, pos) in positions.iter().enumerate() {
+        let cell = (
+            (pos.x / REPULSION_RADIUS).floor() as i32,
+            (pos.y / REPULSION_RADIUS).floor() as i32,
+        );
+        grid.entry(cell).or_default().push(i);
+    }
+
+    for i in 0..positions.len() {
+        let pi = positions[i];
+        let cx = (pi.x / REPULSION_RADIUS).floor() as i32;
+        let cy = (pi.y / REPULSION_RADIUS).floor() as i32;
+        for cy2 in cy - 1..=cy + 1 {
+            for cx2 in cx - 1..=cx + 1 {
+                let Some(cell) = grid.get(&(cx2, cy2)) else {
+                    continue;
+                };
+                for &j in cell {
+                    if i == j {
+                        continue;
+                    }
+                    let diff = pi - positions[j];
+                    let dist = diff.length();
+                    if dist >= REPULSION_RADIUS {
+                        continue;
+                    }
+                    let d = dist.max(REPULSION_MIN_DIST);
+                    // Softened inverse-square repulsion that vanishes smoothly
+                    // at the interaction radius (never a hard pop at the edge).
+                    let mag = (REPULSION_K / (d * d) * (1.0 - dist / REPULSION_RADIUS))
+                        .min(REPULSION_MAX_MAG);
+                    forces[i] += diff * (1.0 / d) * mag;
+                }
+            }
+        }
+    }
+    forces
+}
+
 pub fn update_forces(rl: &mut RaylibHandle) {
     let mut nodes = NODES.write().unwrap();
     let edges = EDGES.read().unwrap();
@@ -396,26 +459,14 @@ pub fn update_forces(rl: &mut RaylibHandle) {
     let dragging_node = DRAGGING_NODE.read().unwrap();
     let delta_time = rl.get_frame_time();
 
-    let repulsion_k = 25000.0_f32;
     let spring_k = 0.90;
     // Rest length exceeds two node radii so connected nodes don't overlap once
     // the layout settles (nodes are NODE_BASE_RADIUS ~ 15).
     let rest_length = 60.0_f32;
     let damping = 0.95;
-    let mut forces = vec![Vector2::zero(); nodes.len()];
 
-    for i in 0..nodes.len() {
-        for j in 0..nodes.len() {
-            if i == j {
-                continue;
-            }
-            let pi = nodes[i].position;
-            let pj = nodes[j].position;
-            let diff = pi - pj;
-            let dist = diff.length().max(1.0);
-            forces[i] += diff * (repulsion_k / (dist * dist * dist));
-        }
-    }
+    let positions: Vec<Vector2> = nodes.iter().map(|n| n.position).collect();
+    let mut forces = repulsion_forces(&positions);
 
     let center = Vector2::new(WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0);
     let gravity_k = 0.1_f32;
@@ -451,6 +502,66 @@ mod tests {
     // These tests drive the same process-global NAV_STACK/DIR_PATH statics, so
     // cargo's parallel test threads would stomp on each other. Serialize them.
     static TEST_NAV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn repulsion_is_local_to_the_radius() {
+        let cluster = vec![
+            Vector2::new(0.0, 0.0),
+            Vector2::new(5.0, 0.0),
+            Vector2::new(0.0, 5.0),
+            Vector2::new(-3.0, -2.0),
+        ];
+        let f = repulsion_forces(&cluster);
+        for i in 0..cluster.len() {
+            assert!(f[i].length() > 0.0, "cluster members must repel each other");
+        }
+
+        // A pair further apart than the radius feels nothing at all.
+        let far = vec![Vector2::new(0.0, 0.0), Vector2::new(200.0, 200.0)];
+        let g = repulsion_forces(&far);
+        assert_eq!(g[0].length(), 0.0);
+        assert_eq!(g[1].length(), 0.0);
+    }
+
+    #[test]
+    fn grid_repulsion_matches_brute_force() {
+        let mut rng = rand::rng();
+        let positions: Vec<Vector2> = (0..200)
+            .map(|_| {
+                Vector2::new(
+                    rng.random_range(-400.0..400.0),
+                    rng.random_range(-400.0..400.0),
+                )
+            })
+            .collect();
+
+        let fast = repulsion_forces(&positions);
+
+        let mut brute = vec![Vector2::zero(); positions.len()];
+        for i in 0..positions.len() {
+            for j in 0..positions.len() {
+                if i == j {
+                    continue;
+                }
+                let diff = positions[i] - positions[j];
+                let dist = diff.length();
+                if dist >= REPULSION_RADIUS {
+                    continue;
+                }
+                let d = dist.max(REPULSION_MIN_DIST);
+                let mag = (REPULSION_K / (d * d) * (1.0 - dist / REPULSION_RADIUS))
+                    .min(REPULSION_MAX_MAG);
+                brute[i] += diff * (1.0 / d) * mag;
+            }
+        }
+
+        for (a, b) in fast.iter().zip(brute.iter()) {
+            assert!(
+                (a.x - b.x).abs() < 1e-2 && (a.y - b.y).abs() < 1e-2,
+                "grid and brute-force repulsion disagree"
+            );
+        }
+    }
 
     #[test]
     fn navigate_into_pushes_and_changes_dir() {
