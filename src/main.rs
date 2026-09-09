@@ -94,7 +94,7 @@ if let Some((idx, src)) = HEADER_PICK_RESULT.write().unwrap().take() {
         if let Ok(rel) = dst.strip_prefix(&root) {
             let header_rel = rel.to_string_lossy().to_string();
             if attach_header(idx, &format!("[[{}]]", header_rel)) {
-                editor::images::ensure_loaded(&mut rl, &thread, &dst);
+                editor::images::request_full(&dst);
             }
         }
     }
@@ -224,7 +224,7 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
                     for target in filesystem::parse_links(line) {
                         if editor::images::is_image_target(&target) {
                             if let Some(path) = editor::images::resolve_path(&target) {
-                                editor::images::ensure_loaded(&mut rl, &thread, &path);
+                                editor::images::request_full(&path);
                             }
                         }
                     }
@@ -235,10 +235,10 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
         // Preload node header images (frontmatter `header:` targets) for the
         // graph, but only for nodes inside the camera's viewport plus a small
         // margin, so panning through a large graph never decodes offscreen
-        // images. Headers render from small circular thumbnails (persisted
-        // under assets/thumbnails/), so after the first visit this is just a
-        // cheap 256x256 PNG load; the thumbnail cache short-circuits once a
-        // texture is loaded.
+        // images. Requests are non-blocking: the background loader decodes and
+        // the worker hands back ready images (thumbnail or full-resolution)
+        // which the sync() below uploads on this thread. Headers render from
+        // small thumbnails; once generated this is just a 256px PNG decode.
         if !editor_open {
             let bounds = graph::renderer::world_view_bounds();
             let nodes = NODES.read().unwrap();
@@ -249,12 +249,15 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
                 if let Some(header) = &node.header {
                     if editor::images::is_image_target(header) {
                         if let Some(path) = resolve_header_path(header) {
-                            editor::images::ensure_thumb_loaded(&mut rl, &thread, &path);
+                            editor::images::request_thumb(&path);
                         }
                     }
                 }
             }
         }
+
+        // Upload whatever the background loader finished since the last frame.
+        editor::images::sync(&mut rl, &thread);
 
         let mut d = rl.begin_drawing(&thread);
 
