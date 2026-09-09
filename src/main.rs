@@ -9,6 +9,25 @@ mod graph;
 
 use graph::processing::*;
 
+// Navigate the graph into the sub-graph folder of the note currently open in
+// the editor. Mirrors double-clicking a sub-graph node, so the breadcrumb
+// stack, node set and camera all update identically.
+fn open_editing_subgraph() {
+    // Copy the index before any body locks: the if-let below must not hold
+    // the EDITING_NODE read guard while generate_nodes_from_directory takes a
+    // write lock on it (the graph double-click path drops every guard first).
+    let editing = *EDITING_NODE.read().unwrap();
+    if let Some(idx) = editing {
+        let nodes = NODES.read().unwrap();
+        if idx < nodes.len() && nodes[idx].has_subgraph {
+            let name = nodes[idx].name.clone();
+            drop(nodes);
+            navigate_into(&name);
+            generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+        }
+    }
+}
+
 fn main() {
     let height = config::HEIGHT;
     let width = config::WIDTH;
@@ -28,10 +47,9 @@ fn main() {
     }
 
     let mut editor_open = false;
-    let editor_dimentions = Vector2::new(
-        config::EDITOR_PANEL_FRACTION,
-        config::EDITOR_PANEL_FRACTION,
-    );
+    // Panel size is recomputed every frame from the fullscreen toggle; only
+    // ever read after the first assignment inside the loop.
+    let mut editor_dimentions;
 
     // 1. Initialize the Raylib window and context
     let (mut rl, thread) = raylib::init()
@@ -79,6 +97,13 @@ fn main() {
 
         // Close button in the editor heading bar
         if editor::CLOSE_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            editor_open = false;
+        }
+
+        // "Open sub-graph" button in the editor heading bar: navigate the
+        // graph into the note's companion folder and close the editor.
+        if editor::OPEN_SUBGRAPH_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            open_editing_subgraph();
             editor_open = false;
         }
 
@@ -258,6 +283,14 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
 
         // Upload whatever the background loader finished since the last frame.
         editor::images::sync(&mut rl, &thread);
+
+        // The fullscreen toggle resizes the editor panel; recompute it here so
+        // the renderer and its heading bar always agree with the flag.
+        let (_, _, panel_w, panel_h) = editor::panel_bounds();
+        editor_dimentions = Vector2::new(
+            panel_w as f32 / config::WIDTH as f32,
+            panel_h as f32 / config::HEIGHT as f32,
+        );
 
         let mut d = rl.begin_drawing(&thread);
 

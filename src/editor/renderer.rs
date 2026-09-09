@@ -99,18 +99,25 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
     let editor_width = (editor_dimentions.x * config::WIDTH as f32) as i32;
 
     if editor_open {
-        // The background
-        d.draw_rectangle_rounded(
-            Rectangle::new(
-                config::WIDTH as f32 * (1. - editor_dimentions.x) * 0.5,
-                config::HEIGHT as f32 * (1. - editor_dimentions.y) * 0.5,
-                config::WIDTH as f32 * editor_dimentions.x,
-                config::HEIGHT as f32 * editor_dimentions.y,
-            ),
-            0.05,
-            0,
-            Color::BLACK.alpha(0.5),
-        );
+        let fullscreen = editor::FULLSCREEN.load(std::sync::atomic::Ordering::Relaxed);
+
+        // The background: a rounded translucent panel normally, fully opaque
+        // when the editor is fullscreen so nothing bleeds through behind it.
+        if fullscreen {
+            d.draw_rectangle(0, 0, config::WIDTH, config::HEIGHT, Color::new(22, 22, 26, 255));
+        } else {
+            d.draw_rectangle_rounded(
+                Rectangle::new(
+                    config::WIDTH as f32 * (1. - editor_dimentions.x) * 0.5,
+                    config::HEIGHT as f32 * (1. - editor_dimentions.y) * 0.5,
+                    config::WIDTH as f32 * editor_dimentions.x,
+                    config::HEIGHT as f32 * editor_dimentions.y,
+                ),
+                0.05,
+                0,
+                Color::BLACK.alpha(0.5),
+            );
+        }
 
         let editor_x = ((1.0 - editor_dimentions.x) * 0.5 * config::WIDTH as f32) as i32;
         let editor_y = ((1.0 - editor_dimentions.y) * 0.5 * config::HEIGHT as f32) as i32;
@@ -154,6 +161,70 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         let x_x = editor_x + editor_width - padding - x_w;
         let x_y = name_y;
 
+        // Fullscreen toggle just left of the X: an outlined box, with a nested
+        // box while active. Drawing it means it does not depend on the font
+        // atlas having a glyph.
+        let fs_side = config::EDITOR_FONT_SIZE + 8;
+        let fs_x = x_x - fs_side - 8;
+        let fs_y = editor_y + (header_h - fs_side) / 2;
+        let inset = fs_side / 4;
+        let over_fs = {
+            let m = d.get_mouse_position();
+            m.x as i32 >= fs_x
+                && m.x as i32 <= fs_x + fs_side
+                && m.y as i32 >= fs_y
+                && m.y as i32 <= fs_y + fs_side
+        };
+        let fs_icon_color = if over_fs {
+            Color::WHITE
+        } else {
+            Color::new(180, 180, 180, 255)
+        };
+        let fs_bw = fs_side - 2 * inset;
+        let fs_bx = fs_x + inset;
+        let fs_by = fs_y + inset;
+        if fullscreen {
+            // Restore glyph: two overlapping boxes offset diagonally.
+            d.draw_rectangle_lines(fs_bx + 4, fs_by, fs_bw - 4, fs_bw - 4, fs_icon_color);
+            d.draw_rectangle_lines(fs_bx, fs_by + 4, fs_bw - 4, fs_bw - 4, fs_icon_color);
+        } else {
+            // Expand glyph: a single outline box.
+            d.draw_rectangle_lines(fs_bx, fs_by, fs_bw, fs_bw, fs_icon_color);
+        }
+
+        // "Open sub-graph" button (leftmost), only when the note being edited
+        // has a companion sub-graph folder.
+        let has_subgraph = {
+            let editing = crate::graph::processing::EDITING_NODE.read().unwrap();
+            let nodes = crate::graph::processing::NODES.read().unwrap();
+            editing
+                .and_then(|i| nodes.get(i))
+                .is_some_and(|n| n.has_subgraph)
+        };
+        if has_subgraph {
+            let sg_label = ">>";
+            let sg_w = text::measure(&d, sg_label, config::EDITOR_FONT_SIZE);
+            let sg_x = fs_x - sg_w - 10;
+            let sg_y = name_y;
+            let over_sg = {
+                let m = d.get_mouse_position();
+                m.x as i32 >= sg_x
+                    && m.x as i32 <= sg_x + sg_w
+                    && m.y as i32 >= sg_y
+                    && m.y as i32 <= sg_y + config::EDITOR_FONT_SIZE
+            };
+            let sg_color = if over_sg {
+                Color::WHITE
+            } else {
+                Color::new(180, 180, 180, 255)
+            };
+            d.draw_rectangle(sg_x - 4, sg_y, sg_w + 8, config::EDITOR_FONT_SIZE, Color::new(40, 40, 46, 200));
+            text::draw(&mut d, sg_label, sg_x, sg_y, config::EDITOR_FONT_SIZE, sg_color);
+            if over_sg && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+                editor::OPEN_SUBGRAPH_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
         let mouse = d.get_mouse_position();
         let over_x = mouse.x as i32 >= x_x
             && mouse.x as i32 <= x_x + x_w
@@ -169,6 +240,13 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         if over_x && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
             editor::CLOSE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        if over_fs && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            editor::FULLSCREEN.store(
+                !fullscreen,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
 
         // Separator line below the header

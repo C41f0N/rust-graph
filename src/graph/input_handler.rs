@@ -43,7 +43,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
     if *editor_open {
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
-            let (ex, ey, ew, eh) = config::editor_panel_bounds();
+            let (ex, ey, ew, eh) = crate::editor::panel_bounds();
             let m = rl.get_mouse_position();
             let inside = m.x as i32 >= ex
                 && m.x as i32 <= ex + ew

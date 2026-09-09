@@ -114,7 +114,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // ------------------------------------------------------------
 
     {
-        let (ex, ey, ew, eh) = config::editor_panel_bounds();
+        let (ex, ey, ew, eh) = crate::editor::panel_bounds();
         let header_h = config::EDITOR_HEADER_HEIGHT;
         let content_top = ey + header_h;
         let content_h = eh - header_h;
