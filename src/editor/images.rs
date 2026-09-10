@@ -1,7 +1,7 @@
 use raylib::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Mutex, OnceLock, RwLock};
+use std::sync::{mpsc, Condvar, Mutex, OnceLock, RwLock};
 
 // raylib's Texture2D owns a GPU texture, so it is neither Send nor Sync.
 // Every load/unload and every draw happens on the main thread (the window's
@@ -46,9 +46,9 @@ fn thumb_cache() -> &'static RwLock<HashMap<PathBuf, Slot>> {
 //
 // Image decode, resize, mask and PNG export are CPU-only and safe off the
 // render thread (raylib's rule is that only GL-touching calls need the main
-// thread). So a single worker thread does all the slow work and hands finished
-// CPU images back through a channel; each frame's sync() uploads them. The
-// worker is spawned lazily on the first request.
+// thread). A small pool of worker threads does all the slow work and hands
+// finished CPU images back through a channel; each frame's sync() uploads them.
+// The workers are spawned lazily on the first request.
 enum Job {
     // Small general thumbnail (persisted next to the asset) plus the
     // disc-cropped variant the graph draws for node headers.
@@ -62,24 +62,57 @@ enum ReadyImage {
     Full { path: PathBuf, image: Option<CpuImage> },
 }
 
-static WORKER: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
+static WORKER: OnceLock<()> = OnceLock::new();
 static RESULTS: OnceLock<Mutex<mpsc::Receiver<ReadyImage>>> = OnceLock::new();
+static JOBS: OnceLock<(Mutex<VecDeque<Job>>, Condvar)> = OnceLock::new();
 
-fn worker_sender() -> &'static mpsc::Sender<Job> {
-    WORKER.get_or_init(|| {
-        let (tx, rx) = mpsc::channel();
-        let (rtx, rrx) = mpsc::channel();
-        let _ = RESULTS.set(Mutex::new(rrx));
-        std::thread::Builder::new()
-            .name("image-loader".into())
-            .spawn(move || worker_loop(rx, rtx))
-            .expect("spawn image loader thread");
-        tx
-    })
+fn jobs() -> &'static (Mutex<VecDeque<Job>>, Condvar) {
+    JOBS.get_or_init(|| (Mutex::new(VecDeque::new()), Condvar::new()))
 }
 
-fn worker_loop(rx: mpsc::Receiver<Job>, tx: mpsc::Sender<ReadyImage>) {
-    while let Ok(job) = rx.recv() {
+fn ensure_workers() {
+    WORKER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        let _ = RESULTS.set(Mutex::new(rx));
+        // Small fixed pool: decode/encode is mostly single-threaded per image,
+        // but 2-4 workers overlap I/O waits and a full first-run thumbnail
+        // wall, without oversubscribing the machine.
+        let n = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(2, 4);
+        for _ in 0..n {
+            let tx = tx.clone();
+            std::thread::Builder::new()
+                .name("image-loader".into())
+                .spawn(move || worker_loop(tx))
+                .expect("spawn image loader thread");
+        }
+    });
+}
+
+// Pop the next job: any full-res editor job first, otherwise the oldest
+// thumbnail. The queue lock is held only for the removal, never during work.
+fn pop_next(q: &mut VecDeque<Job>) -> Option<Job> {
+    if let Some(idx) = q.iter().position(|j| matches!(j, Job::Full { .. })) {
+        return q.remove(idx);
+    }
+    q.pop_front()
+}
+
+fn worker_loop(tx: mpsc::Sender<ReadyImage>) {
+    loop {
+        let job = {
+            let (lock, cvar) = jobs();
+            let mut q = lock.lock().unwrap();
+            let job = loop {
+                if let Some(j) = pop_next(&mut q) {
+                    break j;
+                }
+                q = cvar.wait(q).unwrap();
+            };
+            job
+        };
         let ready = match job {
             Job::Thumb { path } => ReadyImage::Thumb {
                 image: build_node_thumb(&path).map(CpuImage),
@@ -187,7 +220,10 @@ pub fn request_full(path: &Path) {
     }
     c.insert(path.to_path_buf(), Slot::Pending);
     drop(c);
-    worker_sender().send(Job::Full { path: path.to_path_buf() }).ok();
+    ensure_workers();
+    let (lock, cvar) = jobs();
+    lock.lock().unwrap().push_back(Job::Full { path: path.to_path_buf() });
+    cvar.notify_one();
 }
 
 pub fn has_texture(path: &Path) -> bool {
@@ -248,7 +284,10 @@ pub fn request_thumb(path: &Path) {
     }
     c.insert(path.to_path_buf(), Slot::Pending);
     drop(c);
-    worker_sender().send(Job::Thumb { path: path.to_path_buf() }).ok();
+    ensure_workers();
+    let (lock, cvar) = jobs();
+    lock.lock().unwrap().push_back(Job::Thumb { path: path.to_path_buf() });
+    cvar.notify_one();
 }
 
 // Force bilinear filtering so a thumbnail scaled around a node (usually drawn
