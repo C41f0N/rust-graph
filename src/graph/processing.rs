@@ -27,15 +27,18 @@ const EDGE_REST_GAP: f32 = 60.0;
 // checks them. Bigger spreads every cluster out, smaller keeps clusters
 // compact while still preventing nodes from touching.
 const REPULSION_RADIUS: f32 = 360.0;
-// Floor applied to the pair distance inside the 1/d^2 law. Deliberately small
-// (NOT near the radius — a large floor flattens the force into a constant):
-// it only avoids a divide-by-zero when two discs coincide, so the inverse
-// square term can still grow as nodes approach and shove them apart.
-const REPULSION_MIN_DIST: f32 = 4.0;
-const REPULSION_K: f32 = 8000.0;
-// Cap on a single pair's repulsion acceleration, so an initial pile-up cannot
-// fling nodes across the screen in one frame.
-const REPULSION_MAX_MAG: f32 = 1600.0;
+// Soft component (inverse-square of the pair distance): keeps clusters open
+// and gives every node gentle breathing room at any range under the cutoff.
+const REPULSION_K: f32 = 10000.0;
+// Hard component (inverse-square of the CLEARANCE between the two discs, i.e.
+// distance minus the sum of their radii). It grows without limit as a pair
+// approaches contact, so the repulsion itself is the barrier: no spring can
+// ever press two nodes into one another, and no overlap check exists.
+const REPULSION_CORE_K: f32 = 4000.0;
+// Clamp for the clearance fed to the hard core. 1px stops a divide-by-zero
+// when discs coincide while still giving the term ~4000 there - an order of
+// magnitude stronger than any spring force, so overlap is never reached.
+const REPULSION_MIN_CLEAR: f32 = 1.0;
 
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static HOVER_NODE: RwLock<Option<usize>> = RwLock::new(None);
@@ -417,7 +420,7 @@ pub fn rename_node(idx: usize, new_name: &str) -> bool {
 // neighborhood of each node finds every pair within range (and none beyond,
 // where the force would be zero anyway). Returns one accumulated force per
 // node. Pure and unit-testable; the graph's own repulsion constants are used.
-fn repulsion_forces(positions: &[Vector2]) -> Vec<Vector2> {
+fn repulsion_forces(positions: &[Vector2], radii: &[f32]) -> Vec<Vector2> {
     let mut forces = vec![Vector2::zero(); positions.len()];
 
     let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
@@ -448,12 +451,22 @@ fn repulsion_forces(positions: &[Vector2]) -> Vec<Vector2> {
                     if dist >= REPULSION_RADIUS {
                         continue;
                     }
-                    let d = dist.max(REPULSION_MIN_DIST);
-                    // Softened inverse-square repulsion that vanishes smoothly
-                    // at the interaction radius (never a hard pop at the edge).
-                    let mag = (REPULSION_K / (d * d) * (1.0 - dist / REPULSION_RADIUS))
-                        .min(REPULSION_MAX_MAG);
-                    forces[i] += diff * (1.0 / d) * mag;
+                    // Soft term: inward-square of the pair distance, keeping
+                    // clusters open at any range under the cutoff.
+                    let soft = if dist > 1e-3 {
+                        REPULSION_K / (dist * dist)
+                    } else {
+                        0.0
+                    };
+                    // Hard term: inverse-square of the clearance between the
+                    // two discs, unbounded as they near contact. This - not any
+                    // overlap fix-up - is what stops discs from ever touching.
+                    let clearance = (dist - (radii[i] + radii[j])).max(REPULSION_MIN_CLEAR);
+                    let hard = REPULSION_CORE_K / (clearance * clearance);
+                    // Both vanish smoothly at the interaction radius (no hard
+                    // pop at the edge of the grid cell).
+                    let mag = (soft + hard) * (1.0 - dist / REPULSION_RADIUS);
+                    forces[i] += diff.scale(mag / dist.max(1e-6));
                 }
             }
         }
@@ -472,7 +485,8 @@ pub fn update_forces(rl: &mut RaylibHandle) {
     let damping = 0.95;
 
     let positions: Vec<Vector2> = nodes.iter().map(|n| n.position).collect();
-    let mut forces = repulsion_forces(&positions);
+    let radii: Vec<f32> = nodes.iter().map(|n| n.radius).collect();
+    let mut forces = repulsion_forces(&positions, &radii);
 
     let center = Vector2::new(WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0);
     let gravity_k = 0.1_f32;
@@ -520,7 +534,8 @@ mod tests {
             Vector2::new(0.0, 5.0),
             Vector2::new(-3.0, -2.0),
         ];
-        let f = repulsion_forces(&cluster);
+        let radii = vec![7.0; cluster.len()];
+        let f = repulsion_forces(&cluster, &radii);
         for i in 0..cluster.len() {
             assert!(f[i].length() > 0.0, "cluster members must repel each other");
         }
@@ -531,7 +546,8 @@ mod tests {
             Vector2::zero(),
             Vector2::new(REPULSION_RADIUS * 2.0, REPULSION_RADIUS * 2.0),
         ];
-        let g = repulsion_forces(&far);
+        let far_radii = vec![7.0; 2];
+        let g = repulsion_forces(&far, &far_radii);
         assert_eq!(g[0].length(), 0.0);
         assert_eq!(g[1].length(), 0.0);
     }
@@ -547,8 +563,9 @@ mod tests {
                 )
             })
             .collect();
+        let radii: Vec<f32> = (0..200).map(|_| rng.random_range(5.0..15.0)).collect();
 
-        let fast = repulsion_forces(&positions);
+        let fast = repulsion_forces(&positions, &radii);
 
         let mut brute = vec![Vector2::zero(); positions.len()];
         for i in 0..positions.len() {
@@ -561,10 +578,15 @@ mod tests {
                 if dist >= REPULSION_RADIUS {
                     continue;
                 }
-                let d = dist.max(REPULSION_MIN_DIST);
-                let mag = (REPULSION_K / (d * d) * (1.0 - dist / REPULSION_RADIUS))
-                    .min(REPULSION_MAX_MAG);
-                brute[i] += diff * (1.0 / d) * mag;
+                let soft = if dist > 1e-3 {
+                    REPULSION_K / (dist * dist)
+                } else {
+                    0.0
+                };
+                let clearance = (dist - (radii[i] + radii[j])).max(REPULSION_MIN_CLEAR);
+                let hard = REPULSION_CORE_K / (clearance * clearance);
+                let mag = (soft + hard) * (1.0 - dist / REPULSION_RADIUS);
+                brute[i] += diff.scale(mag / dist.max(1e-6));
             }
         }
 
@@ -590,7 +612,7 @@ mod tests {
         let damping = 0.55_f32;
         let dt = 0.01_f32;
         for _ in 0..5000 {
-            let mut forces = repulsion_forces(&positions);
+            let mut forces = repulsion_forces(&positions, &[r1, r2]);
             let diff = positions[1] - positions[0];
             let dist = diff.length().max(1e-4);
             let direction = diff.scale(1.0 / dist);
@@ -606,12 +628,31 @@ mod tests {
 
         let sep = (positions[1] - positions[0]).length();
         assert!(sep >= r1 + r2 + 4.0, "connected pair must sit clearly apart, got {sep}");
+        // Even a violent head-on approach cannot compress the pair under the
+        // contact distance: the hard core's force grows unbounded as they near
+        // each other, so it decelerates them well before the discs touch.
+        let mut p3 = vec![Vector2::new(0.0, 0.0), Vector2::new(40.0, 0.0)];
+        let mut v3 = vec![Vector2::new(15.0, 0.0), Vector2::new(-15.0, 0.0)];
+        let mut min_sep: f32 = f32::MAX;
+        for _ in 0..2000 {
+            let forces = repulsion_forces(&p3, &[r1, r2]);
+            for i in 0..2 {
+                v3[i] = (v3[i] + forces[i] * dt) * damping;
+                p3[i] += v3[i] * dt;
+            }
+            min_sep = min_sep.min((p3[1] - p3[0]).length());
+        }
+        assert!(
+            min_sep >= r1 + r2 - 0.1,
+            "head-on collision must stop before contact, min separation {min_sep}"
+        );
         // Disconnected pairs only have repulsion; starting overlapped they too
         // shove apart and never re-collapse.
         let mut p2 = vec![Vector2::new(0.0, 0.0), Vector2::new(1.0, 1.0)];
         let mut v2 = vec![Vector2::zero(), Vector2::zero()];
+        let base_radii = [NODE_BASE_RADIUS; 2];
         for _ in 0..3000 {
-            let forces = repulsion_forces(&p2);
+            let forces = repulsion_forces(&p2, &base_radii);
             for i in 0..2 {
                 v2[i] = (v2[i] + forces[i] * dt) * damping;
                 p2[i] += v2[i] * dt;
