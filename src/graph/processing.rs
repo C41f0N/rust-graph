@@ -12,22 +12,30 @@ use std::sync::RwLock;
 // don't overlap.
 pub const NODE_BASE_RADIUS: f32 = 7.0;
 pub const NODE_MAX_RADIUS: f32 = 15.0;
-// Radius growth per child: BASE + GROWTH*sqrt(children). Sub-linear on
-// purpose, so node size still signals hub-ness without exploding linearly.
+// Radius growth per connection (edges are treated as bidirectional): BASE +
+// GROWTH*sqrt(degree). Sub-linear on purpose, so node size still signals
+// hub-ness without exploding linearly.
 pub const NODE_RADIUS_GROWTH: f32 = 2.0;
 
-// Repulsion interaction radius (world units). Pairs closer than this feel
-// each other's repulsion; beyond it the force is zero. Because repulsion
-// falls off as 1/d^2, at this distance it is already negligible, so cutting
-// it off barely changes the settled layout while letting the force loop use a
-// spatial grid instead of checking every pair (O(n) instead of O(n^2)).
-const REPULSION_RADIUS: f32 = 130.0;
-// Excessively close (overlapping) nodes sit at or under this separation, so
-// the inverse-square law cannot explode and fling pairs apart.
-const REPULSION_MIN_DIST: f32 = 300.0;
-const REPULSION_K: f32 = 25000.0;
-// Cap on a single pair's repulsion acceleration, for the same reason.
-const REPULSION_MAX_MAG: f32 = 600.0;
+// Extra clearance every edge's spring keeps between the two discs it joins.
+// Added to the combined radii below, so every pair settles well beyond
+// touching regardless of how big the individual nodes are.
+const EDGE_REST_GAP: f32 = 60.0;
+
+// Repulsion interaction radius (world units). Pairs closer than this feel each
+// other's repulsion; beyond it the force is zero, so the spatial grid never
+// checks them. Bigger spreads every cluster out, smaller keeps clusters
+// compact while still preventing nodes from touching.
+const REPULSION_RADIUS: f32 = 360.0;
+// Floor applied to the pair distance inside the 1/d^2 law. Deliberately small
+// (NOT near the radius — a large floor flattens the force into a constant):
+// it only avoids a divide-by-zero when two discs coincide, so the inverse
+// square term can still grow as nodes approach and shove them apart.
+const REPULSION_MIN_DIST: f32 = 4.0;
+const REPULSION_K: f32 = 8000.0;
+// Cap on a single pair's repulsion acceleration, so an initial pile-up cannot
+// fling nodes across the screen in one frame.
+const REPULSION_MAX_MAG: f32 = 1600.0;
 
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static HOVER_NODE: RwLock<Option<usize>> = RwLock::new(None);
@@ -268,17 +276,18 @@ pub fn rebuild_edges() {
         }
     }
 
-    // Size each node by how many children it has: a hub with more outgoing
-    // edges grows so the hierarchy reads at a glance. The growth is
-    // sub-linear (sqrt of the child count) so hubs still stand out but
-    // diminishing returns stop a 20-child note from dominating the graph.
-    // Re-run on every edge rebuild so add/remove/rename/navigation all keep
-    // sizes current.
-    let mut child_counts = vec![0u32; nodes.len()];
+    // Size each node by its total connections, treated as bidirectional: every
+    // edge counts towards both ends, so a note that many others [[link]] to
+    // grows just like one that links out to many. The growth is sub-linear
+    // (sqrt of the connection count) so hubs still stand out but diminishing
+    // returns stop a 20-link note from dominating the graph. Re-run on every
+    // edge rebuild so add/remove/rename/navigation all keep sizes current.
+    let mut degree = vec![0u32; nodes.len()];
     for edge in edges.iter() {
-        child_counts[edge.n1] += 1;
+        degree[edge.n1] += 1;
+        degree[edge.n2] += 1;
     }
-    for (node, &count) in nodes.iter_mut().zip(&child_counts) {
+    for (node, &count) in nodes.iter_mut().zip(&degree) {
         node.radius =
             (NODE_BASE_RADIUS + NODE_RADIUS_GROWTH * (count as f32).sqrt()).min(NODE_MAX_RADIUS);
     }
@@ -460,9 +469,6 @@ pub fn update_forces(rl: &mut RaylibHandle) {
     let delta_time = rl.get_frame_time();
 
     let spring_k = 0.90;
-    // Rest length exceeds two node radii so connected nodes don't overlap once
-    // the layout settles (nodes are NODE_BASE_RADIUS ~ 15).
-    let rest_length = 60.0_f32;
     let damping = 0.95;
 
     let positions: Vec<Vector2> = nodes.iter().map(|n| n.position).collect();
@@ -480,9 +486,12 @@ pub fn update_forces(rl: &mut RaylibHandle) {
         let pi = nodes[edge.n1].position;
         let pj = nodes[edge.n2].position;
         let diff = pj - pi;
-        let dist = diff.length().max(1.0);
-        let force = spring_k * (dist - rest_length);
-        let direction = diff.normalize();
+        let dist = diff.length();
+        let direction = if dist > 0.001 { diff.scale(1.0 / dist) } else { Vector2::zero() };
+        // Rest length scales with the two disc radii plus a gap, so hubs (which
+        // grow) keep the same clear distance as the smallest nodes.
+        let rest = nodes[edge.n1].radius + nodes[edge.n2].radius + EDGE_REST_GAP;
+        let force = spring_k * (dist - rest);
         forces[edge.n1] += direction * force;
         forces[edge.n2] -= direction * force;
     }
@@ -516,8 +525,12 @@ mod tests {
             assert!(f[i].length() > 0.0, "cluster members must repel each other");
         }
 
-        // A pair further apart than the radius feels nothing at all.
-        let far = vec![Vector2::new(0.0, 0.0), Vector2::new(200.0, 200.0)];
+        // A pair further apart than the interaction radius feels nothing at
+        // all. Scaled off the constant so it tracks future tuning.
+        let far = vec![
+            Vector2::zero(),
+            Vector2::new(REPULSION_RADIUS * 2.0, REPULSION_RADIUS * 2.0),
+        ];
         let g = repulsion_forces(&far);
         assert_eq!(g[0].length(), 0.0);
         assert_eq!(g[1].length(), 0.0);
@@ -561,6 +574,83 @@ mod tests {
                 "grid and brute-force repulsion disagree"
             );
         }
+    }
+
+    #[test]
+    fn settled_pairs_stay_clear_regardless_of_size() {
+        // Integrate the same spring + repulsion forces update_forces uses (no
+        // gravity/camera) for a connected pair of very different sizes. The
+        // spring rest length is radii + EDGE_REST_GAP and repulsion balances
+        // just beyond it, so the settled gap is never an overlap.
+        let r1 = NODE_BASE_RADIUS;
+        let r2 = NODE_MAX_RADIUS;
+        let mut positions = vec![Vector2::new(0.0, 0.0), Vector2::new(3.0, 0.0)];
+        let mut velocities = vec![Vector2::zero(), Vector2::zero()];
+        let spring_k = 0.90_f32;
+        let damping = 0.55_f32;
+        let dt = 0.01_f32;
+        for _ in 0..5000 {
+            let mut forces = repulsion_forces(&positions);
+            let diff = positions[1] - positions[0];
+            let dist = diff.length().max(1e-4);
+            let direction = diff.scale(1.0 / dist);
+            let rest = r1 + r2 + EDGE_REST_GAP;
+            let force = spring_k * (dist - rest);
+            forces[0] += direction * force;
+            forces[1] -= direction * force;
+            for i in 0..2 {
+                velocities[i] = (velocities[i] + forces[i] * dt) * damping;
+                positions[i] += velocities[i] * dt;
+            }
+        }
+
+        let sep = (positions[1] - positions[0]).length();
+        assert!(sep >= r1 + r2 + 4.0, "connected pair must sit clearly apart, got {sep}");
+        // Disconnected pairs only have repulsion; starting overlapped they too
+        // shove apart and never re-collapse.
+        let mut p2 = vec![Vector2::new(0.0, 0.0), Vector2::new(1.0, 1.0)];
+        let mut v2 = vec![Vector2::zero(), Vector2::zero()];
+        for _ in 0..3000 {
+            let forces = repulsion_forces(&p2);
+            for i in 0..2 {
+                v2[i] = (v2[i] + forces[i] * dt) * damping;
+                p2[i] += v2[i] * dt;
+            }
+        }
+        let sep2 = (p2[1] - p2[0]).length();
+        assert!(sep2 >= 2.0 * NODE_BASE_RADIUS, "disconnected pair must not overlap, got {sep2}");
+    }
+
+    #[test]
+    fn node_size_counts_connections_in_both_directions() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_radius_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("hub.md"), "# Hub\n\n[[a]]\n[[b]]\n[[c]]\n[[d]]\n");
+        for x in ["a", "b", "c", "d"] {
+            filesystem::write_file(&dir.join(format!("{x}.md")), &format!("# {x}\n\n[[hub]]\n"));
+        }
+        filesystem::write_file(&dir.join("leaf.md"), "# Leaf\n\n[[hub]]\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let nodes = NODES.read().unwrap();
+        let hub = nodes.iter().find(|n| n.name == "hub").unwrap();
+        let leaf = nodes.iter().find(|n| n.name == "leaf").unwrap();
+        // hub: 4 outgoing links and 4 incoming ones (a..d all link back) plus
+        // leaf's link = degree 9. A leaf linking only to it has degree 1, so
+        // the inbound links must have grown the hub.
+        assert!(
+            hub.radius > leaf.radius,
+            "a node many notes link to must outgrow a leaf (hub {} vs leaf {})",
+            hub.radius,
+            leaf.radius
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
