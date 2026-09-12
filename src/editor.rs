@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::RwLock;
 
 use crate::config;
 
@@ -17,6 +18,16 @@ pub static OPEN_SUBGRAPH_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 // The buffer has unsaved edits since the last save.
 pub static DIRTY: AtomicBool = AtomicBool::new(false);
+
+// The placeholder body (editor open with no node) shows a "Create New Node"
+// button plus a filename prompt. CREATING_NODE, when set, makes the input
+// handler swallow everything while the prompt is up.
+pub static CREATING_NODE: AtomicBool = AtomicBool::new(false);
+pub static NEW_NODE_NAME: RwLock<String> = RwLock::new(String::new());
+
+// Screen rect of the placeholder's "Create New Node" button, written by the
+// renderer each placeholder frame and read by the input handler for clicks.
+pub static NEW_NODE_BUTTON: RwLock<Option<(i32, i32, i32, i32)>> = RwLock::new(None);
 
 // Timestamp (raylib GetTime seconds, scaled to millis) of the most recent
 // edit, used to autosave after a typing pause (no edits for a while).

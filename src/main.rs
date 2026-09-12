@@ -6,6 +6,7 @@ mod editor;
 mod filesystem;
 mod frontmatter;
 mod graph;
+mod sidebar;
 
 use graph::processing::*;
 
@@ -81,33 +82,38 @@ fn main() {
         // Capture editor state BEFORE input handling
         let was_open = editor_was_open;
 
-        // Read user input
-        if editor_open {
-            editor::input_handler::handle_input(&mut rl);
-        }
-        if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
-            let esc_consumed = {
-                let ac = editor::autocomplete::AUTOCOMPLETE.read().unwrap();
-                ac.esc_consumed
-            };
-            if !esc_consumed {
+        // Read user input. A click landing on the view-switcher bar consumes
+        // the frame: nothing behind it (editor caret/buttons, graph camera,
+        // node drag) gets that press.
+        let bar_consumed = sidebar::handle_input(&mut rl, &mut editor_open);
+        if !bar_consumed {
+            if editor_open {
+                editor::input_handler::handle_input(&mut rl);
+            }
+            if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+                let esc_consumed = {
+                    let ac = editor::autocomplete::AUTOCOMPLETE.read().unwrap();
+                    ac.esc_consumed
+                };
+                if !esc_consumed {
+                    editor_open = false;
+                }
+            }
+
+            // Close button in the editor heading bar
+            if editor::CLOSE_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
                 editor_open = false;
             }
-        }
 
-        // Close button in the editor heading bar
-        if editor::CLOSE_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            editor_open = false;
-        }
+            // "Open sub-graph" button in the editor heading bar: navigate the
+            // graph into the note's companion folder and close the editor.
+            if editor::OPEN_SUBGRAPH_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                open_editing_subgraph();
+                editor_open = false;
+            }
 
-        // "Open sub-graph" button in the editor heading bar: navigate the
-        // graph into the note's companion folder and close the editor.
-        if editor::OPEN_SUBGRAPH_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            open_editing_subgraph();
-            editor_open = false;
+            graph::input_handler::handle_input(&mut rl, &mut editor_open);
         }
-
-        graph::input_handler::handle_input(&mut rl, &mut editor_open);
 
         // A finished header-picker dialog (background thread) left a result: copy
 // the chosen file into the project's assets/ folder and write it into the
@@ -228,6 +234,10 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
                 }
             }
             *EDITING_NODE.write().unwrap() = None;
+            // A placeholder "Create New Node" prompt must not survive the
+            // editor closing (its state has no node behind it anymore).
+            editor::CREATING_NODE.store(false, std::sync::atomic::Ordering::Relaxed);
+            *editor::NEW_NODE_NAME.write().unwrap() = String::new();
         }
 
         editor_was_open = editor_open;
@@ -296,7 +306,10 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
 
         graph::renderer::draw(&mut d);
 
-        editor::renderer::draw(d, editor_open, editor_dimentions);
+        editor::renderer::draw(&mut d, editor_open, editor_dimentions);
+
+        // The view-switcher bar is drawn last so it stays on top of both views.
+        sidebar::draw(&mut d, editor_open);
     }
 }
 

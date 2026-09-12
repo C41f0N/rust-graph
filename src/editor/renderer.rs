@@ -86,7 +86,7 @@ fn line_editing(
     cursor_y as usize == line.line
 }
 
-pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
+pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
     let buf = buffer::BUFFER.read().unwrap();
     let cursor_x = buffer::CURSOR_X.read().unwrap();
     let cursor_y = buffer::CURSOR_Y.read().unwrap();
@@ -104,7 +104,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         // The background: a rounded translucent panel normally, fully opaque
         // when the editor is fullscreen so nothing bleeds through behind it.
         if fullscreen {
-            d.draw_rectangle(0, 0, config::WIDTH, config::HEIGHT, Color::new(22, 22, 26, 255));
+            d.draw_rectangle(0, 0, config::WIDTH, config::HEIGHT, Color::new(0, 0, 0, 255));
         } else {
             d.draw_rectangle_rounded(
                 Rectangle::new(
@@ -155,7 +155,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 .unwrap_or_default()
         };
         let name_y = editor_y + (header_h - config::EDITOR_FONT_SIZE) / 2;
-        text::draw(&mut d, 
+        text::draw(d, 
             &note_name,
             editor_x + padding,
             name_y,
@@ -227,7 +227,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 Color::new(180, 180, 180, 255)
             };
             d.draw_rectangle(sg_x - 4, sg_y, sg_w + 8, config::EDITOR_FONT_SIZE, Color::new(40, 40, 46, 200));
-            text::draw(&mut d, sg_label, sg_x, sg_y, config::EDITOR_FONT_SIZE, sg_color);
+            text::draw(d, sg_label, sg_x, sg_y, config::EDITOR_FONT_SIZE, sg_color);
             if over_sg && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
                 editor::OPEN_SUBGRAPH_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
             }
@@ -244,7 +244,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         } else {
             Color::new(180, 180, 180, 255)
         };
-        text::draw(&mut d, x_label, x_x, x_y, config::EDITOR_FONT_SIZE, x_color);
+        text::draw(d, x_label, x_x, x_y, config::EDITOR_FONT_SIZE, x_color);
 
         if over_x && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
             editor::CLOSE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -266,13 +266,92 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
             Color::new(255, 255, 255, 40),
         );
 
+        // --- No node open: placeholder instead of a buffer body. The editor
+        // is open but has nothing to save, so show guidance and a way to
+        // create a note instead of an editable document.
+        let has_node = crate::graph::processing::EDITING_NODE
+            .read()
+            .unwrap()
+            .is_some();
+        if !has_node {
+            let (cx0, cy0, cw, ch) = crate::editor::content_bounds();
+            let body_top = cy0 + header_h;
+            let body_h = (ch - header_h).max(1);
+            let cx = cx0 + cw / 2;
+            let cy = body_top + body_h / 2;
+
+            if crate::editor::CREATING_NODE.load(std::sync::atomic::Ordering::Relaxed) {
+                // Filename prompt (black/white, matches the placeholder).
+                let prompt = "Filename:";
+                let name = crate::editor::NEW_NODE_NAME.read().unwrap().clone();
+                let full = format!("{} {}", prompt, name);
+                let bw = text::measure(d, &full, 20) + 28;
+                let bh = 34;
+                let bx = cx - bw / 2;
+                let by = cy - bh / 2;
+                d.draw_rectangle(bx, by, bw, bh, Color::new(18, 18, 18, 235));
+                d.draw_rectangle_lines_ex(
+                    Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32),
+                    1.0,
+                    Color::new(255, 255, 255, 90),
+                );
+                let pw = text::measure(d, &format!("{} ", prompt), 20);
+                text::draw(d, &full, bx + 14, by + (bh - 20) / 2, 20, Color::WHITE);
+                let caret_x = bx + 14 + pw + text::measure(d, &name, 20);
+                d.draw_rectangle(caret_x, by + (bh - 20) / 2, 2, 20, Color::WHITE);
+            } else {
+                *crate::editor::NEW_NODE_BUTTON.write().unwrap() = None;
+
+                let msg = "No node open";
+                let msg_w = text::measure(d, msg, 24);
+                text::draw(d, msg, cx - msg_w / 2, cy - 64, 24, Color::new(255, 255, 255, 190));
+
+                let hint = "Select a node on the graph, or create a new one";
+                let hint_w = text::measure(d, hint, 16);
+                text::draw(d, hint, cx - hint_w / 2, cy - 30, 16, Color::new(255, 255, 255, 110));
+
+                let blabel = "Create New Node";
+                let bfont = 18;
+                let bw = text::measure(d, blabel, bfont) + 32;
+                let bh = 36;
+                let bx = cx - bw / 2;
+                let by = cy + 6;
+                let m = d.get_mouse_position();
+                let over = m.x as i32 >= bx
+                    && m.x as i32 <= bx + bw
+                    && m.y as i32 >= by
+                    && m.y as i32 <= by + bh;
+                d.draw_rectangle_lines_ex(
+                    Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32),
+                    1.0,
+                    if over {
+                        Color::WHITE
+                    } else {
+                        Color::new(255, 255, 255, 130)
+                    },
+                );
+                if over {
+                    d.draw_rectangle(bx + 1, by + 1, bw - 2, bh - 2, Color::new(255, 255, 255, 14));
+                }
+                let lw = text::measure(d, blabel, bfont);
+                let lc = if over {
+                    Color::WHITE
+                } else {
+                    Color::new(255, 255, 255, 170)
+                };
+                text::draw(d, blabel, bx + (bw - lw) / 2, by + (bh - bfont) / 2, bfont, lc);
+                *crate::editor::NEW_NODE_BUTTON.write().unwrap() = Some((bx, by, bw, bh));
+            }
+            return;
+        }
+
         // --- Content area (shifted down by header) ---
         let content_y = editor_y + header_h;
 
         let kinds = blocks::classify(&buf);
         let fm_range = frontmatter::line_range(&buf);
 
-        crate::editor::buffer::generate_visual_lines(max_width, &mut d);
+        crate::editor::buffer::generate_visual_lines(max_width, d);
 
         // Layout every visual line up front. This single layout is the source
         // of truth for the draw loop, the content height (which bounds the

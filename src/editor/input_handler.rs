@@ -72,6 +72,80 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // Keep a trailing empty line reachable before any navigation this frame.
     buffer::ensure_trailing_newline();
 
+    // ------------------------------------------------------------
+    // No node open: there is no file behind the buffer, so nothing may be
+    // edited or saved. The editor shows a placeholder instead; it only accepts
+    // the "Create New Node" click and, once active, the filename prompt.
+    // ------------------------------------------------------------
+    let has_node = crate::graph::processing::EDITING_NODE
+        .read()
+        .unwrap()
+        .is_some();
+    if !has_node {
+        if crate::editor::CREATING_NODE.load(std::sync::atomic::Ordering::Relaxed) {
+            // Filename prompt: type the name, Enter creates, Escape cancels.
+            while let Some(ch) = rl.get_char_pressed() {
+                let c = char::from_u32(ch as u32).unwrap();
+                if !c.is_control() {
+                    crate::editor::NEW_NODE_NAME.write().unwrap().push(c);
+                }
+            }
+            if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_BACKSPACE)
+            {
+                crate::editor::NEW_NODE_NAME.write().unwrap().pop();
+            }
+            if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_ENTER)
+            {
+                let stem = crate::editor::NEW_NODE_NAME.read().unwrap().clone();
+                let stem = if stem.trim().is_empty() {
+                    "untitled".to_string()
+                } else {
+                    stem.trim().to_string()
+                };
+                // Clear the prompt state before any further work (the read
+                // guard above is a temporary and is already dropped).
+                *crate::editor::NEW_NODE_NAME.write().unwrap() = String::new();
+                crate::editor::CREATING_NODE.store(false, std::sync::atomic::Ordering::Relaxed);
+
+                let dir = crate::graph::processing::DIR_PATH.read().unwrap().clone();
+                let idx = crate::graph::processing::add_node(&dir, &stem);
+                {
+                    let nodes = crate::graph::processing::NODES.read().unwrap();
+                    if let Some(path) = nodes.get(idx).map(|n| n.path.clone()) {
+                        drop(nodes);
+                        buffer::load_from_file(&path);
+                    }
+                }
+                *crate::graph::processing::EDITING_NODE.write().unwrap() = Some(idx);
+                crate::graph::processing::rebuild_edges();
+            }
+            if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+                *crate::editor::NEW_NODE_NAME.write().unwrap() = String::new();
+                crate::editor::CREATING_NODE.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            return;
+        }
+
+        // Placeholder: the only mouse affordance is the create button.
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            let m = rl.get_mouse_position();
+            let rect = crate::editor::NEW_NODE_BUTTON.read().unwrap().clone();
+            if let Some((bx, by, bw, bh)) = rect {
+                if m.x as i32 >= bx
+                    && m.x as i32 <= bx + bw
+                    && m.y as i32 >= by
+                    && m.y as i32 <= by + bh
+                {
+                    *crate::editor::NEW_NODE_NAME.write().unwrap() = String::new();
+                    crate::editor::CREATING_NODE.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+        return;
+    }
+
     let visual_lines = buffer::VISUAL_LINES.lock().unwrap();
     let mut buffer = buffer::BUFFER.write().unwrap();
     let mut cursor_x = buffer::CURSOR_X.write().unwrap();
