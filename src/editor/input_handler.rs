@@ -8,6 +8,31 @@ use crate::editor::hit_test;
 use crate::editor::text;
 use crate::frontmatter;
 
+// Execute a command chosen from the slash palette. Runs inline on the input
+// thread; asset import defers the (blocking) native dialog to main.rs and
+// returns immediately.
+fn run_command(cmd: crate::editor::command::Command) {
+    match cmd {
+        crate::editor::command::Command::AddAsset => {
+            crate::editor::command::request_asset_pick();
+        }
+    }
+}
+
+// Remove the "/command" text (from the word-initial slash to `x`) on line `y`.
+// Returns the new cursor X position.  If the slash is not found (e.g. the
+// region was already erased), `x` is returned unchanged.
+fn remove_command_text(buffer: &mut Vec<String>, y: usize, x: usize) -> i32 {
+    if let Some(flen) = crate::editor::command::detect(&buffer[y], x) {
+        let span = flen.len() + 1; // filter + the leading '/'
+        if x >= span {
+            buffer[y].drain(x - span..x);
+            return (x - span) as i32;
+        }
+    }
+    x as i32
+}
+
 fn prev_word_boundary(line: &str, x: usize) -> usize {
     let bytes = line.as_bytes();
     let mut i = x.min(bytes.len());
@@ -546,6 +571,165 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             }
             return;
         }
+    }
+
+    // ------------------------------------------------------------
+    // Slash-command picker. The "/command" text itself stays in the buffer as
+    // ordinary characters; the popup is only *shown* while the caret sits in an
+    // unclosed word-initial "/..." token (detected every frame, like the [[
+    // autocomplete). Enter applies the selected command: the "/..."" text is
+    // removed and the command runs. Up/Down/Tab navigate, Esc dismisses. All
+    // other keys fall through to normal editing -- nothing is ever swallowed.
+    // ------------------------------------------------------------
+    {
+        let mut cmd = crate::editor::command::COMMAND_PALETTE.write().unwrap();
+        let filter =
+            crate::editor::command::detect(&buffer[*cursor_y as usize], *cursor_x as usize);
+        if filter.is_some() {
+            // A slash-command region is authoritative over link autocomplete;
+            // stop the [[ popup from also showing this frame.
+            autocomplete::AUTOCOMPLETE.write().unwrap().active = false;
+        }
+        // Mirror the [[ autocomplete refresh logic (esc_consumed reset, match
+        // filtering, sticky suppression until the region content changes).
+        cmd.esc_consumed = false;
+        if cmd.suppress && filter.as_deref() == Some(cmd.suppress_filter.as_str()) {
+            cmd.active = false;
+            cmd.matches.clear();
+            drop(cmd);
+        } else {
+            cmd.suppress = false;
+            cmd.active = false;
+            cmd.matches.clear();
+            cmd.selected = 0;
+            if let Some(f) = filter {
+                cmd.filter = f.clone();
+                cmd.matches = crate::editor::command::refresh(&f);
+                // Active while the region exists so Enter can still clean the
+                // text up even when nothing matches. The renderer only draws
+                // the popup when matches are non-empty.
+                cmd.active = true;
+            }
+            drop(cmd);
+        }
+    }
+    {
+        let mut cmd = crate::editor::command::COMMAND_PALETTE.write().unwrap();
+        if !cmd.active {
+            drop(cmd);
+        } else {
+            // Clicking a command row runs it, like the [[ popup.
+            let m = rl.get_mouse_position();
+            if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+                let rect = hit_test::COMMAND_RECT.lock().unwrap().clone();
+                if let Some((px, py, pw, ph)) = rect {
+                    let inside = m.x as i32 >= px
+                        && m.x as i32 <= px + pw
+                        && m.y as i32 >= py
+                        && m.y as i32 <= py + ph;
+                    if inside && !cmd.matches.is_empty() {
+                        let row = ((m.y as i32 - py) / config::AUTOCOMPLETE_ITEM_HEIGHT)
+                            .clamp(0, cmd.matches.len() as i32 - 1) as usize;
+                        cmd.selected = row;
+                        let chosen = cmd.matches[row].1;
+                        cmd.active = false;
+                        cmd.matches.clear();
+                        drop(cmd);
+                        let y = *cursor_y as usize;
+                        let x = *cursor_x as usize;
+                        let newx = remove_command_text(&mut buffer, y, x);
+                        *cursor_x = newx;
+                        *anchor_x = newx;
+                        buffer::mark_modified();
+                        run_command(chosen);
+                        return;
+                    }
+                }
+                cmd.active = false;
+                cmd.matches.clear();
+                drop(cmd);
+                return;
+            }
+
+            let up = rl.is_key_pressed(KeyboardKey::KEY_UP)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_UP);
+            let down = rl.is_key_pressed(KeyboardKey::KEY_DOWN)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_DOWN);
+            let tab = rl.is_key_pressed(KeyboardKey::KEY_TAB)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_TAB);
+            let enter = rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_ENTER);
+            let esc = rl.is_key_pressed(KeyboardKey::KEY_ESCAPE);
+
+            if (up || down || tab) && !cmd.matches.is_empty() {
+                let n = cmd.matches.len();
+                cmd.selected = if down || tab {
+                    if cmd.selected + 1 >= n {
+                        0
+                    } else {
+                        cmd.selected + 1
+                    }
+                } else if cmd.selected == 0 {
+                    n - 1
+                } else {
+                    cmd.selected - 1
+                };
+                drop(cmd);
+                return;
+            }
+            if enter {
+                // Remove the "/command" text (everything from the word-initial
+                // slash up to the caret), then run the selected command (if
+                // any). Snapshot first so the deletion in undoable.
+                let y = *cursor_y as usize;
+                let x = *cursor_x as usize;
+                let chosen = cmd.matches.get(cmd.selected).map(|&(_, c)| c);
+                cmd.active = false;
+                cmd.matches.clear();
+                drop(cmd);
+                history::snapshot(
+                    &buffer,
+                    (*cursor_y, *cursor_x),
+                    history::EditKind::Other,
+                    edit_now_ms,
+                );
+                let newx = remove_command_text(&mut buffer, y, x);
+                *cursor_x = newx;
+                *anchor_x = newx;
+                *anchor_y = *cursor_y;
+                buffer::mark_modified();
+                if let Some(c) = chosen {
+                    run_command(c);
+                }
+                return;
+            }
+            if esc {
+                cmd.active = false;
+                cmd.matches.clear();
+                cmd.suppress = true;
+                cmd.suppress_filter = cmd.filter.clone();
+                cmd.esc_consumed = true;
+                drop(cmd);
+                return;
+            }
+            drop(cmd);
+        }
+    }
+
+    // A finished asset import (copied by main.rs into assets/) lands here:
+    // insert the link on its own line below the caret, then carry on as an
+    // ordinary edit so undo/autosave behave like any typed change.
+    if let Some(target) = crate::editor::command::ASSET_INSERT.write().unwrap().take() {
+        history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
+        let y = *cursor_y as usize;
+        let (ny, nx) = crate::editor::command::insert_asset_link(&mut buffer, y, &target);
+        *cursor_y = ny;
+        *cursor_x = nx;
+        *anchor_y = ny;
+        *anchor_x = nx;
+        // Force the renderer to follow the moved caret next frame.
+        *buffer::LAST_CURSOR.write().unwrap() = (i32::MIN, i32::MIN);
+        buffer::mark_modified();
     }
 
     // ------------------------------------------------------------

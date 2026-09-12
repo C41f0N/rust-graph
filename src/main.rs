@@ -92,6 +92,7 @@ fn main() {
                 let esc_consumed = {
                     let ac = editor::autocomplete::AUTOCOMPLETE.read().unwrap();
                     ac.esc_consumed
+                        || editor::command::COMMAND_PALETTE.read().unwrap().esc_consumed
                 };
                 if !esc_consumed {
                     editor_open = false;
@@ -144,6 +145,34 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
                 .pick_file();
             *HEADER_PICK_RESULT.write().unwrap() = chosen.map(|p| (idx, p));
             HEADER_PICK_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+}
+
+        // A finished asset-import dialog (background thread) left a result: copy the
+// chosen file into the project's assets/ folder and hand the relative target
+// to the editor, which inserts `[[assets/...]]` as a new line below the caret.
+if let Some(src) = editor::command::ASSET_PICK_RESULT.write().unwrap().take() {
+    let root = project_root();
+    if let Some(dst) = filesystem::copy_file_unique(&src, &root.join("assets")) {
+        if let Ok(rel) = dst.strip_prefix(&root) {
+            *editor::command::ASSET_INSERT.write().unwrap() =
+                Some(rel.to_string_lossy().to_string());
+        }
+    }
+}
+
+// An "Add asset" command in the editor: spawn the (blocking) native file
+// dialog on a background thread so the app keeps redrawing; the chosen path
+// comes back through ASSET_PICK_RESULT above. Any file type is allowed.
+if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::Relaxed) {
+    if !editor::command::ASSET_PICK_ACTIVE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        std::thread::spawn(move || {
+            let chosen = rfd::FileDialog::new()
+                .set_title("Select asset")
+                .pick_file();
+            *editor::command::ASSET_PICK_RESULT.write().unwrap() = chosen;
+            editor::command::ASSET_PICK_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         });
     }
 }

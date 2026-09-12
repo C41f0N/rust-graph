@@ -411,6 +411,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // Only the current frame's popup is clickable; cleared before the
         // draw loop so a stale rect from a scrolled-away popup never lingers.
         *hit_test::AUTOCOMPLETE_RECT.lock().unwrap() = None;
+        *hit_test::COMMAND_RECT.lock().unwrap() = None;
 
         // Clamp the scroll offset to the real content height.
         let viewport_h = (editor_height - header_h - crate::editor::tabs::TABS_H - padding).max(1);
@@ -704,6 +705,67 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         }
                     }
                     drop(autocomplete);
+
+                    // Slash-command palette popup, styled like the autocomplete
+                    // popup since it solves the same "pick one of several"
+                    // problem, just for commands instead of note names.
+                    let palette = crate::editor::command::COMMAND_PALETTE.read().unwrap();
+                    if palette.active && !palette.matches.is_empty() {
+                        let item_h = config::AUTOCOMPLETE_ITEM_HEIGHT;
+                        let mut box_w = 140;
+                        for (name, _) in palette
+                            .matches
+                            .iter()
+                            .take(config::AUTOCOMPLETE_MAX_VISIBLE)
+                        {
+                            let w = text::measure(&*s, name, line_font_size) + 24;
+                            if w > box_w {
+                                box_w = w;
+                            }
+                        }
+                        let count = palette.matches.len().min(config::AUTOCOMPLETE_MAX_VISIBLE);
+                        let box_h = (count as i32) * item_h;
+
+                        let mut pop_x = cursor_x_abs.min(content_x0 + content_w - box_w - padding);
+                        let mut pop_y = cursor_y_abs + line_font_size + config::EDITOR_PADDING;
+                        if pop_y + box_h > editor_bottom - padding {
+                            pop_y = pop_y - box_h - line_font_size - config::EDITOR_PADDING;
+                        }
+                        pop_x = pop_x.max(content_x0 + padding);
+                        pop_y = pop_y.max(content_y);
+                        if pop_y + box_h > editor_bottom {
+                            pop_y = (editor_bottom - box_h).max(content_y);
+                        }
+
+                        *hit_test::COMMAND_RECT.lock().unwrap() = Some((pop_x, pop_y, box_w, box_h));
+
+                        s.draw_rectangle(pop_x, pop_y, box_w, box_h, config::AUTOCOMPLETE_BG);
+
+                        for (i, (name, _)) in palette
+                            .matches
+                            .iter()
+                            .enumerate()
+                            .take(config::AUTOCOMPLETE_MAX_VISIBLE)
+                        {
+                            if i == palette.selected {
+                                s.draw_rectangle(
+                                    pop_x,
+                                    pop_y + (i as i32) * item_h,
+                                    box_w,
+                                    item_h,
+                                    config::AUTOCOMPLETE_SELECTED_BG,
+                                );
+                            }
+                            text::draw(&mut *s,
+                                name,
+                                pop_x + 10,
+                                pop_y + (i as i32) * item_h + 2,
+                                line_font_size,
+                                Color::WHITE,
+                            );
+                        }
+                    }
+                    drop(palette);
                 }
 
                 let is_quote = matches!(kind, blocks::LineKind::Blockquote);

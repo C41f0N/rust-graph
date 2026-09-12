@@ -26,6 +26,11 @@ pub static VISUAL_HIT: std::sync::Mutex<Vec<HitRow>> = std::sync::Mutex::new(Vec
 pub static AUTOCOMPLETE_RECT: std::sync::Mutex<Option<(i32, i32, i32, i32)>> =
     std::sync::Mutex::new(None);
 
+// The slash-command palette popup, published by the renderer the same way as
+// AUTOCOMPLETE_RECT so clicks on a command row select it.
+pub static COMMAND_RECT: std::sync::Mutex<Option<(i32, i32, i32, i32)>> =
+    std::sync::Mutex::new(None);
+
 // -----------------------------------------------------------------------
 // Mouse click state (used by the input handler)
 // -----------------------------------------------------------------------
