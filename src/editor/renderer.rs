@@ -122,7 +122,15 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         let editor_x = ((1.0 - editor_dimentions.x) * 0.5 * config::WIDTH as f32) as i32;
         let editor_y = ((1.0 - editor_dimentions.y) * 0.5 * config::HEIGHT as f32) as i32;
 
-        let max_width = editor_width - 2 * padding;
+        // In fullscreen the text body keeps a horizontal margin from the screen
+        // edges while the heading bar above still spans the full window. All
+        // body geometry (origin, wrap width, scrollbar, scissor) uses these.
+        let (content_x0, content_w) = {
+            let (x, _, w, _) = crate::editor::content_bounds();
+            (x, w)
+        };
+
+        let max_width = content_w - 2 * padding;
         let editor_bottom = editor_y + editor_height;
 
         // --- Heading bar ---
@@ -276,7 +284,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
         for vl in vlines.iter() {
             let editing = line_editing(vl, fm_range, *cursor_y);
             let (fsz, adv, img) =
-                line_layout(vl, &buf[vl.line], kinds.get(vl.line).copied().unwrap_or(blocks::LineKind::Paragraph), editing, editor_x, padding, max_width);
+                line_layout(vl, &buf[vl.line], kinds.get(vl.line).copied().unwrap_or(blocks::LineKind::Paragraph), editing, content_x0, padding, max_width);
             total_h += adv + config::EDITOR_LINE_SPACING;
             layouts.push((fsz, adv, img));
         }
@@ -358,7 +366,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         // --- Scrollbar (right edge, draggable) ---
         let bar_w = 6;
-        let bar_x = editor_x + editor_width - bar_w - padding;
+        let bar_x = content_x0 + content_w - bar_w - padding;
         let mut dragging_bar = false;
         if max_scroll > 0 {
             let bar_h = viewport_h;
@@ -395,7 +403,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
 
         // Clip all content drawing to the area below the heading bar and
         // translate it up by the scroll offset.
-        d.draw_scissor_mode(editor_x, content_y, editor_width, editor_height - header_h, |mut s| {
+        d.draw_scissor_mode(content_x0, content_y, content_w, editor_height - header_h, |mut s| {
             let mut line_y = 0;
             let mut quote_rail: Option<(i32, i32, i32)> = None;
 
@@ -418,7 +426,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                     if line.line == 0 && line.start == 0 {
                         let draw_top = content_y + line_y - scroll;
                         s.draw_rectangle(
-                            editor_x + padding,
+                            content_x0 + padding,
                             draw_top,
                             max_width,
                             config::EDITOR_FRONTMATTER_HEIGHT,
@@ -427,7 +435,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                         text::draw(
                             &mut s,
                             "--- frontmatter ---",
-                            editor_x + padding + 6,
+                            content_x0 + padding + 6,
                             draw_top + 4,
                             config::EDITOR_FONT_SIZE - 2,
                             config::EDITOR_FRONTMATTER_COLOR,
@@ -447,16 +455,16 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                     cursor_line_bottom = Some(line_y + advance);
                 }
 
-                let content_x = editor_x + padding + line.indent;
+                let content_x = content_x0 + padding + line.indent;
                 let draw_top = content_y + line_y - scroll;
 
                 // Horizontal rule: draw a line instead of text.
                 if !editing_line && matches!(kind, blocks::LineKind::HorizontalRule) {
                     let y_mid = draw_top + line_font_size / 2;
                     s.draw_line(
-                        editor_x + padding,
+                        content_x0 + padding,
                         y_mid,
-                        editor_x + padding + max_width,
+                        content_x0 + padding + max_width,
                         y_mid,
                         config::EDITOR_HR_COLOR,
                     );
@@ -467,7 +475,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 // Fenced code block: background for the full container width.
                 if is_fence && !editing_line {
                     s.draw_rectangle(
-                        editor_x + padding,
+                        content_x0 + padding,
                         draw_top,
                         max_width,
                         line_font_size,
@@ -582,12 +590,12 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                         let count = autocomplete.matches.len().min(config::AUTOCOMPLETE_MAX_VISIBLE);
                         let box_h = (count as i32) * item_h;
 
-                        let mut pop_x = cursor_x_abs.min(editor_x + editor_width - box_w - padding);
+                        let mut pop_x = cursor_x_abs.min(content_x0 + content_w - box_w - padding);
                         let mut pop_y = cursor_y_abs + line_font_size + config::EDITOR_PADDING;
                         if pop_y + box_h > editor_bottom - padding {
                             pop_y = pop_y - box_h - line_font_size - config::EDITOR_PADDING;
                         }
-                        pop_x = pop_x.max(editor_x + padding);
+                        pop_x = pop_x.max(content_x0 + padding);
                         // Keep the popup inside the clipped content area.
                         pop_y = pop_y.max(content_y);
                         if pop_y + box_h > editor_bottom {
@@ -632,7 +640,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                 // hidden where the cursor is editing (raw markers are shown).
                 if is_quote && !editing_line {
                     let (_, _, h) =
-                        quote_rail.get_or_insert((editor_x + padding, draw_top, 0));
+                        quote_rail.get_or_insert((content_x0 + padding, draw_top, 0));
                     *h += advance + config::EDITOR_LINE_SPACING;
                 } else {
                     if let Some((x, top, h)) = quote_rail.take() {
@@ -667,7 +675,7 @@ pub fn draw(mut d: RaylibDrawHandle, editor_open: bool, editor_dimentions: Vecto
                         path,
                         img_x,
                         draw_top + padding / 2,
-                        (editor_x + padding + max_width - img_x).max(1),
+                        (content_x0 + padding + max_width - img_x).max(1),
                         config::EDITOR_IMAGE_MAX_HEIGHT,
                     );
                     let _ = (*iw, *ih);

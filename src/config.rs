@@ -7,6 +7,11 @@ pub const WIDTH: i32 = 1920 * 3 / 4;
 // screen. Shared so the graph input handler can tell "click on/off editor".
 pub const EDITOR_PANEL_FRACTION: f32 = 0.8;
 
+// Horizontal margin (either side) kept between the screen edge and the
+// editor's content in fullscreen mode, so lines and the heading buttons never
+// sit flush against the display edges.
+pub const FULLSCREEN_H_MARGIN: i32 = 80;
+
 pub fn editor_panel_bounds() -> (i32, i32, i32, i32) {
     let w = (WIDTH as f32 * EDITOR_PANEL_FRACTION) as i32;
     let h = (HEIGHT as f32 * EDITOR_PANEL_FRACTION) as i32;

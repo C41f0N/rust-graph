@@ -28,9 +28,26 @@ pub static LAST_EDIT_MILLIS: AtomicU64 = AtomicU64::new(0);
 // size all use this, so they can never disagree about where the panel is.
 pub fn panel_bounds() -> (i32, i32, i32, i32) {
     if FULLSCREEN.load(std::sync::atomic::Ordering::Relaxed) {
+        // Fullscreen covers the whole window: the heading bar spans edge to
+        // edge, and a click anywhere on the scaled background counts as being
+        // inside the editor (never dismisses it).
         (0, 0, config::WIDTH, config::HEIGHT)
     } else {
         config::editor_panel_bounds()
+    }
+}
+
+// Where the text body (and the scrollbar) may go: the panel with a horizontal
+// margin kept off each screen edge in fullscreen so lines never sit flush
+// against the display. The heading bar is deliberately NOT inset (it uses
+// panel_bounds()); only the editable text and its chrome use this.
+pub fn content_bounds() -> (i32, i32, i32, i32) {
+    let (x, y, w, h) = panel_bounds();
+    if FULLSCREEN.load(std::sync::atomic::Ordering::Relaxed) {
+        let m = config::FULLSCREEN_H_MARGIN;
+        (x + m, y, (w - 2 * m).max(1), h)
+    } else {
+        (x, y, w, h)
     }
 }
 
