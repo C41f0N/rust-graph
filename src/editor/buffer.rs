@@ -123,7 +123,11 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
     let kinds = crate::editor::blocks::classify(&buffer);
 
     for (line_index, line) in buffer.iter().enumerate() {
-        let editing_line = *cursor_y as usize == line_index;
+        // While a mouse selection is in progress every line is measured in
+        // view mode (matching renderer::line_editing), so wrapping can't shift
+        // under the pointer mid-drag.
+        let editing_line = *cursor_y as usize == line_index
+            && !crate::editor::hit_test::MOUSE_DRAGGING.load(std::sync::atomic::Ordering::Relaxed);
         let kind = kinds.get(line_index).copied().unwrap_or(crate::editor::blocks::LineKind::Paragraph);
 
         // A nested list item sits indented by its depth; wrapped

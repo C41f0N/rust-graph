@@ -77,11 +77,19 @@ fn line_editing(
     fm_range: Option<(usize, usize)>,
     cursor_y: i32,
 ) -> bool {
+    // While a mouse selection is in progress the layout freezes in view mode:
+    // the caret line must not shrink when it is a heading, or the row slides
+    // out from under the pointer and the hit-test snaps the caret back ("in
+    // a loop") on every frame. The frontmatter block stays raw only if the
+    // caret is already editing inside it.
     if let Some((start, end)) = fm_range {
         let cy = cursor_y as usize;
         if cy >= start && cy <= end && line.line >= start && line.line <= end {
             return true;
         }
+    }
+    if hit_test::MOUSE_DRAGGING.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
     }
     cursor_y as usize == line.line
 }
