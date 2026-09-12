@@ -17,7 +17,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     let mut hover_node = HOVER_NODE.write().unwrap();
     let mut selected_node = SELECTED_NODE.write().unwrap();
     let mut delete_pending = DELETE_PENDING.write().unwrap();
-    let mut editing_node = EDITING_NODE.write().unwrap();
+    let editing_node = EDITING_NODE.write().unwrap();
     let mut adding_note = ADDING_NOTE.write().unwrap();
     let mut adding_name = ADDING_NAME.write().unwrap();
     let mut context_node = CONTEXT_NODE.write().unwrap();
@@ -602,9 +602,14 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             let last_time = LAST_CLICK_TIME.get();
 
             if last_node == Some(i) && (current_time - last_time) < 0.3 {
-                // Double-click: open editor
-                *editing_node = Some(i);
+                // Double-click: open the node in the editor as a tab
+                // (deduplicated by path).
+                let (path, name) = {
+                    let n = &nodes[i];
+                    (n.path.clone(), n.name.clone())
+                };
                 *editor_open = true;
+                crate::editor::tabs::open(&path, &name);
                 *context_node = None;
                 LAST_CLICK_NODE.set(None);
             } else {

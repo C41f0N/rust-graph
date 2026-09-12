@@ -77,10 +77,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // edited or saved. The editor shows a placeholder instead; it only accepts
     // the "Create New Node" click and, once active, the filename prompt.
     // ------------------------------------------------------------
-    let has_node = crate::graph::processing::EDITING_NODE
-        .read()
-        .unwrap()
-        .is_some();
+    let has_node = crate::editor::tabs::has_any();
     if !has_node {
         if crate::editor::CREATING_NODE.load(std::sync::atomic::Ordering::Relaxed) {
             // Filename prompt: type the name, Enter creates, Escape cancels.
@@ -110,16 +107,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                 crate::editor::CREATING_NODE.store(false, std::sync::atomic::Ordering::Relaxed);
 
                 let dir = crate::graph::processing::DIR_PATH.read().unwrap().clone();
-                let idx = crate::graph::processing::add_node(&dir, &stem);
-                {
-                    let nodes = crate::graph::processing::NODES.read().unwrap();
-                    if let Some(path) = nodes.get(idx).map(|n| n.path.clone()) {
-                        drop(nodes);
-                        buffer::load_from_file(&path);
-                    }
-                }
-                *crate::graph::processing::EDITING_NODE.write().unwrap() = Some(idx);
-                crate::graph::processing::rebuild_edges();
+                crate::editor::tabs::create_and_open(&dir, &stem);
             }
             if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
                 *crate::editor::NEW_NODE_NAME.write().unwrap() = String::new();
@@ -147,6 +135,23 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     }
 
     let visual_lines = buffer::VISUAL_LINES.lock().unwrap();
+
+    // ------------------------------------------------------------
+    // Tab bar: wheel over it scrolls it horizontally; a press selects or
+    // closes a tab. Both are handled before any content/caret logic so the
+    // two never fight over the same input.
+    // ------------------------------------------------------------
+    {
+        let (bbx, bby, bbw, _) = crate::editor::panel_bounds();
+        let tab_y = bby + config::EDITOR_HEADER_HEIGHT;
+        if crate::editor::tabs::handle_bar_wheel(rl, bbx, tab_y, bbw) {
+            return;
+        }
+        if crate::editor::tabs::handle_bar_click(rl, bbx, tab_y, bbw) {
+            return;
+        }
+    }
+
     let mut buffer = buffer::BUFFER.write().unwrap();
     let mut cursor_x = buffer::CURSOR_X.write().unwrap();
     let mut cursor_y = buffer::CURSOR_Y.write().unwrap();
@@ -190,8 +195,8 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     {
         let (ex, ey, ew, eh) = crate::editor::content_bounds();
         let header_h = config::EDITOR_HEADER_HEIGHT;
-        let content_top = ey + header_h;
-        let content_h = eh - header_h;
+        let content_top = ey + header_h + crate::editor::tabs::TABS_H;
+        let content_h = eh - header_h - crate::editor::tabs::TABS_H;
         let bar_w = 6;
         let bar_x = ex + ew - bar_w - config::EDITOR_PADDING;
 

@@ -71,4 +71,5 @@ pub mod images;
 pub mod input_handler;
 pub mod markdown;
 pub mod renderer;
+pub mod tabs;
 pub mod text;

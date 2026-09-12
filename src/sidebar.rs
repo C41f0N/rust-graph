@@ -83,14 +83,21 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
         if id == GRAPH_BUTTON {
             *editor_open = false;
         } else {
-            // Editor button: open the editor view. If nothing is being edited
-            // (main clears EDITING_NODE when the editor closes), fall back to
-            // the currently selected graph node so the button always has
-            // something to show.
+            // Editor button: open the editor view. Open tabs persist across
+            // view switches, so just reopening is enough. With no tabs yet,
+            // fall back to the currently selected graph node so the button
+            // always has something to show.
             if !*editor_open {
-                let selected = *crate::graph::processing::SELECTED_NODE.read().unwrap();
-                if selected.is_some() {
-                    *crate::graph::processing::EDITING_NODE.write().unwrap() = selected;
+                if !crate::editor::tabs::has_any() {
+                    let selected = *crate::graph::processing::SELECTED_NODE.read().unwrap();
+                    if let Some(i) = selected {
+                        let (path, name) = {
+                            let nodes = crate::graph::processing::NODES.read().unwrap();
+                            let n = &nodes[i];
+                            (n.path.clone(), n.name.clone())
+                        };
+                        crate::editor::tabs::open(&path, &name);
+                    }
                 }
             }
             *editor_open = true;
@@ -203,7 +210,7 @@ mod tests {
     fn button_hit_testing() {
         let (x, y, w, h) = button_bounds(GRAPH_BUTTON);
         assert_eq!(button_at(Vector2::new((x + w / 2) as f32, (y + h / 2) as f32)), Some(GRAPH_BUTTON));
-        let (_, by, _, bh) = bar_bounds();
+        let (_, by, _, _) = bar_bounds();
         // Center of the divider between the two buttons.
         assert_eq!(
             button_at(Vector2::new((x + w / 2) as f32, (y + h + BUTTON_GAP / 2) as f32)),

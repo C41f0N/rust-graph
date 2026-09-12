@@ -10,19 +10,17 @@ mod sidebar;
 
 use graph::processing::*;
 
-// Navigate the graph into the sub-graph folder of the note currently open in
-// the editor. Mirrors double-clicking a sub-graph node, so the breadcrumb
-// stack, node set and camera all update identically.
+// Navigate the graph into the sub-graph folder of the note currently active
+// in the editor. Mirrors double-clicking a sub-graph node, so the breadcrumb
+// stack, node set and camera all update identically. Keyed on the active tab's
+// document name (path-derived), not a node index: node indices go stale on
+// every graph regeneration, the folder on disk never lies.
 fn open_editing_subgraph() {
-    // Copy the index before any body locks: the if-let below must not hold
-    // the EDITING_NODE read guard while generate_nodes_from_directory takes a
-    // write lock on it (the graph double-click path drops every guard first).
-    let editing = *EDITING_NODE.read().unwrap();
-    if let Some(idx) = editing {
-        let nodes = NODES.read().unwrap();
-        if idx < nodes.len() && nodes[idx].has_subgraph {
-            let name = nodes[idx].name.clone();
-            drop(nodes);
+    let name = crate::editor::tabs::active_name();
+    if let Some(name) = name {
+        let dir = DIR_PATH.read().unwrap();
+        if crate::filesystem::is_dir(&dir.join(&name)) {
+            drop(dir);
             navigate_into(&name);
             generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
         }
@@ -156,14 +154,9 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
                 || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
             && rl.is_key_pressed(KeyboardKey::KEY_S)
         {
-            if let Some(idx) = *EDITING_NODE.read().unwrap() {
-                let nodes = NODES.read().unwrap();
-                if idx < nodes.len() {
-                    let path = nodes[idx].path.clone();
-                    drop(nodes);
-                    editor::buffer::save_to_file(&path);
-                    rebuild_edges();
-                }
+            if let Some(path) = editor::tabs::active_path() {
+                editor::buffer::save_to_file(&path);
+                rebuild_edges();
             }
         }
 
@@ -173,14 +166,9 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
             let last_edit =
                 editor::LAST_EDIT_MILLIS.load(std::sync::atomic::Ordering::Relaxed);
             if last_edit > 0 && now_ms.saturating_sub(last_edit) >= autosave_pause_ms {
-                if let Some(idx) = *EDITING_NODE.read().unwrap() {
-                    let nodes = NODES.read().unwrap();
-                    if idx < nodes.len() {
-                        let path = nodes[idx].path.clone();
-                        drop(nodes);
-                        editor::buffer::save_to_file(&path);
-                        rebuild_edges();
-                    }
+                if let Some(path) = editor::tabs::active_path() {
+                    editor::buffer::save_to_file(&path);
+                    rebuild_edges();
                 }
             }
         }
@@ -211,29 +199,14 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
             *graph::settings::REQUEST_LOAD_FONT.write().unwrap() = None;
         }
 
-        // Detect transitions AFTER all input has been processed
-        if editor_open && !was_open {
-            if let Some(idx) = *EDITING_NODE.read().unwrap() {
-                let nodes = NODES.read().unwrap();
-                if idx < nodes.len() {
-                    let path = nodes[idx].path.clone();
-                    drop(nodes);
-                    editor::buffer::load_from_file(&path);
-                }
-            }
-        }
+        // Detect transitions AFTER all input has been processed. The editor's tab
+        // system loads documents itself (on open/activate), so the open
+        // transition needs nothing else here.
 
         if !editor_open && was_open {
-            if let Some(idx) = *EDITING_NODE.read().unwrap() {
-                let nodes = NODES.read().unwrap();
-                if idx < nodes.len() {
-                    let path = nodes[idx].path.clone();
-                    drop(nodes);
-                    editor::buffer::save_to_file(&path);
-                    rebuild_edges();
-                }
-            }
-            *EDITING_NODE.write().unwrap() = None;
+            // Leaving the editor: snapshot the active tab (saving it if it
+            // was edited) so reopen resumes exactly where we left off.
+            editor::tabs::deactivate_current();
             // A placeholder "Create New Node" prompt must not survive the
             // editor closing (its state has no node behind it anymore).
             editor::CREATING_NODE.store(false, std::sync::atomic::Ordering::Relaxed);

@@ -41,6 +41,29 @@ pub fn clear() {
     *RUN.lock().unwrap() = None;
 }
 
+// Lift the whole undo/redo state out (for detaching it from the active tab
+// when the editor switches documents). Returns ownership so the caller can
+// store the stacks on the tab being left.
+pub fn take() -> (VecDeque<HistEntry>, VecDeque<HistEntry>, Option<(i32, i32, u64)>) {
+    let mut undo = UNDO.lock().unwrap();
+    let mut redo = REDO.lock().unwrap();
+    let mut run = RUN.lock().unwrap();
+    let out = (std::mem::take(&mut *undo), std::mem::take(&mut *redo), *run);
+    *run = None;
+    out
+}
+
+// Reattach history state previously taken by `take()` (the tab being entered).
+pub fn put(
+    undo: VecDeque<HistEntry>,
+    redo: VecDeque<HistEntry>,
+    run: Option<(i32, i32, u64)>,
+) {
+    *UNDO.lock().unwrap() = undo;
+    *REDO.lock().unwrap() = redo;
+    *RUN.lock().unwrap() = run;
+}
+
 // Record that the user is about to edit `state` (the caller's locked buffer)
 // with `caret_before` as the caret before the edit. `kind` and `now_ms` drive
 // typing-burst coalescing. Whether the edit turns out to be a no-op at the

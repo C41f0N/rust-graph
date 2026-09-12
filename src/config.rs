@@ -56,3 +56,6 @@ pub const CONTEXT_MENU_SEP_COLOR: Color = Color::new(60, 60, 60, 255);
 // Breadcrumb trail
 pub const BREADCRUMB_Y: i32 = 10;
 pub const BREADCRUMB_PAD: i32 = 8;
+
+// Editor tab bar: pixels the horizontal tab strip scrolls per wheel notch.
+pub const TAB_SCROLL_STEP: i32 = 40;

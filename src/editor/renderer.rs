@@ -146,14 +146,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         );
 
         // Note name on the left
-        let note_name = {
-            let editing = crate::graph::processing::EDITING_NODE.read().unwrap();
-            let nodes = crate::graph::processing::NODES.read().unwrap();
-            editing
-                .and_then(|i| nodes.get(i))
-                .map(|n| n.name.clone())
-                .unwrap_or_default()
-        };
+        let note_name = crate::editor::tabs::active_name().unwrap_or_default();
         let name_y = editor_y + (header_h - config::EDITOR_FONT_SIZE) / 2;
         text::draw(d, 
             &note_name,
@@ -200,14 +193,14 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             d.draw_rectangle_lines(fs_bx, fs_by, fs_bw, fs_bw, fs_icon_color);
         }
 
-        // "Open sub-graph" button (leftmost), only when the note being edited
-        // has a companion sub-graph folder.
+        // "Open sub-graph" button (leftmost), only when the active tab's note has a
+        // companion sub-graph folder. Checked via the filesystem (the node
+        // index may be stale after a graph regen; the path never lies).
         let has_subgraph = {
-            let editing = crate::graph::processing::EDITING_NODE.read().unwrap();
-            let nodes = crate::graph::processing::NODES.read().unwrap();
-            editing
-                .and_then(|i| nodes.get(i))
-                .is_some_and(|n| n.has_subgraph)
+            let dir = crate::graph::processing::DIR_PATH.read().unwrap();
+            crate::editor::tabs::active_name()
+                .map(|n| crate::filesystem::is_dir(&dir.join(&n)))
+                .unwrap_or(false)
         };
         if has_subgraph {
             let sg_label = ">>";
@@ -266,13 +259,14 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             Color::new(255, 255, 255, 40),
         );
 
+        // --- Tab bar: horizontally scrollable strip of open documents, drawn
+        // under the header on top of the body background.
+        crate::editor::tabs::draw_tab_bar(d, editor_x, editor_y + header_h, editor_width);
+
         // --- No node open: placeholder instead of a buffer body. The editor
         // is open but has nothing to save, so show guidance and a way to
         // create a note instead of an editable document.
-        let has_node = crate::graph::processing::EDITING_NODE
-            .read()
-            .unwrap()
-            .is_some();
+        let has_node = crate::editor::tabs::has_any();
         if !has_node {
             let (cx0, cy0, cw, ch) = crate::editor::content_bounds();
             let body_top = cy0 + header_h;
@@ -345,8 +339,8 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             return;
         }
 
-        // --- Content area (shifted down by header) ---
-        let content_y = editor_y + header_h;
+        // --- Content area (shifted down by header + tab bar) ---
+        let content_y = editor_y + header_h + crate::editor::tabs::TABS_H;
 
         let kinds = blocks::classify(&buf);
         let fm_range = frontmatter::line_range(&buf);
@@ -419,7 +413,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         *hit_test::AUTOCOMPLETE_RECT.lock().unwrap() = None;
 
         // Clamp the scroll offset to the real content height.
-        let viewport_h = (editor_height - header_h - padding).max(1);
+        let viewport_h = (editor_height - header_h - crate::editor::tabs::TABS_H - padding).max(1);
         let max_scroll = (total_h - viewport_h).max(0);
         let mut scroll = (*buffer::SCROLL_Y.read().unwrap()).clamp(0, max_scroll);
 
@@ -482,7 +476,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
 
         // Clip all content drawing to the area below the heading bar and
         // translate it up by the scroll offset.
-        d.draw_scissor_mode(content_x0, content_y, content_w, editor_height - header_h, |mut s| {
+        d.draw_scissor_mode(content_x0, content_y, content_w, editor_height - header_h - crate::editor::tabs::TABS_H, |mut s| {
             let mut line_y = 0;
             let mut quote_rail: Option<(i32, i32, i32)> = None;
 

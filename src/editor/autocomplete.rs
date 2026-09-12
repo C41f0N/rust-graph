@@ -80,10 +80,15 @@ pub fn refresh(buffer: &[String], cursor_y: usize, cursor_x: usize) {
         state.filter = f;
         state.matches = {
             let nodes = crate::graph::processing::NODES.read().unwrap();
-            let editing = crate::graph::processing::EDITING_NODE.read().unwrap();
-            let current = (*editing)
-                .and_then(|i| nodes.get(i))
-                .map(|n| n.name.clone());
+            // The note filtered out of matches is the one being edited. With
+            // tabs that is the active document; fall back to the editor's
+            // transient node handle when no tab is open.
+            let current = crate::editor::tabs::active_name().or_else(|| {
+                let editing = crate::graph::processing::EDITING_NODE.read().unwrap();
+                (*editing)
+                    .and_then(|i| nodes.get(i))
+                    .map(|n| n.name.clone())
+            });
             let names = nodes
                 .iter()
                 .filter(|n| Some(n.name.clone()) != current)
