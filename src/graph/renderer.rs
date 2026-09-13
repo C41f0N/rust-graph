@@ -54,15 +54,29 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     let delete_pending = DELETE_PENDING.read().unwrap();
     let nodes = NODES.read().unwrap();
     let edges = EDGES.read().unwrap();
+    // Snapshot the visible world rect BEFORE taking the camera lock
+    // (world_view_bounds re-locks CAMERA; RwLock is not reentrant). Everything
+    // outside it is skipped: large graphs cull to what the camera actually
+    // shows instead of drawing thousands of off-screen discs and labels.
+    let bounds = world_view_bounds();
     let camera = CAMERA.read().unwrap();
 
     let mut mode = d.begin_mode2D(*camera);
 
     mode.clear_background(Color::BLACK);
 
+    // Margin covers the endpoint dot plus the label reach below the disc, so
+    // an edge whose endpoint sits just outside the viewport still draws. An
+    // edge is only skipped when BOTH endpoints are fully outside the cull rect.
+    const NODE_CULL_MARGIN: f32 = NODE_MAX_RADIUS + 26.0;
     for edge in edges.iter() {
         let n1 = &nodes[edge.n1];
         let n2 = &nodes[edge.n2];
+        if !circle_intersects_rect(n1.position, NODE_CULL_MARGIN, bounds)
+            && !circle_intersects_rect(n2.position, NODE_CULL_MARGIN, bounds)
+        {
+            continue;
+        }
         let edge_color = Color::new(110, 110, 110, 255);
 
         let from = n1.position;
@@ -83,6 +97,11 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     }
 
     for (i, node) in nodes.iter().enumerate() {
+        // Cull nodes whose disc and label are fully outside the view.
+        if !circle_intersects_rect(node.position, NODE_CULL_MARGIN, bounds) {
+            continue;
+        }
+
         let is_hover = *hover_node == Some(i);
         let is_selected = *selected_node == Some(i);
 
@@ -504,6 +523,138 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             text::draw(&mut sc, &fam.name, px + 12, row_y + (rh - rf) / 2, rf, color);
         }
         drop(sc);
+    }
+
+    // Force debug panel (temporary tuning UI): live sliders for every force
+    // parameter plus a switch for the alpha cooldown. Skipped while the
+    // settings dialog covers the screen.
+    if !settings_open && *SHOW_FORCE_PANEL.read().unwrap() {
+        let m = d.get_mouse_position();
+        let alpha = *SIM_ALPHA.read().unwrap();
+        let alpha_cooling = *ALPHA_COOLING_ENABLED.read().unwrap();
+
+        let px = PANEL_X;
+        let py = PANEL_Y;
+        let pw = config::scaled_size(PANEL_W);
+        let th = config::scaled_size(PANEL_TITLE_H);
+        let rh = config::scaled_size(PANEL_ROW_H);
+        let body_h = rh * (SLIDER_COUNT as i32 + 2); // toggle row + sliders + respawn
+        let total_h = th + body_h;
+        let tf = config::scaled_size(18);
+        let rf = config::scaled_size(14);
+        let vf = config::scaled_size(12);
+
+        d.draw_rectangle(px, py, pw, total_h, Color::new(18, 18, 26, 235));
+        let title = format!("Force Controls   alpha={:.3}", alpha);
+        text::draw(d, &title, px + 8, py + (th - tf) / 2, tf, Color::WHITE);
+        d.draw_line(px, py + th, px + pw, py + th, Color::new(255, 255, 255, 50));
+
+        // Alpha-cooldown toggle row (hit-test matches hit_test_alpha_toggle).
+        let toggle_y = panel_body_y();
+        let toggle_hover = m.x as i32 >= px
+            && m.x as i32 <= px + pw
+            && m.y as i32 >= toggle_y
+            && m.y as i32 <= toggle_y + rh;
+        if toggle_hover {
+            d.draw_rectangle(px, toggle_y, pw, rh, Color::new(76, 128, 204, 80));
+        }
+        let on_label = if alpha_cooling {
+            "Alpha Cooldown: ON"
+        } else {
+            "Alpha Cooldown: OFF"
+        };
+        text::draw(
+            d,
+            on_label,
+            px + 8,
+            toggle_y + (rh - rf) / 2,
+            rf,
+            if alpha_cooling { Color::GREEN } else { Color::GRAY },
+        );
+
+        // Slider rows: track between TRACK_LEFT..TRACK_RIGHT, thumb at value.
+        let track_l = px + config::scaled_size(TRACK_LEFT);
+        let track_r = px + config::scaled_size(TRACK_RIGHT);
+        let track_w = track_r - track_l;
+        let labels = [
+            "Spring K",
+            "Damping",
+            "Center Gravity",
+            "Rep Radius",
+            "Rep K",
+            "Rep Core",
+            "Rest Gap",
+            "Alpha Decay",
+        ];
+        for (idx, label) in labels.iter().enumerate() {
+            let row_y = slider_row_y(idx);
+            let value = read_slider_value(idx);
+            let (lo, hi) = SLIDER_RANGES[idx];
+            let t = ((value - lo) / (hi - lo)).clamp(0.0, 1.0);
+            let track_y = row_y + rh / 2 - 3;
+            let thumb_x = track_l + (t * track_w as f32) as i32;
+
+            d.draw_rectangle(track_l, track_y, track_w, 6, Color::new(70, 70, 70, 200));
+            d.draw_rectangle(thumb_x - 4, track_y - 3, 8, 12, Color::new(76, 180, 120, 230));
+            text::draw(
+                d,
+                label,
+                px + 8,
+                row_y + (rh - rf) / 2,
+                rf,
+                Color::new(210, 210, 215, 230),
+            );
+            let val = if value >= 100.0 {
+                format!("{value:.0}")
+            } else {
+                format!("{value:.3}")
+            };
+            text::draw(d, &val, track_r + 8, row_y + (rh - vf) / 2, vf, Color::SKYBLUE);
+        }
+
+        // Respawn button at the bottom of the panel.
+        let btn_y = respawn_button_y();
+        let btn_hover = m.x as i32 >= px
+            && m.x as i32 <= px + pw
+            && m.y as i32 >= btn_y
+            && m.y as i32 <= btn_y + rh;
+        d.draw_rectangle(
+            px + 8,
+            btn_y + 3,
+            pw - 16,
+            rh - 6,
+            if btn_hover {
+                Color::new(76, 128, 204, 170)
+            } else {
+                Color::new(76, 128, 204, 80)
+            },
+        );
+        let btn_label = "Respawn Graph";
+        let label_w = text::measure(d, btn_label, rf);
+        text::draw(
+            d,
+            btn_label,
+            px + (pw - label_w) / 2,
+            btn_y + (rh - rf) / 2,
+            rf,
+            Color::WHITE,
+        );
+    }
+}
+
+// Current value of the slider at `idx` (0=Spring K ... 7=Alpha Decay), read
+// from the live PARAM_* statics the debug panel writes.
+fn read_slider_value(idx: usize) -> f32 {
+    match idx {
+        0 => *PARAM_SPRING_K.read().unwrap(),
+        1 => *PARAM_DAMPING.read().unwrap(),
+        2 => *PARAM_GRAVITY_K.read().unwrap(),
+        3 => *PARAM_REPULSION_RADIUS.read().unwrap(),
+        4 => *PARAM_REPULSION_K.read().unwrap(),
+        5 => *PARAM_REPULSION_CORE_K.read().unwrap(),
+        6 => *PARAM_EDGE_REST_GAP.read().unwrap(),
+        7 => *PARAM_ALPHA_DECAY.read().unwrap(),
+        _ => 0.0,
     }
 }
 

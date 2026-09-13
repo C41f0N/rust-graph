@@ -232,6 +232,87 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     }
 
     // ------------------------------------------------------------
+    // Force debug panel: F toggles it; slider/toggle interaction
+    // ------------------------------------------------------------
+
+    // F key shows or hides the panel. Runs even when the panel is behind other
+    // overlays so it can always be dismissed.
+    if rl.is_key_pressed(KeyboardKey::KEY_F) {
+        let mut show = SHOW_FORCE_PANEL.write().unwrap();
+        *show = !*show;
+        if !*show {
+            *ACTIVE_SLIDER.write().unwrap() = None;
+        }
+    }
+
+    // Escape dismisses the panel (when no other modal owns Escape).
+    if *SHOW_FORCE_PANEL.read().unwrap() && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+        *SHOW_FORCE_PANEL.write().unwrap() = false;
+        *ACTIVE_SLIDER.write().unwrap() = None;
+        return;
+    }
+
+    // While the panel is open, clicks/drags on its controls are consumed here
+    // and never reach node selection below. Graphic clicks outside the panel
+    // fall through untouched.
+    if *SHOW_FORCE_PANEL.read().unwrap() {
+        let mx = rl.get_mouse_position().x;
+        let my = rl.get_mouse_position().y;
+
+        // Stray release clears an active drag.
+        if rl.is_mouse_button_released(MouseButton::MOUSE_BUTTON_LEFT) {
+            *ACTIVE_SLIDER.write().unwrap() = None;
+        }
+
+        // Drag: while the left button is held on an active slider, keep
+        // tracking the pointer and consume the frame.
+        if rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
+            let active = *ACTIVE_SLIDER.read().unwrap();
+            if let Some(idx) = active {
+                update_slider_from_mouse(idx, mx);
+                return;
+            }
+        }
+
+        // Press: start a slider drag or flip the alpha-cooldown switch.
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            if let Some(idx) = hit_test_slider(mx, my) {
+                *ACTIVE_SLIDER.write().unwrap() = Some(idx);
+                update_slider_from_mouse(idx, mx);
+                return;
+            } else if hit_test_alpha_toggle(mx, my) {
+                let mut enabled = ALPHA_COOLING_ENABLED.write().unwrap();
+                *enabled = !*enabled;
+                drop(enabled);
+                // Reheat so a graph that was frozen mid-cooldown (or running
+                // at full steam) picks up the new setting immediately.
+                wake_simulation();
+                return;
+            } else if hit_test_respawn_button(mx, my) {
+                // Regenerate lays nodes out from scratch and re-locks every
+                // graph static, so release the guards held at the top of this
+                // function before calling it.
+                drop(nodes);
+                drop(dragging_node);
+                drop(hover_node);
+                drop(selected_node);
+                drop(delete_pending);
+                drop(editing_node);
+                drop(adding_note);
+                drop(adding_name);
+                drop(context_node);
+                drop(context_empty);
+                drop(context_pos);
+                drop(renaming);
+                drop(rename_name);
+                drop(dir_path);
+                respawn_graph();
+                return;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------
     // Delete confirmation keys
     // ------------------------------------------------------------
 
@@ -621,6 +702,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 *selected_node = Some(i);
                 *delete_pending = false;
                 *dragging_node = Some(i);
+                // Nudging a node must wake a settled layout so its neighbours
+                // respond to the drag.
+                crate::graph::processing::wake_simulation();
                 LAST_CLICK_TIME.set(current_time);
                 LAST_CLICK_NODE.set(Some(i));
             }

@@ -66,6 +66,9 @@ fn main() {
 
     // Store the directory and generate nodes from it
     *DIR_PATH.write().unwrap() = dir_path.clone();
+    // Restore slider-tuned force params from this graph's .graph-params file
+    // (if one exists) before the first layout so it starts at last-run values.
+    load_graph_params(&dir_path);
     generate_nodes_from_directory(&dir_path);
 
     // Enumerate system fonts for the settings dialog's font picker.
@@ -88,6 +91,9 @@ fn main() {
             let mut cam = graph::renderer::CAMERA.write().unwrap();
             cam.offset.x = sw as f32 / 2.0;
             cam.offset.y = sh as f32 / 2.0;
+            // The gravity centre moved with the window, so a settled layout no
+            // longer reflects the new size: wake the sim to re-balance.
+            wake_simulation();
         }
 
         // Capture editor state BEFORE input handling
@@ -355,5 +361,9 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
         // The view-switcher bar is drawn last so it stays on top of both views.
         sidebar::draw(&mut d, editor_open);
     }
+
+    // Persist the force params into the last-viewed graph directory's
+    // .graph-params file, so slider-tuned layouts survive a restart.
+    save_graph_params(&DIR_PATH.read().unwrap());
 }
 

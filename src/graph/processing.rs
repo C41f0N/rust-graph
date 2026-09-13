@@ -20,30 +20,327 @@ pub const NODE_RADIUS_GROWTH: f32 = 2.0;
 // Extra clearance every edge's spring keeps between the two discs it joins.
 // Added to the combined radii below, so every pair settles well beyond
 // touching regardless of how big the individual nodes are.
-const EDGE_REST_GAP: f32 = 60.0;
+const EDGE_REST_GAP: f32 = 179.0;
 
 // Repulsion interaction radius (world units). Pairs closer than this feel each
 // other's repulsion; beyond it the force is zero, so the spatial grid never
 // checks them. Bigger spreads every cluster out, smaller keeps clusters
 // compact while still preventing nodes from touching.
-const REPULSION_RADIUS: f32 = 360.0;
+const REPULSION_RADIUS: f32 = 652.0;
 // Soft component (inverse-square of the pair distance): keeps clusters open
 // and gives every node gentle breathing room at any range under the cutoff.
-const REPULSION_K: f32 = 10000.0;
+const REPULSION_K: f32 = 50000.0;
 // Hard component (inverse-square of the CLEARANCE between the two discs, i.e.
 // distance minus the sum of their radii). It grows without limit as a pair
 // approaches contact, so the repulsion itself is the barrier: no spring can
 // ever press two nodes into one another, and no overlap check exists.
-const REPULSION_CORE_K: f32 = 4000.0;
+const REPULSION_CORE_K: f32 = 9200.0;
 // Clamp for the clearance fed to the hard core. 1px stops a divide-by-zero
 // when discs coincide while still giving the term ~4000 there - an order of
 // magnitude stronger than any spring force, so overlap is never reached.
 const REPULSION_MIN_CLEAR: f32 = 1.0;
 
+// Live-tunable force parameters. The statics below mirror the physical
+// constants above (which stay as defaults/for tests) so a temporary debug
+// panel can tweak them while the graph is running and watch the layout
+// respond immediately.
+pub static PARAM_SPRING_K: RwLock<f32> = RwLock::new(0.40);
+pub static PARAM_DAMPING: RwLock<f32> = RwLock::new(0.95);
+pub static PARAM_GRAVITY_K: RwLock<f32> = RwLock::new(0.04);
+pub static PARAM_REPULSION_RADIUS: RwLock<f32> = RwLock::new(REPULSION_RADIUS);
+pub static PARAM_REPULSION_K: RwLock<f32> = RwLock::new(REPULSION_K);
+pub static PARAM_REPULSION_CORE_K: RwLock<f32> = RwLock::new(REPULSION_CORE_K);
+pub static PARAM_EDGE_REST_GAP: RwLock<f32> = RwLock::new(EDGE_REST_GAP);
+pub static PARAM_ALPHA_DECAY: RwLock<f32> = RwLock::new(ALPHA_DECAY);
+
+// Temporary debug panel: a live switch to disable the alpha cooldown (and
+// with it the settle-and-pause behaviour), plus the panel's visibility and
+// the index of the slider currently being dragged.
+pub static ALPHA_COOLING_ENABLED: RwLock<bool> = RwLock::new(true);
+pub static SHOW_FORCE_PANEL: RwLock<bool> = RwLock::new(true);
+pub static ACTIVE_SLIDER: RwLock<Option<usize>> = RwLock::new(None);
+
+// Force panel geometry (screen-space pixels, unscaled; callers scale with
+// config::scaled_size like every other piece of UI). TRACK_* are offsets from
+// the panel's left edge.
+pub const PANEL_X: i32 = 10;
+pub const PANEL_Y: i32 = 60;
+pub const PANEL_W: i32 = 260;
+pub const PANEL_TITLE_H: i32 = 32;
+pub const PANEL_ROW_H: i32 = 28;
+pub const TRACK_LEFT: i32 = 100;
+pub const TRACK_RIGHT: i32 = PANEL_W - 10;
+pub const SLIDER_COUNT: usize = 8;
+
+// (min, max) range of each slider, in the same order as the PARAM_* list.
+// Index 0 is the spring, 1 damping, ... 7 alpha decay.
+pub const SLIDER_RANGES: [(f32, f32); SLIDER_COUNT] = [
+    (0.0, 5.0),
+    (0.5, 1.0),
+    (0.0, 0.5),
+    (50.0, 700.0),
+    (0.0, 50000.0),
+    (0.0, 20000.0),
+    (0.0, 200.0),
+    (0.005, 0.05),
+];
+
+// Return True if the pointer is over the alpha-cooling toggle row (the first
+// row of the panel body, just under the title bar).
+pub fn hit_test_alpha_toggle(mx: f32, my: f32) -> bool {
+    let px = PANEL_X as f32;
+    let row_h = config::scaled_size(PANEL_ROW_H) as f32;
+    mx >= px
+        && mx <= px + config::scaled_size(PANEL_W) as f32
+        && my >= panel_body_y() as f32
+        && my <= panel_body_y() as f32 + row_h
+}
+
+// Return the index of the slider whose row the pointer is over, or None.
+// Indexes run top-to-bottom: 0 = Spring K ... 7 = Alpha Decay. The whole row
+// is the hit target (not just the thin track band) so grabbing a slider is
+// forgiving; the renderer draws rows from the same helpers below.
+pub fn hit_test_slider(mx: f32, my: f32) -> Option<usize> {
+    let px = PANEL_X as f32;
+    let row_h = config::scaled_size(PANEL_ROW_H) as f32;
+    for idx in 0..SLIDER_COUNT {
+        let row_y = slider_row_y(idx) as f32;
+        if my >= row_y
+            && my <= row_y + row_h
+            && mx >= px
+            && mx <= px + config::scaled_size(PANEL_W) as f32
+        {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+// Screen-space y of the panel body's first row (bottom of the title bar).
+pub fn panel_body_y() -> i32 {
+    PANEL_Y + config::scaled_size(PANEL_TITLE_H)
+}
+
+// Screen-space y of the row holding slider `idx` (0-based, sliders only; the
+// alpha toggle owns the row directly above the first one).
+pub fn slider_row_y(idx: usize) -> i32 {
+    PANEL_Y + config::scaled_size(PANEL_TITLE_H) + config::scaled_size(PANEL_ROW_H) * (1 + idx as i32)
+}
+
+// Screen-space y of the "Respawn" button row (below the last slider).
+pub fn respawn_button_y() -> i32 {
+    PANEL_Y
+        + config::scaled_size(PANEL_TITLE_H)
+        + config::scaled_size(PANEL_ROW_H) * (1 + SLIDER_COUNT as i32)
+}
+
+// Return True if the pointer is over the Respawn button row.
+pub fn hit_test_respawn_button(mx: f32, my: f32) -> bool {
+    let px = PANEL_X as f32;
+    let row_h = config::scaled_size(PANEL_ROW_H) as f32;
+    mx >= px
+        && mx <= px + config::scaled_size(PANEL_W) as f32
+        && my >= respawn_button_y() as f32
+        && my <= respawn_button_y() as f32 + row_h
+}
+
+// Re-initialize the current directory's graph from scratch: fresh phyllotaxis
+// positions, rebuilt edges, reset camera/zoom, cleared selection, sim woken.
+pub fn respawn_graph() {
+    let dir = DIR_PATH.read().unwrap().clone();
+    generate_nodes_from_directory(&dir);
+}
+
+// Map the pointer's x onto the slider at `idx` and store the resulting value.
+pub fn update_slider_from_mouse(idx: usize, mx: f32) {
+    let px = PANEL_X as f32;
+    let track_l = px + config::scaled_size(TRACK_LEFT) as f32;
+    let track_r = px + config::scaled_size(TRACK_RIGHT) as f32;
+    let t = ((mx - track_l) / (track_r - track_l)).clamp(0.0, 1.0);
+    let Some((lo, hi)) = SLIDER_RANGES.get(idx) else {
+        return;
+    };
+    let v = lo + t * (hi - lo);
+    let value = match idx {
+        0 => (v * 100.0).round() / 100.0,
+        1 => (v * 100.0).round() / 100.0,
+        2 => (v * 100.0).round() / 100.0,
+        3 => v.round(),
+        4 => (v / 100.0).round() * 100.0,
+        5 => (v / 50.0).round() * 50.0,
+        6 => v.round(),
+        7 => (v * 1000.0).round() / 1000.0,
+        _ => v,
+    };
+    match idx {
+        0 => *PARAM_SPRING_K.write().unwrap() = value,
+        1 => *PARAM_DAMPING.write().unwrap() = value,
+        2 => *PARAM_GRAVITY_K.write().unwrap() = value,
+        3 => *PARAM_REPULSION_RADIUS.write().unwrap() = value,
+        4 => *PARAM_REPULSION_K.write().unwrap() = value,
+        5 => *PARAM_REPULSION_CORE_K.write().unwrap() = value,
+        6 => *PARAM_EDGE_REST_GAP.write().unwrap() = value,
+        7 => *PARAM_ALPHA_DECAY.write().unwrap() = value,
+        _ => {}
+    }
+
+    // Reheat the sim so the layout visibly responds to the new force: while
+    // the button is held, each frame re-sets alpha to full so the graph stays
+    // hot through the whole drag, then cools once released. This also wakes a
+    // settled graph the first time a knob is touched.
+    wake_simulation();
+}
+
+// ---- Parameter persistence ------------------------------------------------
+// Slider-tuned force values survive a restart. Written as a tiny .graph-params
+// key=value file next to the graph directory being viewed, so each folder can
+// carry its own force settings. Unreadable/missing file = keep current values.
+
+/// The 8 force values in slider order (spring_k ... alpha_decay).
+pub fn param_values() -> [f32; 8] {
+    [
+        *PARAM_SPRING_K.read().unwrap(),
+        *PARAM_DAMPING.read().unwrap(),
+        *PARAM_GRAVITY_K.read().unwrap(),
+        *PARAM_REPULSION_RADIUS.read().unwrap(),
+        *PARAM_REPULSION_K.read().unwrap(),
+        *PARAM_REPULSION_CORE_K.read().unwrap(),
+        *PARAM_EDGE_REST_GAP.read().unwrap(),
+        *PARAM_ALPHA_DECAY.read().unwrap(),
+    ]
+}
+
+/// Overwrite every force value from `values` (slider order).
+pub fn set_param_values(values: [f32; 8]) {
+    *PARAM_SPRING_K.write().unwrap() = values[0];
+    *PARAM_DAMPING.write().unwrap() = values[1];
+    *PARAM_GRAVITY_K.write().unwrap() = values[2];
+    *PARAM_REPULSION_RADIUS.write().unwrap() = values[3];
+    *PARAM_REPULSION_K.write().unwrap() = values[4];
+    *PARAM_REPULSION_CORE_K.write().unwrap() = values[5];
+    *PARAM_EDGE_REST_GAP.write().unwrap() = values[6];
+    *PARAM_ALPHA_DECAY.write().unwrap() = values[7];
+}
+
+const PARAM_KEYS: [&str; 8] = [
+    "spring_k",
+    "damping",
+    "center_pull",
+    "repulsion_radius",
+    "repulsion_k",
+    "repulsion_core_k",
+    "rest_gap",
+    "alpha_decay",
+];
+
+const GRAPH_PARAMS_FILE: &str = ".graph-params";
+
+/// Serialize force settings to .graph-params text.
+pub fn serialize_params(values: [f32; 8], alpha_cooling: bool, show_panel: bool) -> String {
+    let mut out = String::new();
+    for (i, key) in PARAM_KEYS.iter().enumerate() {
+        out.push_str(&format!("{key}={:.4}\n", values[i]));
+    }
+    out.push_str(&format!(
+        "alpha_cooling={}\nshow_force_panel={}\n",
+        if alpha_cooling { 1 } else { 0 },
+        if show_panel { 1 } else { 0 },
+    ));
+    out
+}
+
+/// Parse .graph-params text over `defaults`. Missing/unknown keys keep the
+/// default slot; the two booleans come back as None when the key is absent.
+pub fn parse_params(text: &str, defaults: [f32; 8]) -> ([f32; 8], Option<bool>, Option<bool>) {
+    let mut values = defaults;
+    let mut cooling = None;
+    let mut panel = None;
+    for raw in text.lines() {
+        let line = raw.trim();
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let v = v.trim();
+        if let Some(idx) = PARAM_KEYS.iter().position(|&key| key == k) {
+            if let Ok(num) = v.parse::<f32>() {
+                values[idx] = num;
+            }
+        } else if k == "alpha_cooling" {
+            match v {
+                "1" => cooling = Some(true),
+                "0" => cooling = Some(false),
+                _ => {}
+            }
+        } else if k == "show_force_panel" {
+            match v {
+                "1" => panel = Some(true),
+                "0" => panel = Some(false),
+                _ => {}
+            }
+        }
+    }
+    (values, cooling, panel)
+}
+
+/// Apply the graph's .graph-params file to the live statics, if present.
+/// Missing file or parse noise leaves the offending slot untouched.
+pub fn load_graph_params(dir: &Path) {
+    let path = dir.join(GRAPH_PARAMS_FILE);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let (values, cooling, panel) = parse_params(&text, param_values());
+    set_param_values(values);
+    if let Some(c) = cooling {
+        *ALPHA_COOLING_ENABLED.write().unwrap() = c;
+    }
+    if let Some(p) = panel {
+        *SHOW_FORCE_PANEL.write().unwrap() = p;
+    }
+}
+
+/// Write the current force settings to the graph directory's .graph-params
+/// file. Written to a temp sibling then renamed so a crash can't leave a
+/// half-written file.
+pub fn save_graph_params(dir: &Path) {
+    let values = param_values();
+    let cooling = *ALPHA_COOLING_ENABLED.read().unwrap();
+    let panel = *SHOW_FORCE_PANEL.read().unwrap();
+    let text = serialize_params(values, cooling, panel);
+    let path = dir.join(GRAPH_PARAMS_FILE);
+    let tmp = dir.join(format!(".{}.tmp", GRAPH_PARAMS_FILE));
+    if std::fs::write(&tmp, &text).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static HOVER_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static NODES: RwLock<Vec<Node>> = RwLock::new(Vec::<Node>::new());
 pub static EDGES: RwLock<Vec<Edge>> = RwLock::new(Vec::<Edge>::new());
+
+// Force simulation "temperature" (d3-force's alpha model): a value between 1
+// (fully hot) and 0 (frozen) that scales every applied force. Each tick alpha
+// decays toward ALPHA_TARGET, so the graph eases to rest instead of jostling
+// forever as it would at fixed-strength forces - the slower the climbing gets,
+// the weaker the forces pushing it keep going. Once alpha crosses ALPHA_MIN the
+// layout is provably at (near) rest, so update_forces pauses until something
+// perturbs it again.
+const ALPHA_START: f32 = 1.0;
+// Floor enforced while a node is being dragged: the layout keeps following the
+// pointer, but stays gentler than a full relayout (d3's default reheat level).
+const ALPHA_REHEAT: f32 = 0.3;
+const ALPHA_TARGET: f32 = 0.0;
+// d3 default comes in at ~300 ticks; 0.005 keeps the layout hot longer so the
+// user's dialed-in forces read fully before the graph eases to rest
+// (~1380 ticks ≈ 23s at 60fps).
+const ALPHA_DECAY: f32 = 0.0050;
+const ALPHA_MIN: f32 = 0.001;
+static SIM_SETTLED: AtomicBool = AtomicBool::new(false);
+// Current simulation temperature. Decayed every frame by update_forces; reset
+// to ALPHA_START by wake_simulation whenever the layout is perturbed. Read by
+// the debug panel so it can show alpha live.
+pub static SIM_ALPHA: RwLock<f32> = RwLock::new(ALPHA_START);
 
 pub static DIR_PATH: RwLock<PathBuf> = RwLock::new(PathBuf::new());
 pub static SELECTED_NODE: RwLock<Option<usize>> = RwLock::new(None);
@@ -98,6 +395,9 @@ pub struct Edge {
 }
 
 pub fn generate_nodes_from_directory(dir: &Path) {
+    // The whole layout is about to be replaced; the force sim must rebuild.
+    wake_simulation();
+
     let files = filesystem::scan_directory(dir);
     let mut rng = rand::rng();
 
@@ -106,16 +406,30 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     nodes.clear();
     edges.clear();
 
-    for file in &files {
+    // Sunflower (phyllotaxis) initial layout: file i sits on a disc at radius
+    // ~ sqrt(index) * scale, spiralled by the golden angle. Uniform density,
+    // sized to the node count, so the layout starts near its natural rest
+    // spacing. A random wobble (±100px around the centre) packs every node into
+    // a fraction of the space they want, so the first force frames violently
+    // scatter the graph and the alpha-cooled sim freezes a bloated mess.
+    let n = files.len().max(1) as f32;
+    let spiral_radius = n.sqrt() * 36.0;
+    let golden_angle = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+    let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
+
+    for (i, file) in files.iter().enumerate() {
         let file_name = file.file_name().unwrap().to_string_lossy().to_string();
         let name = file_name.trim_end_matches(".md").to_string();
+        let t = (i as f32 + 0.5) / n;
+        let angle = golden_angle * i as f32;
+        let r = spiral_radius * t.sqrt();
 
         nodes.push(Node {
             radius: NODE_BASE_RADIUS,
             color: Color::WHITE,
             position: Vector2::new(
-                rng.random_range((config::width() as f32 / 2. - 100.)..(config::width() as f32 / 2. + 100.)),
-                rng.random_range((config::height() as f32 / 2. - 100.)..(config::height() as f32 / 2. + 100.)),
+                center.x + r * angle.cos() + rng.random_range(-4.0..4.0),
+                center.y + r * angle.sin() + rng.random_range(-4.0..4.0),
             ),
             velocity: Vector2::new(0.0, 0.0),
             name,
@@ -280,7 +594,9 @@ pub fn refresh_saved_node(path: &Path) {
         return;
     }
 
-    // Link set changed: swap this node's outgoing edges.
+    // Link set changed: swap this node's outgoing edges. The layout must
+    // recompute because the new springs pull differently.
+    wake_simulation();
     edges.retain(|e| e.n1 != idx);
     for &j in &new_targets {
         edges.push(Edge { n1: idx, n2: j });
@@ -384,6 +700,9 @@ pub fn rebuild_edges() {
 pub fn add_node(dir: &Path, filename: &str) -> usize {
     let mut rng = rand::rng();
 
+    // A new node perturbs the layout; let it push its neighbours around.
+    wake_simulation();
+
     // Normalize the stem (strip .md extension if provided)
     let stem = filename.trim_end_matches(".md");
     let stem = if stem.is_empty() { "untitled" } else { stem };
@@ -415,6 +734,9 @@ pub fn add_node(dir: &Path, filename: &str) -> usize {
 }
 
 pub fn remove_node(idx: usize) {
+    // Removing a node/edges changes every spring in the layout.
+    wake_simulation();
+
     let mut nodes = NODES.write().unwrap();
     let mut edges = EDGES.write().unwrap();
 
@@ -445,6 +767,9 @@ pub fn remove_node(idx: usize) {
 // the target file exists, or (for notes with a sub-graph) the target
 // folder exists.
 pub fn rename_node(idx: usize, new_name: &str) -> bool {
+    // Renaming rewires links and rescales nodes; restart the layout sim.
+    wake_simulation();
+
     let mut nodes = NODES.write().unwrap();
     if idx >= nodes.len() {
         return false;
@@ -499,29 +824,37 @@ pub fn rename_node(idx: usize, new_name: &str) -> bool {
     true
 }
 
-// Repulsion between every pair closer than REPULSION_RADIUS, computed with a
-// spatial grid. Cell size equals the interaction radius, so a repelling pair
-// can only occupy the same cell or two adjacent ones: scanning the 3x3 cell
-// neighborhood of each node finds every pair within range (and none beyond,
-// where the force would be zero anyway). Returns one accumulated force per
-// node. Pure and unit-testable; the graph's own repulsion constants are used.
-fn repulsion_forces(positions: &[Vector2], radii: &[f32]) -> Vec<Vector2> {
+// Repulsion between every pair closer than the interaction radius, computed
+// with a spatial grid. Cell size equals the interaction radius, so a repelling
+// pair can only occupy the same cell or two adjacent ones: scanning the 3x3
+// cell neighborhood of each node finds every pair within range (and none
+// beyond, where the force would be zero anyway). Returns one accumulated force
+// per node. Pure and unit-testable; callers pass the tuned radii/strengths
+// (the runtime version reads the live PARAM_* statics, tests pass the fixed
+// constants).
+fn repulsion_forces(
+    positions: &[Vector2],
+    radii: &[f32],
+    repulsion_radius: f32,
+    repulsion_k: f32,
+    repulsion_core_k: f32,
+) -> Vec<Vector2> {
     let mut forces = vec![Vector2::zero(); positions.len()];
 
     let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
         std::collections::HashMap::with_capacity(positions.len());
     for (i, pos) in positions.iter().enumerate() {
         let cell = (
-            (pos.x / REPULSION_RADIUS).floor() as i32,
-            (pos.y / REPULSION_RADIUS).floor() as i32,
+            (pos.x / repulsion_radius).floor() as i32,
+            (pos.y / repulsion_radius).floor() as i32,
         );
         grid.entry(cell).or_default().push(i);
     }
 
     for i in 0..positions.len() {
         let pi = positions[i];
-        let cx = (pi.x / REPULSION_RADIUS).floor() as i32;
-        let cy = (pi.y / REPULSION_RADIUS).floor() as i32;
+        let cx = (pi.x / repulsion_radius).floor() as i32;
+        let cy = (pi.y / repulsion_radius).floor() as i32;
         for cy2 in cy - 1..=cy + 1 {
             for cx2 in cx - 1..=cx + 1 {
                 let Some(cell) = grid.get(&(cx2, cy2)) else {
@@ -533,13 +866,13 @@ fn repulsion_forces(positions: &[Vector2], radii: &[f32]) -> Vec<Vector2> {
                     }
                     let diff = pi - positions[j];
                     let dist = diff.length();
-                    if dist >= REPULSION_RADIUS {
+                    if dist >= repulsion_radius {
                         continue;
                     }
                     // Soft term: inward-square of the pair distance, keeping
                     // clusters open at any range under the cutoff.
                     let soft = if dist > 1e-3 {
-                        REPULSION_K / (dist * dist)
+                        repulsion_k / (dist * dist)
                     } else {
                         0.0
                     };
@@ -547,10 +880,10 @@ fn repulsion_forces(positions: &[Vector2], radii: &[f32]) -> Vec<Vector2> {
                     // two discs, unbounded as they near contact. This - not any
                     // overlap fix-up - is what stops discs from ever touching.
                     let clearance = (dist - (radii[i] + radii[j])).max(REPULSION_MIN_CLEAR);
-                    let hard = REPULSION_CORE_K / (clearance * clearance);
+                    let hard = repulsion_core_k / (clearance * clearance);
                     // Both vanish smoothly at the interaction radius (no hard
                     // pop at the edge of the grid cell).
-                    let mag = (soft + hard) * (1.0 - dist / REPULSION_RADIUS);
+                    let mag = (soft + hard) * (1.0 - dist / repulsion_radius);
                     forces[i] += diff.scale(mag / dist.max(1e-6));
                 }
             }
@@ -559,22 +892,62 @@ fn repulsion_forces(positions: &[Vector2], radii: &[f32]) -> Vec<Vector2> {
     forces
 }
 
+// Kick the force simulation out of its settled (paused) state and reheat it to
+// full strength. Call after any structural change (add/remove/rename/regenerate)
+// or manual nudge so the layout recomputes, then cools back down to sleep.
+pub fn wake_simulation() {
+    SIM_SETTLED.store(false, std::sync::atomic::Ordering::Relaxed);
+    *SIM_ALPHA.write().unwrap() = ALPHA_START;
+}
+
 pub fn update_forces(rl: &mut RaylibHandle) {
+    // While the graph is settled the layout is at rest: skip the whole force
+    // pass (position snapshots, grid build, spring/repulsion math) every
+    // frame. Woken by structural changes and drags, and it re-sleeps below.
+    if SIM_SETTLED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+
     let mut nodes = NODES.write().unwrap();
     let edges = EDGES.read().unwrap();
 
     let dragging_node = DRAGGING_NODE.read().unwrap();
     let delta_time = rl.get_frame_time();
 
-    let spring_k = 0.90;
-    let damping = 0.95;
+    // Live-tunable forces (debug panel). Falling back to the tuned param
+    // statics keeps a settled graph from re-awakening on slider tweaks; the
+    // slider handlers wake the sim explicitly instead.
+    let repulsion_radius = *PARAM_REPULSION_RADIUS.read().unwrap();
+    let repulsion_k = *PARAM_REPULSION_K.read().unwrap();
+    let repulsion_core_k = *PARAM_REPULSION_CORE_K.read().unwrap();
+    let spring_k = *PARAM_SPRING_K.read().unwrap();
+    let damping = *PARAM_DAMPING.read().unwrap();
+    let gravity_k = *PARAM_GRAVITY_K.read().unwrap();
+    let edge_rest_gap = *PARAM_EDGE_REST_GAP.read().unwrap();
+    let alpha_decay = *PARAM_ALPHA_DECAY.read().unwrap();
+    let alpha_cooling_enabled = *ALPHA_COOLING_ENABLED.read().unwrap();
+
+    // Cool the simulation: alpha moves toward ALPHA_TARGET and every force
+    // below is scaled by it. While a node is dragged the alpha is held at
+    // ALPHA_REHEAT so the layout keeps following the pointer; without that
+    // floor the sim would freeze mid-gesture once alpha cooled. With the
+    // cooldown switched off, alpha is pinned hot so the graph churns forever.
+    let mut alpha = *SIM_ALPHA.read().unwrap();
+    if alpha_cooling_enabled {
+        alpha += (ALPHA_TARGET - alpha) * alpha_decay;
+        if dragging_node.is_some() {
+            alpha = alpha.max(ALPHA_REHEAT);
+        }
+    } else {
+        alpha = 1.0;
+    }
+    *SIM_ALPHA.write().unwrap() = alpha;
 
     let positions: Vec<Vector2> = nodes.iter().map(|n| n.position).collect();
     let radii: Vec<f32> = nodes.iter().map(|n| n.radius).collect();
-    let mut forces = repulsion_forces(&positions, &radii);
+    let mut forces = repulsion_forces(&positions, &radii, repulsion_radius, repulsion_k, repulsion_core_k);
 
     let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
-    let gravity_k = 0.1_f32;
 
     for i in 0..nodes.len() {
         let diff = center - nodes[i].position;
@@ -589,7 +962,7 @@ pub fn update_forces(rl: &mut RaylibHandle) {
         let direction = if dist > 0.001 { diff.scale(1.0 / dist) } else { Vector2::zero() };
         // Rest length scales with the two disc radii plus a gap, so hubs (which
         // grow) keep the same clear distance as the smallest nodes.
-        let rest = nodes[edge.n1].radius + nodes[edge.n2].radius + EDGE_REST_GAP;
+        let rest = nodes[edge.n1].radius + nodes[edge.n2].radius + edge_rest_gap;
         let force = spring_k * (dist - rest);
         forces[edge.n1] += direction * force;
         forces[edge.n2] -= direction * force;
@@ -598,8 +971,16 @@ pub fn update_forces(rl: &mut RaylibHandle) {
         if Some(i) == *dragging_node {
             continue;
         }
-        node.velocity = (node.velocity + forces[i] * delta_time) * damping;
+        node.velocity = (node.velocity + forces[i] * alpha * delta_time) * damping;
         node.position += node.velocity * delta_time;
+    }
+
+    // The simulation has cooled to the freeze point: exactly ALPHA_DECAY-bound,
+    // regardless of node count, so large graphs can't jostle forever. No speed
+    // threshold to chase - alpha bounds the force, so residual motion at the
+    // freeze point is provably negligible.
+    if alpha_cooling_enabled && alpha < ALPHA_MIN {
+        SIM_SETTLED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -620,7 +1001,8 @@ mod tests {
             Vector2::new(-3.0, -2.0),
         ];
         let radii = vec![7.0; cluster.len()];
-        let f = repulsion_forces(&cluster, &radii);
+        let f =
+            repulsion_forces(&cluster, &radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
         for i in 0..cluster.len() {
             assert!(f[i].length() > 0.0, "cluster members must repel each other");
         }
@@ -632,7 +1014,7 @@ mod tests {
             Vector2::new(REPULSION_RADIUS * 2.0, REPULSION_RADIUS * 2.0),
         ];
         let far_radii = vec![7.0; 2];
-        let g = repulsion_forces(&far, &far_radii);
+        let g = repulsion_forces(&far, &far_radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
         assert_eq!(g[0].length(), 0.0);
         assert_eq!(g[1].length(), 0.0);
     }
@@ -650,7 +1032,8 @@ mod tests {
             .collect();
         let radii: Vec<f32> = (0..200).map(|_| rng.random_range(5.0..15.0)).collect();
 
-        let fast = repulsion_forces(&positions, &radii);
+        let fast =
+            repulsion_forces(&positions, &radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
 
         let mut brute = vec![Vector2::zero(); positions.len()];
         for i in 0..positions.len() {
@@ -697,7 +1080,8 @@ mod tests {
         let damping = 0.55_f32;
         let dt = 0.01_f32;
         for _ in 0..5000 {
-            let mut forces = repulsion_forces(&positions, &[r1, r2]);
+            let mut forces =
+                repulsion_forces(&positions, &[r1, r2], REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
             let diff = positions[1] - positions[0];
             let dist = diff.length().max(1e-4);
             let direction = diff.scale(1.0 / dist);
@@ -720,7 +1104,8 @@ mod tests {
         let mut v3 = vec![Vector2::new(15.0, 0.0), Vector2::new(-15.0, 0.0)];
         let mut min_sep: f32 = f32::MAX;
         for _ in 0..2000 {
-            let forces = repulsion_forces(&p3, &[r1, r2]);
+            let forces =
+                repulsion_forces(&p3, &[r1, r2], REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
             for i in 0..2 {
                 v3[i] = (v3[i] + forces[i] * dt) * damping;
                 p3[i] += v3[i] * dt;
@@ -737,7 +1122,7 @@ mod tests {
         let mut v2 = vec![Vector2::zero(), Vector2::zero()];
         let base_radii = [NODE_BASE_RADIUS; 2];
         for _ in 0..3000 {
-            let forces = repulsion_forces(&p2, &base_radii);
+            let forces = repulsion_forces(&p2, &base_radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
             for i in 0..2 {
                 v2[i] = (v2[i] + forces[i] * dt) * damping;
                 p2[i] += v2[i] * dt;
@@ -745,6 +1130,107 @@ mod tests {
         }
         let sep2 = (p2[1] - p2[0]).length();
         assert!(sep2 >= 2.0 * NODE_BASE_RADIUS, "disconnected pair must not overlap, got {sep2}");
+    }
+
+    #[test]
+    fn alpha_cooling_guarantees_rest_for_cramped_graphs() {
+        // A cramped, random tree would jostle forever under fixed-strength
+        // forces. With the alpha model every force is scaled by a temperature
+        // that decays each tick, so the layout eases to rest within ALPHA_DECAY
+        // ticks no matter how tangled the start positions are.
+        let mut rng = rand::rng();
+        let n = 40;
+        let mut positions: Vec<Vector2> = (0..n)
+            .map(|_| {
+                Vector2::new(
+                    rng.random_range(-150.0..150.0),
+                    rng.random_range(-150.0..150.0),
+                )
+            })
+            .collect();
+        let mut velocities = vec![Vector2::zero(); n];
+        let radii = vec![NODE_BASE_RADIUS; n];
+        let edges: Vec<(usize, usize)> = (1..n).map(|i| (i, rng.random_range(0..i))).collect();
+
+        let spring_k = 0.40_f32;
+        let damping = 0.95_f32;
+        let dt = 1.0 / 60.0_f32;
+        let gravity_k = 0.04_f32;
+        let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
+
+        let mut alpha = 1.0_f32;
+        let mut max_speed = f32::MAX;
+        // With the baked-in 0.005 decay alpha needs ~1380 ticks to cross the
+        // freeze point; budget 2000 so the tail definitely ends below it.
+        for _ in 0..2000 {
+            alpha += (ALPHA_TARGET - alpha) * ALPHA_DECAY;
+            let mut forces =
+                repulsion_forces(&positions, &radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
+            for i in 0..n {
+                forces[i] += (center - positions[i]) * gravity_k;
+            }
+            for &(a, b) in &edges {
+                let diff = positions[b] - positions[a];
+                let dist = diff.length();
+                let direction = if dist > 0.001 { diff.scale(1.0 / dist) } else { Vector2::zero() };
+                let rest = radii[a] + radii[b] + EDGE_REST_GAP;
+                let force = spring_k * (dist - rest);
+                forces[a] += direction * force;
+                forces[b] -= direction * force;
+            }
+            for i in 0..n {
+                velocities[i] = (velocities[i] + forces[i] * alpha * dt) * damping;
+            }
+            for i in 0..n {
+                positions[i] += velocities[i] * dt;
+            }
+            max_speed = velocities.iter().map(|v| v.length()).fold(0.0_f32, f32::max);
+        }
+        assert!(alpha < ALPHA_MIN, "simulation must cool below the freeze point");
+        assert!(
+            max_speed < 0.1,
+            "residual motion should be negligible, got {max_speed}"
+        );
+    }
+
+    #[test]
+    fn force_panel_hit_testing_tracks_shared_geometry() {
+        // The renderer draws each slider row from slider_row_y() and the input
+        // handler tests the same helpers, so a click on any row center must
+        // always resolve to that slider at the default zoom.
+        let row_h = config::scaled_size(PANEL_ROW_H) as f32;
+        for idx in 0..SLIDER_COUNT {
+            let row_y = slider_row_y(idx) as f32;
+            let probe_x = PANEL_X as f32 + config::scaled_size(PANEL_W) as f32 / 2.0;
+            assert_eq!(
+                hit_test_slider(probe_x, row_y + row_h / 2.0),
+                Some(idx),
+                "slider {idx} not grabable at its row center"
+            );
+        }
+        // The alpha-cooldown toggle owns the row above the first slider, which
+        // must NOT resolve to any slider.
+        let toggle_y = panel_body_y() as f32;
+        assert!(
+            hit_test_alpha_toggle(PANEL_X as f32 + 50.0, toggle_y + row_h / 2.0),
+            "toggle row must be the alpha toggle, not a slider"
+        );
+        assert!(
+            hit_test_slider(PANEL_X as f32 + 50.0, toggle_y + row_h / 2.0).is_none(),
+            "toggle row must not hit a slider"
+        );
+
+        // The Respawn button sits below the last slider and must also not
+        // resolve to any slider.
+        let respawn_y = respawn_button_y() as f32;
+        assert!(
+            hit_test_respawn_button(PANEL_X as f32 + 50.0, respawn_y + row_h / 2.0),
+            "respawn row must hit the respawn button"
+        );
+        assert!(
+            hit_test_slider(PANEL_X as f32 + 50.0, respawn_y + row_h / 2.0).is_none(),
+            "respawn row must not hit a slider"
+        );
     }
 
     #[test]
@@ -934,5 +1420,31 @@ mod tests {
         assert_eq!(node.header.as_deref(), Some("assets/pic.png"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graph_params_round_trip_through_serialization() {
+        // Pure functions only: no global statics, so this is parallel-safe.
+        let values = [1.5, 0.97, 0.42, 300.0, 12000.0, 5550.0, 45.0, 0.02];
+        let text = serialize_params(values, false, true);
+        let defaults = [0.90, 0.95, 0.1, 360.0, 10000.0, 4000.0, 60.0, 0.0228];
+        let (got, cooling, panel) = parse_params(&text, defaults);
+        assert_eq!(got, values);
+        assert_eq!(cooling, Some(false));
+        assert_eq!(panel, Some(true));
+    }
+
+    #[test]
+    fn graph_params_partial_file_keeps_defaults_for_missing_keys() {
+        let defaults = [0.90, 0.95, 0.1, 360.0, 10000.0, 4000.0, 60.0, 0.0228];
+        // Only spring_k and the panel flag present; junk lines and an unnamed
+        // key must be ignored, everything else falls back to the defaults.
+        let text = "spring_k=2.25\n\nnot-a-param=99\nbogus\nalpha_cooling=0\n      \n";
+        let (got, cooling, panel) = parse_params(text, defaults);
+        let mut expect = defaults;
+        expect[0] = 2.25;
+        assert_eq!(got, expect);
+        assert_eq!(cooling, Some(false));
+        assert_eq!(panel, None);
     }
 }
