@@ -151,10 +151,12 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         if let Some(idx) = *selected_node {
             let name = &nodes[idx].name;
             let prompt = format!("Delete '{}'? (Y/N)", name);
-            let text_width = text::measure(d, &prompt, 20);
+            let fs = config::scaled_size(20);
+            let box_h = config::scaled_size(30);
+            let text_width = text::measure(d, &prompt, fs);
             let x = (config::width() - text_width) / 2;
-            d.draw_rectangle(x - 10, 10, text_width + 20, 30, Color::BLACK.alpha(0.7));
-            text::draw(d, &prompt, x, 15, 20, Color::WHITE);
+            d.draw_rectangle(x - 10, 10, text_width + 20, box_h, Color::BLACK.alpha(0.7));
+            text::draw(d, &prompt, x, 10 + (box_h - fs) / 2, fs, Color::WHITE);
         }
     }
 
@@ -164,18 +166,20 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let adding_name = crate::graph::processing::ADDING_NAME.read().unwrap();
         let prompt_base = "Filename: ";
         let full = format!("{}{}", prompt_base, adding_name);
-        let label_width = text::measure(d, prompt_base, 20);
-        let text_width = text::measure(d, &full, 20);
+        let fs = config::scaled_size(20);
+        let box_h = config::scaled_size(30);
+        let label_width = text::measure(d, prompt_base, fs);
+        let text_width = text::measure(d, &full, fs);
         let x = (config::width() - text_width) / 2 - 10;
         let y = 10;
-        d.draw_rectangle(x, y, text_width + 20, 30, Color::BLACK.alpha(0.7));
-        text::draw(d, prompt_base, x + 10, y + 15, 20, Color::WHITE);
+        d.draw_rectangle(x, y, text_width + 20, box_h, Color::BLACK.alpha(0.7));
+        text::draw(d, prompt_base, x + 10, y + (box_h - fs) / 2, fs, Color::WHITE);
 
         // Draw the input content (in a lighter color) plus a cursor
-        text::draw(d, &adding_name, x + 10 + label_width, y + 15, 20, Color::SKYBLUE);
-        let name_width = text::measure(d, &adding_name, 20);
+        text::draw(d, &adding_name, x + 10 + label_width, y + (box_h - fs) / 2, fs, Color::SKYBLUE);
+        let name_width = text::measure(d, &adding_name, fs);
         let cursor_x = x + 10 + label_width + name_width;
-        d.draw_rectangle(cursor_x, y + 5, 2, 20, Color::WHITE);
+        d.draw_rectangle(cursor_x, y + (box_h - fs) / 2, 2, fs, Color::WHITE);
     }
 
     // Right-click context menu (screen space)
@@ -185,21 +189,25 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     if (context_node.is_some() || context_empty) && !renaming {
         let (mx, my) = *crate::graph::processing::CONTEXT_POS.read().unwrap();
         let screen_mouse = d.get_mouse_position();
+        let mw = config::scaled_size(config::CONTEXT_MENU_W);
+        let mh = config::scaled_size(config::CONTEXT_MENU_ITEM_H);
+        let mf = config::scaled_size(18);
+        let my_ofs = (mh - mf) / 2;
 
         if context_empty {
             // Empty-space menu: a single "Add Node" action for now; this is
             // where more global actions can hang in the future.
-            let menu_h = config::CONTEXT_MENU_ITEM_H;
-            d.draw_rectangle(mx, my, config::CONTEXT_MENU_W, menu_h, Color::new(20, 20, 20, 235));
+            let menu_h = mh;
+            d.draw_rectangle(mx, my, mw, menu_h, Color::new(20, 20, 20, 235));
             let hover = screen_mouse.x as i32 >= mx
-                && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+                && screen_mouse.x as i32 <= mx + mw
                 && screen_mouse.y as i32 >= my
-                && screen_mouse.y as i32 <= my + config::CONTEXT_MENU_ITEM_H;
+                && screen_mouse.y as i32 <= my + mh;
             d.draw_rectangle(
-                mx, my, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+                mx, my, mw, mh,
                 if hover { Color::new(76, 180, 120, 160) } else { Color::new(0, 0, 0, 0) },
             );
-            text::draw(d, "Add Node", mx + 10, my + 6, 18, Color::WHITE);
+            text::draw(d, "Add Node", mx + 10, my + my_ofs, mf, Color::WHITE);
         } else {
             // Determine sub-graph availability for this node
             let node_name = context_node
@@ -218,81 +226,81 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let mut item_count = 3i32;
         if show_create { item_count += 1; }
         if show_open { item_count += 1; }
-        let menu_h = item_count * config::CONTEXT_MENU_ITEM_H;
+        let menu_h = item_count * mh;
 
         // Background
-        d.draw_rectangle(mx, my, config::CONTEXT_MENU_W, menu_h, Color::new(20, 20, 20, 235));
+        d.draw_rectangle(mx, my, mw, menu_h, Color::new(20, 20, 20, 235));
 
         // --- Row 0: Rename ---
         let hover_rename = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.x as i32 <= mx + mw
             && screen_mouse.y as i32 >= my
-            && screen_mouse.y as i32 <= my + config::CONTEXT_MENU_ITEM_H;
+            && screen_mouse.y as i32 <= my + mh;
         d.draw_rectangle(
-            mx, my, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+            mx, my, mw, mh,
             if hover_rename { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
         );
-        text::draw(d, "Rename", mx + 10, my + 6, 18, Color::WHITE);
+        text::draw(d, "Rename", mx + 10, my + my_ofs, mf, Color::WHITE);
 
-        let mut y_off = config::CONTEXT_MENU_ITEM_H;
-        d.draw_line(mx, my + y_off, mx + config::CONTEXT_MENU_W, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
+        let mut y_off = mh;
+        d.draw_line(mx, my + y_off, mx + mw, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
 
         // --- Row 1: Delete ---
         let hover_delete = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.x as i32 <= mx + mw
             && screen_mouse.y as i32 >= my + y_off
-            && screen_mouse.y as i32 <= my + y_off + config::CONTEXT_MENU_ITEM_H;
+            && screen_mouse.y as i32 <= my + y_off + mh;
         d.draw_rectangle(
-            mx, my + y_off, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+            mx, my + y_off, mw, mh,
             if hover_delete { Color::new(200, 60, 60, 160) } else { Color::new(0, 0, 0, 0) },
         );
-        text::draw(d, "Delete", mx + 10, my + y_off + 6, 18, Color::WHITE);
-        y_off += config::CONTEXT_MENU_ITEM_H;
+        text::draw(d, "Delete", mx + 10, my + y_off + my_ofs, mf, Color::WHITE);
+        y_off += mh;
 
         // Separator before sub-graph items (only when at least one is shown)
         if show_create || show_open {
-            d.draw_line(mx, my + y_off, mx + config::CONTEXT_MENU_W, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
+            d.draw_line(mx, my + y_off, mx + mw, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
         }
 
         // --- Row 2 (conditional): Create Sub-Graph ---
         if show_create {
             let hover_create = screen_mouse.x as i32 >= mx
-                && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+                && screen_mouse.x as i32 <= mx + mw
                 && screen_mouse.y as i32 >= my + y_off
-                && screen_mouse.y as i32 <= my + y_off + config::CONTEXT_MENU_ITEM_H;
+                && screen_mouse.y as i32 <= my + y_off + mh;
             d.draw_rectangle(
-                mx, my + y_off, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+                mx, my + y_off, mw, mh,
                 if hover_create { Color::new(76, 180, 120, 160) } else { Color::new(0, 0, 0, 0) },
             );
-            text::draw(d, "Create Sub-Graph", mx + 10, my + y_off + 6, 18, Color::WHITE);
-            y_off += config::CONTEXT_MENU_ITEM_H;
+            text::draw(d, "Create Sub-Graph", mx + 10, my + y_off + my_ofs, mf, Color::WHITE);
+            y_off += mh;
         }
 
         // --- Row 2/3 (conditional): Open Sub-Graph ---
         if show_open {
             let hover_open = screen_mouse.x as i32 >= mx
-                && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+                && screen_mouse.x as i32 <= mx + mw
                 && screen_mouse.y as i32 >= my + y_off
-                && screen_mouse.y as i32 <= my + y_off + config::CONTEXT_MENU_ITEM_H;
+                && screen_mouse.y as i32 <= my + y_off + mh;
             d.draw_rectangle(
-                mx, my + y_off, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+                mx, my + y_off, mw, mh,
                 if hover_open { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
             );
-            text::draw(d, "Open Sub-Graph", mx + 10, my + y_off + 6, 18, Color::WHITE);
-            y_off += config::CONTEXT_MENU_ITEM_H;
+            text::draw(d, "Open Sub-Graph", mx + 10, my + y_off + my_ofs, mf, Color::WHITE);
+            y_off += mh;
         }
 
         // --- Row (last): Set Header ---
-        d.draw_line(mx, my + y_off, mx + config::CONTEXT_MENU_W, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
+        d.draw_line(mx, my + y_off, mx + mw, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
         let hover_header = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.x as i32 <= mx + mw
             && screen_mouse.y as i32 >= my + y_off
-            && screen_mouse.y as i32 <= my + y_off + config::CONTEXT_MENU_ITEM_H;
+            && screen_mouse.y as i32 <= my + y_off + mh;
         d.draw_rectangle(
-            mx, my + y_off, config::CONTEXT_MENU_W, config::CONTEXT_MENU_ITEM_H,
+            mx, my + y_off, mw, mh,
             if hover_header { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
         );
-        text::draw(d, "Set Header", mx + 10, my + y_off + 6, 18, Color::WHITE);
+        text::draw(d, "Set Header", mx + 10, my + y_off + my_ofs, mf, Color::WHITE);
         }
     }
 
@@ -301,16 +309,18 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let rename_name = crate::graph::processing::RENAME_NAME.read().unwrap();
         let prompt_base = "Rename to: ";
         let full = format!("{}{}", prompt_base, rename_name);
-        let label_width = text::measure(d, prompt_base, 20);
-        let text_width = text::measure(d, &full, 20);
+        let fs = config::scaled_size(20);
+        let box_h = config::scaled_size(30);
+        let label_width = text::measure(d, prompt_base, fs);
+        let text_width = text::measure(d, &full, fs);
         let x = (config::width() - text_width) / 2 - 10;
         let y = 10;
-        d.draw_rectangle(x, y, text_width + 20, 30, Color::BLACK.alpha(0.7));
-        text::draw(d, prompt_base, x + 10, y + 15, 20, Color::WHITE);
-        text::draw(d, &rename_name, x + 10 + label_width, y + 15, 20, Color::SKYBLUE);
-        let name_width = text::measure(d, &rename_name, 20);
+        d.draw_rectangle(x, y, text_width + 20, box_h, Color::BLACK.alpha(0.7));
+        text::draw(d, prompt_base, x + 10, y + (box_h - fs) / 2, fs, Color::WHITE);
+        text::draw(d, &rename_name, x + 10 + label_width, y + (box_h - fs) / 2, fs, Color::SKYBLUE);
+        let name_width = text::measure(d, &rename_name, fs);
         let cursor_x = x + 10 + label_width + name_width;
-        d.draw_rectangle(cursor_x, y + 5, 2, 20, Color::WHITE);
+        d.draw_rectangle(cursor_x, y + (box_h - fs) / 2, 2, fs, Color::WHITE);
     }
 
     // Breadcrumb trail (only when inside a sub-graph)
@@ -348,19 +358,21 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let mut x = config::BREADCRUMB_PAD;
         let text_color = Color::new(200, 200, 200, 220);
         let total = components.len();
+        let bf = config::scaled_size(16);
+        let band_h = bf + 4;
 
         for (level, comp) in components.iter().enumerate() {
             let label = if level == 0 { comp.clone() } else { format!("/{}", comp) };
-            let w = text::measure(d, &label, 16);
+            let w = text::measure(d, &label, bf);
             let is_current = level == total - 1;
 
             if !is_current {
                 let hover = screen_mouse.x as i32 >= x
                     && screen_mouse.x as i32 <= x + w
                     && screen_mouse.y as i32 >= config::BREADCRUMB_Y
-                    && screen_mouse.y as i32 <= config::BREADCRUMB_Y + 20;
+                    && screen_mouse.y as i32 <= config::BREADCRUMB_Y + band_h;
                 let color = if hover { Color::SKYBLUE } else { text_color };
-                text::draw(d, &label, x, config::BREADCRUMB_Y, 16, color);
+                text::draw(d, &label, x, config::BREADCRUMB_Y, bf, color);
 
                 // Detect click and store the level for the input handler.
                 // Only when no menu/modal is active, so the value can't be
@@ -376,7 +388,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                     *crate::graph::processing::BREADCRUMB_CLICK.write().unwrap() = Some(level);
                 }
             } else {
-                text::draw(d, &label, x, config::BREADCRUMB_Y, 16, Color::WHITE);
+                text::draw(d, &label, x, config::BREADCRUMB_Y, bf, Color::WHITE);
             }
 
             x += w;
@@ -386,10 +398,13 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     // Settings button (screen space, top-left)
     let settings_open = *crate::graph::settings::SETTINGS_OPEN.read().unwrap();
     let screen_mouse = d.get_mouse_position();
+    let sb_w = config::scaled_size(settings::SETTINGS_BUTTON_W);
+    let sb_h = config::scaled_size(settings::SETTINGS_BUTTON_H);
+    let sb_f = config::scaled_size(18);
     let over_btn = screen_mouse.x as i32 >= settings::settings_button_x()
-        && screen_mouse.x as i32 <= settings::settings_button_x() + settings::SETTINGS_BUTTON_W
+        && screen_mouse.x as i32 <= settings::settings_button_x() + sb_w
         && screen_mouse.y as i32 >= settings::SETTINGS_BUTTON_Y
-        && screen_mouse.y as i32 <= settings::SETTINGS_BUTTON_Y + settings::SETTINGS_BUTTON_H;
+        && screen_mouse.y as i32 <= settings::SETTINGS_BUTTON_Y + sb_h;
 
     let btn_bg = if settings_open {
         Color::new(76, 128, 204, 180)
@@ -401,18 +416,18 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     d.draw_rectangle(
         settings::settings_button_x(),
         settings::SETTINGS_BUTTON_Y,
-        settings::SETTINGS_BUTTON_W,
-        settings::SETTINGS_BUTTON_H,
+        sb_w,
+        sb_h,
         btn_bg,
     );
     let btn_label = "Settings";
-    let btn_w = text::measure(d, btn_label, 18);
+    let btn_w = text::measure(d, btn_label, sb_f);
     text::draw(
         d,
         btn_label,
-        settings::settings_button_x() + (settings::SETTINGS_BUTTON_W - btn_w) / 2,
-        settings::SETTINGS_BUTTON_Y + (settings::SETTINGS_BUTTON_H - 18) / 2,
-        18,
+        settings::settings_button_x() + (sb_w - btn_w) / 2,
+        settings::SETTINGS_BUTTON_Y + (sb_h - sb_f) / 2,
+        sb_f,
         Color::WHITE,
     );
 
@@ -422,19 +437,25 @@ pub fn draw(d: &mut RaylibDrawHandle) {
 
         let px = settings::panel_x();
         let py = settings::panel_y();
+        let pw = settings::panel_w();
+        let ph = settings::panel_h();
+        let th = settings::title_h();
+        let rh = settings::row_h();
+        let tf = config::scaled_size(24);
+        let rf = config::scaled_size(16);
         d.draw_rectangle(
             px,
             py,
-            settings::SETTINGS_PANEL_W,
-            settings::SETTINGS_PANEL_H,
+            pw,
+            ph,
             Color::new(25, 25, 30, 245),
         );
-        text::draw(d, "Settings", px + 12, py + 8, 24, Color::WHITE);
+        text::draw(d, "Settings", px + 12, py + (th - tf) / 2, tf, Color::WHITE);
         d.draw_line(
             px,
-            py + settings::SETTINGS_TITLE_H,
-            px + settings::SETTINGS_PANEL_W,
-            py + settings::SETTINGS_TITLE_H,
+            py + th,
+            px + pw,
+            py + th,
             Color::new(255, 255, 255, 50),
         );
 
@@ -442,26 +463,26 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let scroll = *crate::graph::settings::SETTINGS_SCROLL.read().unwrap();
         let selected = *crate::graph::settings::SELECTED_FONT.read().unwrap();
 
-        let list_top = py + settings::SETTINGS_TITLE_H;
-        let list_h = settings::SETTINGS_PANEL_H - settings::SETTINGS_TITLE_H;
+        let list_top = py + th;
+        let list_h = ph - th;
 
-        let mut sc = d.begin_scissor_mode(px + 1, list_top, settings::SETTINGS_PANEL_W - 2, list_h - 1);
+        let mut sc = d.begin_scissor_mode(px + 1, list_top, pw - 2, list_h - 1);
         for i in 0..settings::SETTINGS_VISIBLE_ROWS {
             let idx = scroll + i;
             let Some(fam) = fonts.get(idx) else { break };
-            let row_y = list_top + (i as i32) * settings::SETTINGS_ROW_H;
+            let row_y = list_top + (i as i32) * rh;
             let row_hovered = screen_mouse.x as i32 >= px
-                && screen_mouse.x as i32 <= px + settings::SETTINGS_PANEL_W
+                && screen_mouse.x as i32 <= px + pw
                 && screen_mouse.y as i32 >= row_y
-                && screen_mouse.y as i32 <= row_y + settings::SETTINGS_ROW_H;
+                && screen_mouse.y as i32 <= row_y + rh;
             let row_selected = selected == Some(idx);
 
             if row_hovered {
                 sc.draw_rectangle(
                     px,
                     row_y,
-                    settings::SETTINGS_PANEL_W,
-                    settings::SETTINGS_ROW_H,
+                    pw,
+                    rh,
                     Color::new(76, 128, 204, 120),
                 );
             }
@@ -469,8 +490,8 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                 sc.draw_rectangle_lines(
                     px,
                     row_y,
-                    settings::SETTINGS_PANEL_W,
-                    settings::SETTINGS_ROW_H,
+                    pw,
+                    rh,
                     Color::new(76, 128, 204, 255),
                 );
             }
@@ -480,7 +501,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             } else {
                 Color::WHITE
             };
-            text::draw(&mut sc, &fam.name, px + 12, row_y + (settings::SETTINGS_ROW_H - 16) / 2, 16, color);
+            text::draw(&mut sc, &fam.name, px + 12, row_y + (rh - rf) / 2, rf, color);
         }
         drop(sc);
     }

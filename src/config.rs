@@ -20,6 +20,24 @@ pub fn height() -> i32 {
     SCREEN_SIZE.read().unwrap().1
 }
 
+// Global text scale (Ctrl +/-). One factor drives the editor body text and the
+// graph view's UI text. In-memory only: resets to 1.0 each launch.
+pub static TEXT_ZOOM: RwLock<f32> = RwLock::new(1.0);
+
+pub const TEXT_ZOOM_MIN: f32 = 0.5;
+pub const TEXT_ZOOM_MAX: f32 = 3.0;
+pub const TEXT_ZOOM_STEP: f32 = 0.1;
+
+pub fn zoom() -> f32 {
+    *TEXT_ZOOM.read().unwrap()
+}
+
+// A base pixel size scaled by the current zoom, clamped to at least 1 so a
+// shrunken font can never collapse a layout to zero or negative space.
+pub fn scaled_size(base: i32) -> i32 {
+    ((base as f32 * zoom()).round() as i32).max(1)
+}
+
 // The editor panel is a centered rectangle covering this fraction of the
 // screen. Shared so the graph input handler can tell "click on/off editor".
 pub const EDITOR_PANEL_FRACTION: f32 = 0.8;
@@ -76,3 +94,32 @@ pub const BREADCRUMB_PAD: i32 = 8;
 
 // Editor tab bar: pixels the horizontal tab strip scrolls per wheel notch.
 pub const TAB_SCROLL_STEP: i32 = 40;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // All in one test: TEXT_ZOOM is a process-wide global shared with the
+    // other config tests, so anything asserting on it must run in a single
+    // thread to avoid racing the shared value.
+    #[test]
+    fn scaled_size_follows_zoom() {
+        *TEXT_ZOOM.write().unwrap() = 1.0;
+        assert_eq!(scaled_size(20), 20);
+        assert_eq!(scaled_size(70), 70);
+        assert_eq!(scaled_size(0), 1);
+
+        *TEXT_ZOOM.write().unwrap() = 2.0;
+        assert_eq!(scaled_size(20), 40);
+        assert_eq!(scaled_size(30), 60);
+
+        *TEXT_ZOOM.write().unwrap() = 1.5;
+        assert_eq!(scaled_size(21), 32);
+
+        *TEXT_ZOOM.write().unwrap() = TEXT_ZOOM_MIN;
+        assert!(scaled_size(1) >= 1);
+        assert!(scaled_size(20) >= 1);
+
+        *TEXT_ZOOM.write().unwrap() = 1.0;
+    }
+}

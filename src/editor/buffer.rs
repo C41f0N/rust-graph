@@ -39,6 +39,13 @@ pub static DRAW_LINE_RANGE: RwLock<(usize, usize)> = RwLock::new((0, 0));
 // wheel scroll (which leaves the cursor put) does not yank the view back.
 pub static LAST_CURSOR: RwLock<(i32, i32)> = RwLock::new((0, 0));
 
+// Make the renderer re-follow the caret next frame even though the cursor did
+// not move. Used after the text scale changes, when the new re-wrapped layout
+// may have pushed the caret off-screen.
+pub fn force_follow_caret() {
+    *LAST_CURSOR.write().unwrap() = (i32::MIN, i32::MIN);
+}
+
 pub fn selection_range(ax: i32, ay: i32, cx: i32, cy: i32) -> Option<(usize, usize, usize, usize)> {
     if ax == cx && ay == cy {
         return None;
@@ -138,7 +145,7 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
         let mut base_indent = 0;
         let mut hang_indent = 0;
         if !editing_line {
-            let font_size = config::EDITOR_FONT_SIZE;
+            let font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
             match kind {
                 crate::editor::blocks::LineKind::List { depth } => {
                     base_indent = text::measure(d, "  ", font_size) * depth as i32;
@@ -190,12 +197,13 @@ fn wrap_line(
 ) -> Vec<VisualLine> {
     let mut out = Vec::new();
     let mut start = 0;
-    let mut line_font_size = config::EDITOR_FONT_SIZE;
+    let mut line_font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
 
     if let Some((level, skip)) = markdown::heading_info(line) {
         if format {
             start = skip;
-            line_font_size = config::EDITOR_HEADING_SIZE[(level - 1) as usize];
+            line_font_size =
+                config::scaled_size(config::EDITOR_HEADING_SIZE[(level - 1) as usize]);
         }
     }
 

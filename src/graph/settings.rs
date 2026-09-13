@@ -8,7 +8,7 @@ pub const SETTINGS_BUTTON_W: i32 = 96;
 pub const SETTINGS_BUTTON_H: i32 = 32;
 pub const SETTINGS_BUTTON_Y: i32 = 10;
 pub fn settings_button_x() -> i32 {
-    config::width() - SETTINGS_BUTTON_W - 10
+    config::width() - config::scaled_size(SETTINGS_BUTTON_W) - 10
 }
 
 // Settings dialog / font picker geometry.
@@ -17,6 +17,24 @@ pub const SETTINGS_PANEL_H: i32 = 500;
 pub const SETTINGS_TITLE_H: i32 = 40;
 pub const SETTINGS_ROW_H: i32 = 26;
 pub const SETTINGS_VISIBLE_ROWS: usize = 16;
+
+// The whole dialog scales with the global text zoom so the list rows, title
+// and their hit-testing stay in lockstep.
+pub fn panel_w() -> i32 {
+    config::scaled_size(SETTINGS_PANEL_W)
+}
+
+pub fn panel_h() -> i32 {
+    config::scaled_size(SETTINGS_PANEL_H)
+}
+
+pub fn title_h() -> i32 {
+    config::scaled_size(SETTINGS_TITLE_H)
+}
+
+pub fn row_h() -> i32 {
+    config::scaled_size(SETTINGS_ROW_H)
+}
 
 pub static SETTINGS_OPEN: RwLock<bool> = RwLock::new(false);
 pub static SETTINGS_SCROLL: RwLock<usize> = RwLock::new(0);
@@ -38,7 +56,7 @@ pub struct FontFamily {
 pub static FONTS: RwLock<Vec<FontFamily>> = RwLock::new(Vec::new());
 
 pub fn panel_x() -> i32 {
-    (config::width() - SETTINGS_PANEL_W) / 2
+    (config::width() - panel_w()) / 2
 }
 
 pub fn panel_y() -> i32 {

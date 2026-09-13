@@ -203,7 +203,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // offset to the real content height each frame, so we just nudge it.
     let wheel = rl.get_mouse_wheel_move();
     if wheel != 0.0 {
-        let step = config::EDITOR_FONT_SIZE as f32 * 3.0;
+        let step = config::scaled_size(config::EDITOR_FONT_SIZE) as f32 * 3.0;
         let mut scroll = buffer::SCROLL_Y.write().unwrap();
         let delta = (wheel * step) as i32;
         if delta != 0 {
@@ -223,7 +223,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         let content_top = ey + header_h + crate::editor::tabs::TABS_H;
         let content_h = eh - header_h - crate::editor::tabs::TABS_H;
         let bar_w = 6;
-        let bar_x = ex + ew - bar_w - config::EDITOR_PADDING;
+        let bar_x = ex + ew - bar_w - config::scaled_size(config::EDITOR_PADDING);
 
         // --- Left press ---
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
@@ -241,7 +241,8 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                     if ac.active && !ac.matches.is_empty() {
                         history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
                         let idx = m.y as i32 - ry;
-                        let row = (idx.max(0) as usize).min(ac.matches.len().saturating_sub(1));
+                        let row = (idx / config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT))
+                            .clamp(0, ac.matches.len() as i32 - 1) as usize;
                         ac.selected = row;
                         let y = *cursor_y as usize;
                         let x = *cursor_x as usize;
@@ -289,7 +290,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                     }
 
                     if !row.image {
-                        let px = m.x as i32 - (ex + config::EDITOR_PADDING);
+                        let px = m.x as i32 - (ex + config::scaled_size(config::EDITOR_PADDING));
                         let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s| {
                             text::measure(&rl, t, s)
                         });
@@ -367,7 +368,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
 
                     if let Some(row) = hit_test::row_at_y(&hits, rel_y) {
                         if !row.image && !row.fm_bar {
-                            let px = m.x as i32 - (ex + config::EDITOR_PADDING);
+                            let px = m.x as i32 - (ex + config::scaled_size(config::EDITOR_PADDING));
                             let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s| {
                                 text::measure(&rl, t, s)
                             });
@@ -628,7 +629,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                         && m.y as i32 >= py
                         && m.y as i32 <= py + ph;
                     if inside && !cmd.matches.is_empty() {
-                        let row = ((m.y as i32 - py) / config::AUTOCOMPLETE_ITEM_HEIGHT)
+                        let row = ((m.y as i32 - py) / config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT))
                             .clamp(0, cmd.matches.len() as i32 - 1) as usize;
                         cmd.selected = row;
                         let chosen = cmd.matches[row].1;

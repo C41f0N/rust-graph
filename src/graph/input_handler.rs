@@ -207,14 +207,16 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         let mouse = rl.get_mouse_position();
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
             let (px, py) = (settings::panel_x(), settings::panel_y());
+            let (pw, ph) = (settings::panel_w(), settings::panel_h());
+            let (th, rh) = (settings::title_h(), settings::row_h());
             let inside = mouse.x as i32 >= px
-                && mouse.x as i32 <= px + settings::SETTINGS_PANEL_W
+                && mouse.x as i32 <= px + pw
                 && mouse.y as i32 >= py
-                && mouse.y as i32 <= py + settings::SETTINGS_PANEL_H;
+                && mouse.y as i32 <= py + ph;
             if inside {
                 // Click on a row picks that font; main.rs loads it next frame.
-                let list_top = py + settings::SETTINGS_TITLE_H;
-                let row = (mouse.y as i32 - list_top) / settings::SETTINGS_ROW_H;
+                let list_top = py + th;
+                let row = (mouse.y as i32 - list_top) / rh;
                 let idx = *settings::SETTINGS_SCROLL.read().unwrap() as i32 + row;
                 if row >= 0 && idx >= 0 && (idx as usize) < fonts_len {
                     *settings::SELECTED_FONT.write().unwrap() = Some(idx as usize);
@@ -392,13 +394,15 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         && rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
     {
         let (mx, my) = *context_pos;
+        let mw = config::scaled_size(config::CONTEXT_MENU_W);
+        let mh = config::scaled_size(config::CONTEXT_MENU_ITEM_H);
 
         if *context_empty {
             // Empty-space menu: Add Node for now; more items plug in here.
             let clicked_add = screen_mouse.x as i32 >= mx
-                && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+                && screen_mouse.x as i32 <= mx + mw
                 && screen_mouse.y as i32 >= my
-                && screen_mouse.y as i32 <= my + config::CONTEXT_MENU_ITEM_H;
+                && screen_mouse.y as i32 <= my + mh;
             if clicked_add {
                 *adding_name = String::new();
                 *adding_note = true;
@@ -419,40 +423,40 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
         // Row 0: Rename (always present)
         let clicked_rename = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.x as i32 <= mx + mw
             && screen_mouse.y as i32 >= my
-            && screen_mouse.y as i32 <= my + config::CONTEXT_MENU_ITEM_H;
+            && screen_mouse.y as i32 <= my + mh;
 
         // Row 1: Delete (always present)
-        let y_delete = my + config::CONTEXT_MENU_ITEM_H;
+        let y_delete = my + mh;
         let clicked_delete = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.x as i32 <= mx + mw
             && screen_mouse.y as i32 >= y_delete
-            && screen_mouse.y as i32 <= y_delete + config::CONTEXT_MENU_ITEM_H;
+            && screen_mouse.y as i32 <= y_delete + mh;
 
         // Row 2 (conditional): Create Sub-Graph
-        let y_subgraph = y_delete + config::CONTEXT_MENU_ITEM_H;
+        let y_subgraph = y_delete + mh;
         let clicked_create = show_create
             && screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.x as i32 <= mx + mw
             && screen_mouse.y as i32 >= y_subgraph
-            && screen_mouse.y as i32 <= y_subgraph + config::CONTEXT_MENU_ITEM_H;
+            && screen_mouse.y as i32 <= y_subgraph + mh;
 
         // Row 2/3 (conditional): Open Sub-Graph
-        let y_open = if show_create { y_subgraph + config::CONTEXT_MENU_ITEM_H } else { y_subgraph };
+        let y_open = if show_create { y_subgraph + mh } else { y_subgraph };
         let clicked_open = show_open
             && screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.x as i32 <= mx + mw
             && screen_mouse.y as i32 >= y_open
-            && screen_mouse.y as i32 <= y_open + config::CONTEXT_MENU_ITEM_H;
+            && screen_mouse.y as i32 <= y_open + mh;
 
         // Row (last): Set Header (always at 3*ITEM_H; exactly one of the
         // create/open sub-graph rows is shown, so the layout is fixed).
-        let y_header = my + 3 * config::CONTEXT_MENU_ITEM_H;
+        let y_header = my + 3 * mh;
         let clicked_header = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + config::CONTEXT_MENU_W
+            && screen_mouse.x as i32 <= mx + mw
             && screen_mouse.y as i32 >= y_header
-            && screen_mouse.y as i32 <= y_header + config::CONTEXT_MENU_ITEM_H;
+            && screen_mouse.y as i32 <= y_header + mh;
 
         if clicked_rename {
             let idx = *context_node;
@@ -553,9 +557,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
         // Settings button (screen space, top-left) toggles the dialog.
         if click.x as i32 >= settings::settings_button_x()
-            && click.x as i32 <= settings::settings_button_x() + settings::SETTINGS_BUTTON_W
+            && click.x as i32 <= settings::settings_button_x() + config::scaled_size(settings::SETTINGS_BUTTON_W)
             && click.y as i32 >= settings::SETTINGS_BUTTON_Y
-            && click.y as i32 <= settings::SETTINGS_BUTTON_Y + settings::SETTINGS_BUTTON_H
+            && click.y as i32 <= settings::SETTINGS_BUTTON_Y + config::scaled_size(settings::SETTINGS_BUTTON_H)
         {
             let mut open = settings::SETTINGS_OPEN.write().unwrap();
             *open = !*open;

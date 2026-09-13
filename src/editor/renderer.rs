@@ -25,10 +25,10 @@ fn line_layout(
     padding: i32,
     max_width: i32,
 ) -> (i32, i32, Option<(PathBuf, i32, i32)>) {
-    let mut line_font_size = config::EDITOR_FONT_SIZE;
+    let mut line_font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
     if !editing_line {
         if let Some((level, _)) = markdown::heading_info(line_text) {
-            line_font_size = config::EDITOR_HEADING_SIZE[(level - 1) as usize];
+            line_font_size = config::scaled_size(config::EDITOR_HEADING_SIZE[(level - 1) as usize]);
         }
     }
 
@@ -40,7 +40,7 @@ fn line_layout(
     // every remaining line contributes nothing.
     if kind == blocks::LineKind::Frontmatter && !editing_line {
         if line.line == 0 && line.start == 0 {
-            advance = config::EDITOR_FRONTMATTER_HEIGHT;
+            advance = config::scaled_size(config::EDITOR_FRONTMATTER_HEIGHT);
         } else {
             advance = 0;
         }
@@ -101,7 +101,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
     let anchor_x = buffer::ANCHOR_X.read().unwrap();
     let anchor_y = buffer::ANCHOR_Y.read().unwrap();
     let font_color = config::EDITOR_FONT_COLOR;
-    let padding = config::EDITOR_PADDING;
+    let padding = config::scaled_size(config::EDITOR_PADDING);
 
     let editor_height = (editor_dimentions.y * config::height() as f32) as i32;
     let editor_width = (editor_dimentions.x * config::width() as f32) as i32;
@@ -507,19 +507,20 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 if kind == blocks::LineKind::Frontmatter && !editing_line {
                     if line.line == 0 && line.start == 0 {
                         let draw_top = content_y + line_y - scroll;
+                        let fm_h = config::scaled_size(config::EDITOR_FRONTMATTER_HEIGHT);
                         s.draw_rectangle(
                             content_x0 + padding,
                             draw_top,
                             max_width,
-                            config::EDITOR_FRONTMATTER_HEIGHT,
+                            fm_h,
                             config::EDITOR_FRONTMATTER_BG,
                         );
                         text::draw(
                             &mut s,
                             "--- frontmatter ---",
                             content_x0 + padding + 6,
-                            draw_top + 4,
-                            config::EDITOR_FONT_SIZE - 2,
+                            draw_top + (fm_h - config::scaled_size(config::EDITOR_FONT_SIZE - 2)) / 2,
+                            config::scaled_size(config::EDITOR_FONT_SIZE - 2),
                             config::EDITOR_FRONTMATTER_COLOR,
                         );
                     }
@@ -657,7 +658,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     // Autocomplete popup (drawn below the cursor line)
                     let autocomplete = crate::editor::autocomplete::AUTOCOMPLETE.read().unwrap();
                     if autocomplete.active && !autocomplete.matches.is_empty() {
-                        let item_h = config::AUTOCOMPLETE_ITEM_HEIGHT;
+                        let item_h = config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT);
                         let mut box_w = 140;
                         for name in autocomplete
                             .matches
@@ -719,7 +720,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     // problem, just for commands instead of note names.
                     let palette = crate::editor::command::COMMAND_PALETTE.read().unwrap();
                     if palette.active && !palette.matches.is_empty() {
-                        let item_h = config::AUTOCOMPLETE_ITEM_HEIGHT;
+                        let item_h = config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT);
                         let mut box_w = 140;
                         for (name, _) in palette
                             .matches
