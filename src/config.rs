@@ -1,7 +1,24 @@
 use raylib::prelude::*;
+use std::sync::RwLock;
 
-pub const HEIGHT: i32 = 1080 * 3 / 4;
-pub const WIDTH: i32 = 1920 * 3 / 4;
+// Initial window size; the window is resizable and the current size is tracked
+// in SCREEN_SIZE (updated every frame by main.rs). Everything else reads the
+// live size through width()/height().
+pub const DEFAULT_W: i32 = 1920 * 3 / 4;
+pub const DEFAULT_H: i32 = 1080 * 3 / 4;
+
+// Current window size in pixels. Written by main.rs each frame from
+// get_screen_width/height(); read by every layout function so geometry always
+// matches the real window even across resizes.
+pub static SCREEN_SIZE: RwLock<(i32, i32)> = RwLock::new((DEFAULT_W, DEFAULT_H));
+
+pub fn width() -> i32 {
+    SCREEN_SIZE.read().unwrap().0
+}
+
+pub fn height() -> i32 {
+    SCREEN_SIZE.read().unwrap().1
+}
 
 // The editor panel is a centered rectangle covering this fraction of the
 // screen. Shared so the graph input handler can tell "click on/off editor".
@@ -13,9 +30,9 @@ pub const EDITOR_PANEL_FRACTION: f32 = 0.8;
 pub const FULLSCREEN_H_MARGIN: i32 = 80;
 
 pub fn editor_panel_bounds() -> (i32, i32, i32, i32) {
-    let w = (WIDTH as f32 * EDITOR_PANEL_FRACTION) as i32;
-    let h = (HEIGHT as f32 * EDITOR_PANEL_FRACTION) as i32;
-    ((WIDTH - w) / 2, (HEIGHT - h) / 2, w, h)
+    let w = (width() as f32 * EDITOR_PANEL_FRACTION) as i32;
+    let h = (height() as f32 * EDITOR_PANEL_FRACTION) as i32;
+    ((width() - w) / 2, (height() - h) / 2, w, h)
 }
 
 pub const EDITOR_FONT_SIZE: i32 = 20;

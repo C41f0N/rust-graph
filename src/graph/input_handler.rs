@@ -552,8 +552,8 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         let click = rl.get_mouse_position();
 
         // Settings button (screen space, top-left) toggles the dialog.
-        if click.x as i32 >= settings::SETTINGS_BUTTON_X
-            && click.x as i32 <= settings::SETTINGS_BUTTON_X + settings::SETTINGS_BUTTON_W
+        if click.x as i32 >= settings::settings_button_x()
+            && click.x as i32 <= settings::settings_button_x() + settings::SETTINGS_BUTTON_W
             && click.y as i32 >= settings::SETTINGS_BUTTON_Y
             && click.y as i32 <= settings::SETTINGS_BUTTON_Y + settings::SETTINGS_BUTTON_H
         {

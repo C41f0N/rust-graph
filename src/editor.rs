@@ -42,7 +42,7 @@ pub fn panel_bounds() -> (i32, i32, i32, i32) {
         // Fullscreen covers the whole window: the heading bar spans edge to
         // edge, and a click anywhere on the scaled background counts as being
         // inside the editor (never dismisses it).
-        (0, 0, config::WIDTH, config::HEIGHT)
+        (0, 0, config::width(), config::height())
     } else {
         config::editor_panel_bounds()
     }

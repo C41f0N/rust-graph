@@ -103,8 +103,8 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
     let font_color = config::EDITOR_FONT_COLOR;
     let padding = config::EDITOR_PADDING;
 
-    let editor_height = (editor_dimentions.y * config::HEIGHT as f32) as i32;
-    let editor_width = (editor_dimentions.x * config::WIDTH as f32) as i32;
+    let editor_height = (editor_dimentions.y * config::height() as f32) as i32;
+    let editor_width = (editor_dimentions.x * config::width() as f32) as i32;
 
     if editor_open {
         let fullscreen = editor::FULLSCREEN.load(std::sync::atomic::Ordering::Relaxed);
@@ -112,14 +112,14 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // The background: a rounded translucent panel normally, fully opaque
         // when the editor is fullscreen so nothing bleeds through behind it.
         if fullscreen {
-            d.draw_rectangle(0, 0, config::WIDTH, config::HEIGHT, Color::new(0, 0, 0, 255));
+            d.draw_rectangle(0, 0, config::width(), config::height(), Color::new(0, 0, 0, 255));
         } else {
             d.draw_rectangle_rounded(
                 Rectangle::new(
-                    config::WIDTH as f32 * (1. - editor_dimentions.x) * 0.5,
-                    config::HEIGHT as f32 * (1. - editor_dimentions.y) * 0.5,
-                    config::WIDTH as f32 * editor_dimentions.x,
-                    config::HEIGHT as f32 * editor_dimentions.y,
+                    config::width() as f32 * (1. - editor_dimentions.x) * 0.5,
+                    config::height() as f32 * (1. - editor_dimentions.y) * 0.5,
+                    config::width() as f32 * editor_dimentions.x,
+                    config::height() as f32 * editor_dimentions.y,
                 ),
                 0.05,
                 0,
@@ -127,8 +127,8 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             );
         }
 
-        let editor_x = ((1.0 - editor_dimentions.x) * 0.5 * config::WIDTH as f32) as i32;
-        let editor_y = ((1.0 - editor_dimentions.y) * 0.5 * config::HEIGHT as f32) as i32;
+        let editor_x = ((1.0 - editor_dimentions.x) * 0.5 * config::width() as f32) as i32;
+        let editor_y = ((1.0 - editor_dimentions.y) * 0.5 * config::height() as f32) as i32;
 
         // In fullscreen the text body keeps a horizontal margin from the screen
         // edges while the heading bar above still spans the full window. All

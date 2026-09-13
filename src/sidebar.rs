@@ -31,7 +31,7 @@ const ACCENT: Color = Color::new(255, 255, 255, 235);
 
 // The whole strip rectangle, vertically centered on the left edge.
 pub fn bar_bounds() -> (i32, i32, i32, i32) {
-    let y = ((config::HEIGHT - BAR_H) / 2).max(0);
+    let y = ((config::height() - BAR_H) / 2).max(0);
     (BAR_MARGIN_X, y, BAR_W, BAR_H)
 }
 
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn strip_vertically_centered() {
         let (_, y, _, h) = bar_bounds();
-        assert_eq!((y + h / 2) * 2, config::HEIGHT);
+        assert_eq!((y + h / 2) * 2, config::height());
     }
 
     #[test]

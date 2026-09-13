@@ -1,8 +1,6 @@
 use std::sync::RwLock;
 
 use crate::config;
-use crate::config::HEIGHT;
-use crate::config::WIDTH;
 use crate::editor::text;
 use crate::filesystem;
 use crate::graph::processing::*;
@@ -11,12 +9,12 @@ use raylib::prelude::*;
 
 pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
     target: Vector2 {
-        x: WIDTH as f32 / 2.0,
-        y: HEIGHT as f32 / 2.0,
+        x: config::DEFAULT_W as f32 / 2.0,
+        y: config::DEFAULT_H as f32 / 2.0,
     },
     offset: Vector2 {
-        x: WIDTH as f32 / 2.0,
-        y: HEIGHT as f32 / 2.0,
+        x: config::DEFAULT_W as f32 / 2.0,
+        y: config::DEFAULT_H as f32 / 2.0,
     },
     rotation: 0.0,
     zoom: 1.0,
@@ -35,8 +33,8 @@ pub fn world_view_bounds() -> Rectangle {
     let m = PRELOAD_MARGIN_PX / cam.zoom;
     let left = (-cam.offset.x) / cam.zoom + cam.target.x - m;
     let top = (-cam.offset.y) / cam.zoom + cam.target.y - m;
-    let right = (WIDTH as f32 - cam.offset.x) / cam.zoom + cam.target.x + m;
-    let bottom = (HEIGHT as f32 - cam.offset.y) / cam.zoom + cam.target.y + m;
+    let right = (config::width() as f32 - cam.offset.x) / cam.zoom + cam.target.x + m;
+    let bottom = (config::height() as f32 - cam.offset.y) / cam.zoom + cam.target.y + m;
     Rectangle::new(left, top, right - left, bottom - top)
 }
 
@@ -154,7 +152,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             let name = &nodes[idx].name;
             let prompt = format!("Delete '{}'? (Y/N)", name);
             let text_width = text::measure(d, &prompt, 20);
-            let x = (WIDTH - text_width) / 2;
+            let x = (config::width() - text_width) / 2;
             d.draw_rectangle(x - 10, 10, text_width + 20, 30, Color::BLACK.alpha(0.7));
             text::draw(d, &prompt, x, 15, 20, Color::WHITE);
         }
@@ -168,7 +166,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let full = format!("{}{}", prompt_base, adding_name);
         let label_width = text::measure(d, prompt_base, 20);
         let text_width = text::measure(d, &full, 20);
-        let x = (WIDTH - text_width) / 2 - 10;
+        let x = (config::width() - text_width) / 2 - 10;
         let y = 10;
         d.draw_rectangle(x, y, text_width + 20, 30, Color::BLACK.alpha(0.7));
         text::draw(d, prompt_base, x + 10, y + 15, 20, Color::WHITE);
@@ -305,7 +303,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let full = format!("{}{}", prompt_base, rename_name);
         let label_width = text::measure(d, prompt_base, 20);
         let text_width = text::measure(d, &full, 20);
-        let x = (WIDTH - text_width) / 2 - 10;
+        let x = (config::width() - text_width) / 2 - 10;
         let y = 10;
         d.draw_rectangle(x, y, text_width + 20, 30, Color::BLACK.alpha(0.7));
         text::draw(d, prompt_base, x + 10, y + 15, 20, Color::WHITE);
@@ -388,8 +386,8 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     // Settings button (screen space, top-left)
     let settings_open = *crate::graph::settings::SETTINGS_OPEN.read().unwrap();
     let screen_mouse = d.get_mouse_position();
-    let over_btn = screen_mouse.x as i32 >= settings::SETTINGS_BUTTON_X
-        && screen_mouse.x as i32 <= settings::SETTINGS_BUTTON_X + settings::SETTINGS_BUTTON_W
+    let over_btn = screen_mouse.x as i32 >= settings::settings_button_x()
+        && screen_mouse.x as i32 <= settings::settings_button_x() + settings::SETTINGS_BUTTON_W
         && screen_mouse.y as i32 >= settings::SETTINGS_BUTTON_Y
         && screen_mouse.y as i32 <= settings::SETTINGS_BUTTON_Y + settings::SETTINGS_BUTTON_H;
 
@@ -401,7 +399,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         Color::new(40, 40, 46, 200)
     };
     d.draw_rectangle(
-        settings::SETTINGS_BUTTON_X,
+        settings::settings_button_x(),
         settings::SETTINGS_BUTTON_Y,
         settings::SETTINGS_BUTTON_W,
         settings::SETTINGS_BUTTON_H,
@@ -412,7 +410,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     text::draw(
         d,
         btn_label,
-        settings::SETTINGS_BUTTON_X + (settings::SETTINGS_BUTTON_W - btn_w) / 2,
+        settings::settings_button_x() + (settings::SETTINGS_BUTTON_W - btn_w) / 2,
         settings::SETTINGS_BUTTON_Y + (settings::SETTINGS_BUTTON_H - 18) / 2,
         18,
         Color::WHITE,
@@ -420,7 +418,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
 
     // Settings dialog / font picker
     if settings_open {
-        d.draw_rectangle(0, 0, WIDTH, HEIGHT, Color::new(0, 0, 0, 120));
+        d.draw_rectangle(0, 0, config::width(), config::height(), Color::new(0, 0, 0, 120));
 
         let px = settings::panel_x();
         let py = settings::panel_y();
@@ -511,8 +509,8 @@ mod tests {
 
     #[test]
     fn world_bounds_follow_camera() {
-        let w = crate::config::WIDTH as f32;
-        let h = crate::config::HEIGHT as f32;
+        let w = crate::config::width() as f32;
+        let h = crate::config::height() as f32;
 
         // Zoom 1, centered: the whole window centered on the origin, expanded
         // by the preload margin on every side.

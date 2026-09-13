@@ -6,8 +6,10 @@ use std::sync::RwLock;
 // taken by the breadcrumb trail, so it lives in the opposite corner.
 pub const SETTINGS_BUTTON_W: i32 = 96;
 pub const SETTINGS_BUTTON_H: i32 = 32;
-pub const SETTINGS_BUTTON_X: i32 = config::WIDTH - SETTINGS_BUTTON_W - 10;
 pub const SETTINGS_BUTTON_Y: i32 = 10;
+pub fn settings_button_x() -> i32 {
+    config::width() - SETTINGS_BUTTON_W - 10
+}
 
 // Settings dialog / font picker geometry.
 pub const SETTINGS_PANEL_W: i32 = 440;
@@ -36,7 +38,7 @@ pub struct FontFamily {
 pub static FONTS: RwLock<Vec<FontFamily>> = RwLock::new(Vec::new());
 
 pub fn panel_x() -> i32 {
-    (config::WIDTH - SETTINGS_PANEL_W) / 2
+    (config::width() - SETTINGS_PANEL_W) / 2
 }
 
 pub fn panel_y() -> i32 {

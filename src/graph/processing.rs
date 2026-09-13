@@ -1,4 +1,4 @@
-use crate::config::*;
+use crate::config;
 use crate::filesystem;
 use crate::frontmatter;
 use rand::prelude::*;
@@ -114,8 +114,8 @@ pub fn generate_nodes_from_directory(dir: &Path) {
             radius: NODE_BASE_RADIUS,
             color: Color::WHITE,
             position: Vector2::new(
-                rng.random_range((WIDTH as f32 / 2. - 100.)..(WIDTH as f32 / 2. + 100.)),
-                rng.random_range((HEIGHT as f32 / 2. - 100.)..(HEIGHT as f32 / 2. + 100.)),
+                rng.random_range((config::width() as f32 / 2. - 100.)..(config::width() as f32 / 2. + 100.)),
+                rng.random_range((config::height() as f32 / 2. - 100.)..(config::height() as f32 / 2. + 100.)),
             ),
             velocity: Vector2::new(0.0, 0.0),
             name,
@@ -151,7 +151,7 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     camera.zoom = zoom;
     // Re-centre the camera so the new graph appears in the middle of the
     // screen regardless of where the previous graph was panned.
-    camera.target = Vector2::new(WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0);
+    camera.target = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
 }
 
 // Navigate into a sub-graph folder. Pushes the current directory onto the
@@ -315,8 +315,8 @@ pub fn add_node(dir: &Path, filename: &str) -> usize {
         radius: NODE_BASE_RADIUS,
         color: Color::WHITE,
         position: Vector2::new(
-            rng.random_range((WIDTH as f32 / 2. - 50.)..(WIDTH as f32 / 2. + 50.)),
-            rng.random_range((HEIGHT as f32 / 2. - 50.)..(HEIGHT as f32 / 2. + 50.)),
+            rng.random_range((config::width() as f32 / 2. - 50.)..(config::width() as f32 / 2. + 50.)),
+            rng.random_range((config::height() as f32 / 2. - 50.)..(config::height() as f32 / 2. + 50.)),
         ),
         velocity: Vector2::new(0.0, 0.0),
         name: stem.to_string(),
@@ -488,7 +488,7 @@ pub fn update_forces(rl: &mut RaylibHandle) {
     let radii: Vec<f32> = nodes.iter().map(|n| n.radius).collect();
     let mut forces = repulsion_forces(&positions, &radii);
 
-    let center = Vector2::new(WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0);
+    let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
     let gravity_k = 0.1_f32;
 
     for i in 0..nodes.len() {

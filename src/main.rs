@@ -28,8 +28,8 @@ fn open_editing_subgraph() {
 }
 
 fn main() {
-    let height = config::HEIGHT;
-    let width = config::WIDTH;
+    let height = config::DEFAULT_H;
+    let width = config::DEFAULT_W;
 
     // Parse CLI arg for the directory
     let args: Vec<String> = std::env::args().collect();
@@ -54,6 +54,7 @@ fn main() {
     let (mut rl, thread) = raylib::init()
         .size(width, height)
         .title("Raylib Nodes")
+        .resizable()
         .build();
     rl.set_exit_key(Some(KeyboardKey::KEY_NULL));
 
@@ -77,6 +78,18 @@ fn main() {
 
     // 2. The Main Game Loop
     while !rl.window_should_close() {
+        // Track the live window size so every layout function reads geometry
+        // that matches the real (resizable) window. When the window actually
+        // reshaped, re-centre the camera offset so the world point under the
+        // viewport centre stays put (target is untouched by resizes).
+        let (sw, sh) = (rl.get_screen_width(), rl.get_screen_height());
+        *config::SCREEN_SIZE.write().unwrap() = (sw, sh);
+        if rl.is_window_resized() {
+            let mut cam = graph::renderer::CAMERA.write().unwrap();
+            cam.offset.x = sw as f32 / 2.0;
+            cam.offset.y = sh as f32 / 2.0;
+        }
+
         // Capture editor state BEFORE input handling
         let was_open = editor_was_open;
 
@@ -300,8 +313,8 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
         // the renderer and its heading bar always agree with the flag.
         let (_, _, panel_w, panel_h) = editor::panel_bounds();
         editor_dimentions = Vector2::new(
-            panel_w as f32 / config::WIDTH as f32,
-            panel_h as f32 / config::HEIGHT as f32,
+            panel_w as f32 / config::width() as f32,
+            panel_h as f32 / config::height() as f32,
         );
 
         let mut d = rl.begin_drawing(&thread);
