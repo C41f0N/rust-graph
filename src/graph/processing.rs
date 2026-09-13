@@ -213,6 +213,91 @@ pub fn attach_header(idx: usize, raw_header: &str) -> bool {
     true
 }
 
+// Target the edges of a single just-saved note (autosave / Ctrl+S). This is
+// the hot path on large graphs: instead of re-reading every .md file like
+// rebuild_edges, only the saved file is parsed, its outgoing link set is
+// diffed against the current edges, and if nothing changed the graph is left
+// untouched. Headers and the subgraph flag (cheap single-file checks) are
+// still refreshed every save. Degrees and radii are recomputed in memory only
+// when the link set actually changed.
+pub fn refresh_saved_node(path: &Path) {
+    let mut name_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let node_idx = {
+        let nodes = NODES.read().unwrap();
+        for (i, node) in nodes.iter().enumerate() {
+            name_to_idx.insert(node.file_name.clone(), i);
+            name_to_idx.insert(node.file_name.trim_end_matches(".md").to_string(), i);
+        }
+        nodes.iter().position(|n| n.path == path)
+    };
+    let Some(idx) = node_idx else {
+        return;
+    };
+
+    let content = filesystem::read_file(path);
+
+    // Parse frontmatter for the header target; slice it off to extract body
+    // links exactly like rebuild_edges does.
+    let fm = frontmatter::parse(&content);
+    let header = fm.as_ref().and_then(|f| f.header.clone());
+    let body = if let Some(fm) = &fm {
+        if fm.end_byte <= content.len() {
+            &content[fm.end_byte..]
+        } else {
+            &content
+        }
+    } else {
+        &content
+    };
+
+    let mut new_targets: Vec<usize> = Vec::new();
+    for link in filesystem::parse_links(body) {
+        let target = link.strip_suffix(".md").unwrap_or(&link);
+        if let Some(&j) = name_to_idx.get(target) {
+            if idx != j && !new_targets.contains(&j) {
+                new_targets.push(j);
+            }
+        }
+    }
+    new_targets.sort();
+
+    let mut nodes = NODES.write().unwrap();
+    let mut edges = EDGES.write().unwrap();
+
+    {
+        let node = &mut nodes[idx];
+        node.has_subgraph = filesystem::is_dir(&filesystem::subgraph_dir(path));
+        node.header = header;
+    }
+
+    let mut old_targets: Vec<usize> = edges
+        .iter()
+        .filter(|e| e.n1 == idx)
+        .map(|e| e.n2)
+        .collect();
+    old_targets.sort();
+    if old_targets == new_targets {
+        return;
+    }
+
+    // Link set changed: swap this node's outgoing edges.
+    edges.retain(|e| e.n1 != idx);
+    for &j in &new_targets {
+        edges.push(Edge { n1: idx, n2: j });
+    }
+
+    // Recompute sizes from the full (in-memory) edge set.
+    let mut degree = vec![0u32; nodes.len()];
+    for edge in edges.iter() {
+        degree[edge.n1] += 1;
+        degree[edge.n2] += 1;
+    }
+    for (node, &count) in nodes.iter_mut().zip(&degree) {
+        node.radius =
+            (NODE_BASE_RADIUS + NODE_RADIUS_GROWTH * (count as f32).sqrt()).min(NODE_MAX_RADIUS);
+    }
+}
+
 // Build directed edges from [[wikilink]] references in the .md files.
 // [[target]] in file A creates a directed edge A -> target.
 // A link may name the target with or without the extension: [[x]] and
@@ -690,6 +775,74 @@ mod tests {
             hub.radius,
             leaf.radius
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_saved_node_diffs_outgoing_edges() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_refresh_edges_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        let a = dir.join("a.md");
+        let b = dir.join("b.md");
+        let c = dir.join("c.md");
+        filesystem::write_file(&a, "# A\n\n[[b]]\n");
+        filesystem::write_file(&b, "# B\n");
+        filesystem::write_file(&c, "# C\n");
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        fn outgoing(nodes: &[Node], edges: &[Edge], name: &str) -> Vec<String> {
+            let mut targets: Vec<String> = edges
+                .iter()
+                .filter(|e| nodes[e.n1].name == name)
+                .map(|e| nodes[e.n2].name.clone())
+                .collect();
+            targets.sort();
+            targets
+        }
+
+        {
+            let nodes = NODES.read().unwrap();
+            let edges = EDGES.read().unwrap();
+            assert_eq!(outgoing(&nodes, &edges, "a"), vec!["b".to_string()]);
+        }
+
+        // Same content saved again: no link change, edges untouched.
+        filesystem::write_file(&a, "# A\n\n[[b]]\n");
+        refresh_saved_node(&a);
+        {
+            let nodes = NODES.read().unwrap();
+            let edges = EDGES.read().unwrap();
+            assert_eq!(outgoing(&nodes, &edges, "a"), vec!["b".to_string()]);
+        }
+
+        // Add a link to c: a's edge set grows.
+        filesystem::write_file(&a, "# A\n\n[[b]]\n[[c]]\n");
+        refresh_saved_node(&a);
+        {
+            let nodes = NODES.read().unwrap();
+            let edges = EDGES.read().unwrap();
+            assert_eq!(outgoing(&nodes, &edges, "a"), vec!["b".to_string(), "c".to_string()]);
+        }
+
+        // Remove the link to b: only the c edge remains.
+        filesystem::write_file(&a, "# A\n\n[[c]]\n");
+        refresh_saved_node(&a);
+        {
+            let nodes = NODES.read().unwrap();
+            let edges = EDGES.read().unwrap();
+            assert_eq!(outgoing(&nodes, &edges, "a"), vec!["c".to_string()]);
+
+            // Radii reflect the new degree: b lost a's link so it shrinks back
+            // to base, c gained one so it outgrows b.
+            let b_rad = nodes.iter().find(|n| n.name == "b").unwrap().radius;
+            let c_rad = nodes.iter().find(|n| n.name == "c").unwrap().radius;
+            assert_eq!(b_rad, NODE_BASE_RADIUS);
+            assert!(c_rad > b_rad);
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

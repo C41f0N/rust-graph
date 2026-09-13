@@ -227,7 +227,7 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
         {
             if let Some(path) = editor::tabs::active_path() {
                 editor::buffer::save_to_file(&path);
-                rebuild_edges();
+                refresh_saved_node(&path);
             }
         }
 
@@ -239,7 +239,7 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
             if last_edit > 0 && now_ms.saturating_sub(last_edit) >= autosave_pause_ms {
                 if let Some(path) = editor::tabs::active_path() {
                     editor::buffer::save_to_file(&path);
-                    rebuild_edges();
+                    refresh_saved_node(&path);
                 }
             }
         }
