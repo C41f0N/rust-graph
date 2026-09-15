@@ -35,7 +35,7 @@ impl AppConfig {
         AppConfig {
             window: (w, h),
             zoom: config::zoom(),
-            font_name: String::new(),
+            font_name: current_font_name(),
             graph: param_values(),
             cooling: *ALPHA_COOLING_ENABLED.read().unwrap(),
             panel: *SHOW_FORCE_PANEL.read().unwrap(),
@@ -48,6 +48,39 @@ impl AppConfig {
         *SHOW_FORCE_PANEL.write().unwrap() = self.panel;
         *config::TEXT_ZOOM.write().unwrap() =
             self.zoom.clamp(config::TEXT_ZOOM_MIN, config::TEXT_ZOOM_MAX);
+        apply_font(self.font_name.clone());
+    }
+}
+
+// Name of the font the font picker currently points at, or "" for the
+// built-in default. The settings dialog only runs after FONTS is built, so
+// save() reads a real name; load-time defaults get "" when FONTS is empty.
+fn current_font_name() -> String {
+    let fonts = crate::graph::settings::FONTS.read().unwrap();
+    match *crate::graph::settings::SELECTED_FONT.read().unwrap() {
+        None | Some(0) => String::new(),
+        Some(i) => fonts.get(i).map(|f| f.name.clone()).unwrap_or_default(),
+    }
+}
+
+// Reinstate a persisted font family: point the picker at it and queue the
+// load request (main.rs owns the raylib handle and fulfils it on the GL
+// thread). Plays no-op while FONTS isn't built yet, and when the family no
+// longer exists on this system.
+fn apply_font(name: String) {
+    let fonts = crate::graph::settings::FONTS.read().unwrap();
+    let request = if name.is_empty() {
+        Some(0)
+    } else {
+        fonts.iter()
+            .position(|f| f.name == name)
+            .or(Some(0))
+    };
+    if let Some(idx) = request {
+        if !fonts.is_empty() {
+            *crate::graph::settings::SELECTED_FONT.write().unwrap() = Some(idx);
+            *crate::graph::settings::REQUEST_LOAD_FONT.write().unwrap() = Some(idx);
+        }
     }
 }
 
@@ -275,5 +308,57 @@ mod tests {
             path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()),
             Some(APP_DIR.into())
         );
+    }
+
+    fn seed_fonts(names: &[&str]) {
+        use crate::graph::settings::{FontFamily, FONTS};
+        *FONTS.write().unwrap() = names
+            .iter()
+            .map(|n| FontFamily {
+                name: n.to_string(),
+                path: None,
+                data: None,
+            })
+            .collect();
+    }
+
+    #[test]
+    fn selected_font_persists_through_snapshot_and_apply() {
+        use crate::graph::settings::{REQUEST_LOAD_FONT, SELECTED_FONT};
+        seed_fonts(&["(Default)", "Fira Code", "DejaVu Sans"]);
+
+        *SELECTED_FONT.write().unwrap() = Some(2);
+        let snap = AppConfig::from_statics();
+        assert_eq!(snap.font_name, "DejaVu Sans");
+
+        *SELECTED_FONT.write().unwrap() = Some(0);
+        *REQUEST_LOAD_FONT.write().unwrap() = None;
+        snap.apply();
+        assert_eq!(*SELECTED_FONT.read().unwrap(), Some(2));
+        assert_eq!(*REQUEST_LOAD_FONT.read().unwrap(), Some(2));
+    }
+
+    #[test]
+    fn apply_falls_back_to_default_for_missing_or_empty_font() {
+        use crate::graph::settings::{REQUEST_LOAD_FONT, SELECTED_FONT};
+        seed_fonts(&["(Default)", "Fira Code"]);
+
+        // Family gone from this system: picker and load request revert to 0.
+        let stale = AppConfig {
+            font_name: "Nope".to_string(),
+            ..AppConfig::from_statics()
+        };
+        stale.apply();
+        assert_eq!(*SELECTED_FONT.read().unwrap(), Some(0));
+        assert_eq!(*REQUEST_LOAD_FONT.read().unwrap(), Some(0));
+
+        // Empty name (default font): same, and the serialization keeps it "".
+        let defaulted = AppConfig {
+            font_name: String::new(),
+            ..AppConfig::from_statics()
+        };
+        defaulted.apply();
+        assert_eq!(*SELECTED_FONT.read().unwrap(), Some(0));
+        assert!(serialize(&defaulted).contains("font_name=\n"));
     }
 }

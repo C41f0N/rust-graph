@@ -81,26 +81,14 @@ fn main() {
     } else {
         app_config::import_legacy_graph_params(&dir_path).unwrap_or(startup)
     };
+    // Enumerate system fonts for the settings dialog's font picker.
+    graph::settings::build_font_list();
     // Apply first so the (re)written global file reflects the live settings.
+    // The font family rides along: apply() points the picker at the persisted
+    // name and queues the load, which the loop fulfils on the first frame.
     cfg.apply();
     app_config::save();
     generate_nodes_from_directory(&dir_path);
-
-    // Enumerate system fonts for the settings dialog's font picker.
-    graph::settings::build_font_list();
-    // Activate the persisted font family (if it still exists on this system),
-    // so the loop's per-frame REQUEST_LOAD_FONT handler picks it up on the
-    // first frame without a round-trip through the settings dialog.
-    {
-        let fonts = graph::settings::FONTS.read().unwrap();
-        let idx = fonts
-            .iter()
-            .position(|f| !cfg.font_name.is_empty() && f.name == cfg.font_name);
-        if let Some(i) = idx {
-            *graph::settings::SELECTED_FONT.write().unwrap() = Some(i);
-            *graph::settings::REQUEST_LOAD_FONT.write().unwrap() = Some(i);
-        }
-    }
 
     let mut editor_was_open = false;
     // Autosave fires when the buffer has edits and no input has happened for
