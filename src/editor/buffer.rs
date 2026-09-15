@@ -137,19 +137,20 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
             && !crate::editor::hit_test::MOUSE_DRAGGING.load(std::sync::atomic::Ordering::Relaxed);
         let kind = kinds.get(line_index).copied().unwrap_or(crate::editor::blocks::LineKind::Paragraph);
 
-        // A nested list item sits indented by its depth; wrapped
-        // continuations also hang by four spaces. A quote line is nudged
-        // right by its marker width so wrapped continuations align under the
-        // quote text instead of the `>` marker. All are measured like real
-        // spaces so the wrap and the render never disagree.
+        // A nested list item sits indented by one tab width (four spaces) per
+        // depth; wrapped continuations hang by two spaces so they align under
+        // the item text after the marker. A quote line is nudged right by its
+        // marker width so wrapped continuations align under the quote text
+        // instead of the `>` marker. All are measured like real spaces so the
+        // wrap and the render never disagree.
         let mut base_indent = 0;
         let mut hang_indent = 0;
         if !editing_line {
             let font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
             match kind {
                 crate::editor::blocks::LineKind::List { depth } => {
-                    base_indent = text::measure(d, "  ", font_size) * depth as i32;
-                    hang_indent = text::measure(d, "    ", font_size);
+                    base_indent = text::measure(d, "    ", font_size) * depth as i32;
+                    hang_indent = text::measure(d, "  ", font_size);
                 }
                 crate::editor::blocks::LineKind::Blockquote => {
                     base_indent = markdown::blockquote_marker_len(line)
@@ -175,6 +176,7 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
             line_index,
             base_indent,
             hang_indent,
+            kind,
             format,
             |t, size| text::measure(d, t, size),
         ));
@@ -183,8 +185,10 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
 
 // Wrap one buffer line into visual lines. `measure` is injected so the
 // logic is unit-testable; on-screen it is the raylib measure_text.
-// `base_indent` shifts the whole item (nested list depth), `hang_indent` is
-// added to every line after the first in a list item, and `format` selects
+// `base_indent` shifts the whole item (nested list depth, quote rail),
+// `hang_indent` is added to every line after the first in a list item,
+// `kind` decides whether the line's source indent is drawn by the marker
+// (lists) or by the renderer (everything else), and `format` selects
 // formatted vs raw measurement (fence lines stay raw).
 fn wrap_line(
     line: &str,
@@ -192,6 +196,7 @@ fn wrap_line(
     buf_index: usize,
     base_indent: i32,
     hang_indent: i32,
+    kind: crate::editor::blocks::LineKind,
     format: bool,
     measure: impl Fn(&str, i32) -> i32,
 ) -> Vec<VisualLine> {
@@ -227,15 +232,27 @@ fn wrap_line(
         return out;
     }
 
-    // Continuation lines of a list item hang indented by four spaces.
+    // Continuation lines of a list item hang under the item text.
     let list_indent = hang_indent;
     let mut emitted = false;
 
     while start < chars.len() {
-        // The first visual line of a list item carries the marker inline
-        // (indent 0); every following visual line gets the hanging indent,
-        // and a nested item's whole block sits at `base_indent`.
-        let cur_indent = base_indent + if emitted { list_indent } else { 0 };
+        // A list's first visual line starts at the left edge: the indent it
+        // carries in the source is part of the displayed marker (e.g. "    *
+        // "), so the renderer must not paint base_indent again or the item is
+        // double-shifted right. Continuations add the hanging indent after
+        // base_indent, lining up under the text following the bullet. Every
+        // other kind is drawn with its first line shifted by base_indent.
+        let cur_indent = if emitted {
+            base_indent + list_indent
+        } else if matches!(
+            kind,
+            crate::editor::blocks::LineKind::List { .. }
+        ) {
+            0
+        } else {
+            base_indent
+        };
         let mut end = start;
         let mut last_space = None;
         let mut text = String::new();
@@ -348,6 +365,7 @@ pub fn save_to_file(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::blocks::LineKind;
 
     // Fake measure: 10px per char, independent of font size.
     fn pix(_s: &str, _n: i32) -> i32 {
@@ -362,6 +380,7 @@ mod tests {
             0,
             0,
             0,
+            LineKind::Paragraph,
             true,
             pix,
         );
@@ -392,7 +411,7 @@ mod tests {
         // View mode: the caller sets base = marker width, hang = 0, so every
         // visual line sits right of the rail. "> " = 2 chars = 20px.
         let line = "> one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 20, 0, true, pix);
+        let vls = wrap_line(line, 100, 0, 20, 0, LineKind::Blockquote, true, pix);
         assert!(vls.len() >= 2, "expected the quote to wrap");
         assert_eq!(vls[0].indent, 20, "content starts after the marker");
         for vl in &vls[1..] {
@@ -404,7 +423,7 @@ mod tests {
     fn list_continuation_lines_hang_indented() {
         // 10 chars/line at max_width 100; "    " = 40px indent.
         let line = "- one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 0, 40, true, pix);
+        let vls = wrap_line(line, 100, 0, 0, 40, LineKind::List { depth: 0 }, true, pix);
         assert!(vls.len() >= 2, "expected the item to wrap");
         assert_eq!(vls[0].indent, 0, "first visual line has no indent");
         for vl in &vls[1..] {
@@ -414,11 +433,12 @@ mod tests {
 
     #[test]
     fn nested_list_indents_by_depth() {
-        // depth 1 line: base 20px (two spaces), hang 40px.
+        // depth 1 line: the marker draws the source indent, so the first
+        // visual line is flat; continuations hang at base 20px + hang 40px.
         let line = "  - one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 20, 40, true, pix);
+        let vls = wrap_line(line, 100, 0, 20, 40, LineKind::List { depth: 1 }, true, pix);
         assert!(vls.len() >= 2);
-        assert_eq!(vls[0].indent, 20);
+        assert_eq!(vls[0].indent, 0);
         for vl in &vls[1..] {
             assert_eq!(vl.indent, 60);
         }
@@ -430,7 +450,7 @@ mod tests {
         // editing line; wrap_line is a mechanical function, so the caller
         // passes 0.
         let line = "- one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 0, 0, false, pix);
+        let vls = wrap_line(line, 100, 0, 0, 0, LineKind::List { depth: 0 }, false, pix);
         for vl in &vls {
             assert_eq!(vl.indent, 0);
         }
@@ -438,7 +458,7 @@ mod tests {
 
     #[test]
     fn empty_line_is_single_visual_line() {
-        let vls = wrap_line("", 100, 3, 0, 0, true, pix);
+        let vls = wrap_line("", 100, 3, 0, 0, LineKind::Paragraph, true, pix);
         assert_eq!(vls.len(), 1);
         assert_eq!(vls[0].line, 3);
         assert_eq!(vls[0].indent, 0);

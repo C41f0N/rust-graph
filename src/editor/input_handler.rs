@@ -793,7 +793,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     }
 
     // ------------------------------------------------------------
-    // Tab / Shift+Tab = indent / unindent with a real tab character
+    // Tab / Shift+Tab = indent / unindent with 4 spaces
     // ------------------------------------------------------------
 
     if rl.is_key_pressed(KeyboardKey::KEY_TAB) {
@@ -801,28 +801,53 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
 
         history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
-        if let Some((sy, sx, ey, ex)) = sel {
-            let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
-            *cursor_x = nx;
-            *cursor_y = ny;
-        }
 
-        let y = *cursor_y as usize;
-        let x = *cursor_x as usize;
-
-        if shift {
-            // Remove one tab immediately before the cursor.
-            if x > 0 && buffer[y].as_bytes().get(x - 1) == Some(&b'\t') {
-                buffer[y].remove(x - 1);
-                *cursor_x -= 1;
+        if let Some((sy, _sx, ey, _ex)) = sel {
+            // Multi-line: indent / unindent every line in the selection.
+            for y in sy..=ey {
+                if shift {
+                    let removed = buffer[y]
+                        .as_bytes()
+                        .iter()
+                        .take(4)
+                        .take_while(|&&b| b == b' ')
+                        .count();
+                    if removed > 0 {
+                        buffer[y].drain(..removed);
+                    }
+                } else {
+                    buffer[y].insert_str(0, "    ");
+                }
             }
+            *cursor_x = buffer[ey].len() as i32;
+            *cursor_y = ey as i32;
+            *anchor_x = 0;
+            *anchor_y = sy as i32;
         } else {
-            buffer[y].insert(x, '\t');
-            *cursor_x += 1;
+            let y = *cursor_y as usize;
+            let x = *cursor_x as usize;
+            if shift {
+                let removed = buffer[y]
+                    .as_bytes()
+                    .iter()
+                    .take(4)
+                    .take_while(|&&b| b == b' ')
+                    .count();
+                if removed > 0 {
+                    buffer[y].drain(..removed);
+                    *cursor_x = if (x as i32) < removed as i32 {
+                        0
+                    } else {
+                        *cursor_x - removed as i32
+                    };
+                }
+            } else {
+                buffer[y].insert_str(x, "    ");
+                *cursor_x += 4;
+            }
+            *anchor_x = *cursor_x;
+            *anchor_y = *cursor_y;
         }
-
-        *anchor_x = *cursor_x;
-        *anchor_y = *cursor_y;
         buffer::mark_modified();
         return;
     }

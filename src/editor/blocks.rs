@@ -40,17 +40,18 @@ pub struct Block {
     pub end: usize,   // exclusive buffer line index
 }
 
-// Depth of a list marker line: one level per 2 leading columns (tabs=2).
+// Depth of a list marker line: one level per 4 leading columns, matching the
+// 4-space tab so a single tab always means one indent level.
 fn list_depth(line: &str) -> u32 {
     let mut cols = 0;
     for c in line.chars() {
         match c {
             ' ' => cols += 1,
-            '\t' => cols += 2,
+            '\t' => cols += 4,
             _ => break,
         }
     }
-    cols / 2
+    cols / 4
 }
 
 // A fenced code opening: 3+ backticks or tildes at the start (after lazy
@@ -248,7 +249,8 @@ mod tests {
 
     #[test]
     fn classifies_list_depths() {
-        let k = classify(&s(&["- one", "  - two", "    - three", "- four"]));
+        // One depth level per 4 leading columns (one tab = one level).
+        let k = classify(&s(&["- one", "    - two", "        - three", "- four"]));
         assert_eq!(k[0], LineKind::List { depth: 0 });
         assert_eq!(k[1], LineKind::List { depth: 1 });
         assert_eq!(k[2], LineKind::List { depth: 2 });
