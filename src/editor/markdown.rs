@@ -192,81 +192,212 @@ fn find_emphasis_close(bytes: &[u8], from: usize, marker: &str) -> Option<usize>
     None
 }
 
-// For an ATX heading line return (level 1..=6, byte offset past the "#..."+
-// following space marker). `#foo` (no space) is not a heading.
-pub fn heading_info(line: &str) -> Option<(u32, usize)> {
-    let bytes = line.as_bytes();
-    let mut level = 0;
-    while level < bytes.len() && bytes[level] == b'#' {
-        level += 1;
-    }
-    if level == 0 || level > 6 {
-        return None;
-    }
-    match line[level..].chars().next() {
-        None => Some((level as u32, level)),
-        Some(c) if c.is_whitespace() => Some((level as u32, level + 1)),
-        _ => None,
-    }
+// Line-start structure ("prefix") of a raw line, parsed once and reduced to
+// ordered marker units so every consumer (wrap, layout, draw, classification)
+// sees the same answer. Units are display-only in view mode: blockquote
+// rails, list markers and ATX heading markers are replaced or stripped when
+// drawn. Adding a new line-start style means adding a unit + one consume arm
+// here; every downstream layer picks it up automatically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefixUnit {
+    // Leading indentation, only counted as a marker when a block marker
+    // follows it (otherwise it is plain content).
+    Indent { cols: u32, len: usize },
+    // A `>` rail run; each `>` optionally swallowed one following space.
+    Quote { len: usize },
+    // A list item marker (plus any whitespace before it).
+    ListItem { len: usize },
+    // An ATX heading marker: "#..." plus one optional space.
+    Heading { level: u32, len: usize },
 }
 
-// A horizontal rule line: 3+ of the same char among '-', '*', '_'
-// (whitespace between characters allowed).
-pub fn is_horizontal_rule(line: &str) -> bool {
-    let chars: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
-    if chars.len() < 3 {
-        return false;
-    }
-    let first = chars[0];
-    if first != '-' && first != '*' && first != '_' {
-        return false;
-    }
-    chars.iter().all(|&c| c == first)
-}
-
-pub fn is_blockquote(line: &str) -> bool {
-    line.trim_start().starts_with('>')
-}
-
-// Byte length of the leading blockquote markers on a raw line: the leading
-// whitespace plus each `>` (optionally followed by a single space), e.g.
-// `> foo` -> 2, `>> bar` -> 3, `  > baz` -> 4. Content starts after this.
-// Returns None when the line isn't a quote.
-pub fn blockquote_marker_len(line: &str) -> Option<usize> {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    let mut found = false;
-    while i < bytes.len() && bytes[i] == b'>' {
-        found = true;
-        i += 1;
-        if i < bytes.len() && bytes[i] == b' ' {
-            i += 1;
+impl PrefixUnit {
+    fn len(&self) -> usize {
+        match self {
+            PrefixUnit::Indent { len, .. }
+            | PrefixUnit::Quote { len }
+            | PrefixUnit::ListItem { len }
+            | PrefixUnit::Heading { len, .. } => *len,
         }
     }
-    if found {
-        Some(i)
-    } else {
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinePrefix {
+    units: Vec<PrefixUnit>,
+    indent_cols: u32,
+    pub is_hr: bool,
+}
+
+impl LinePrefix {
+    // Byte offset where visible content begins: past all leading display-only
+    // markers (indent, quote rails, list marker, heading marker).
+    pub fn content(&self) -> usize {
+        self.units.iter().map(|u| u.len()).sum()
+    }
+
+    pub fn has_quote(&self) -> bool {
+        self.units.iter().any(|u| matches!(u, PrefixUnit::Quote { .. }))
+    }
+
+    pub fn heading_level(&self) -> Option<u32> {
+        self.units.iter().find_map(|u| match u {
+            PrefixUnit::Heading { level, .. } => Some(*level),
+            _ => None,
+        })
+    }
+
+    // Display-only bytes just past the blockquote rails (leading indent
+    // included). None when the line isn't a quote.
+    fn blockquote_skip(&self) -> Option<usize> {
+        if !self.has_quote() {
+            return None;
+        }
+        let mut sum = 0;
+        for u in &self.units {
+            match u {
+                PrefixUnit::Indent { len, .. } | PrefixUnit::Quote { len } => sum += len,
+                _ => break,
+            }
+        }
+        Some(sum)
+    }
+
+    // Display-only bytes up to and including the first list item marker.
+    fn list_skip(&self) -> Option<usize> {
+        let mut sum = 0;
+        for u in &self.units {
+            match u {
+                PrefixUnit::ListItem { len } => return Some(sum + len),
+                _ => sum += u.len(),
+            }
+        }
         None
+    }
+
+    // Display-only bytes up to (not including) the heading marker.
+    fn content_before_heading(&self) -> usize {
+        let mut sum = 0;
+        for u in &self.units {
+            match u {
+                PrefixUnit::Heading { .. } => return sum,
+                _ => sum += u.len(),
+            }
+        }
+        sum
     }
 }
 
-// A list item marker: "- ", "* ", "+ " or "1..9. "/"9) " (after optional
-// indentation). Returns the byte offset where the visible content begins.
-pub fn list_info(line: &str) -> Option<usize> {
-    let trimmed = line.trim_start();
-    let indent = line.len() - trimmed.len();
-    let b = trimmed.as_bytes();
+// Parse the leading display-only markers of one line. Order: leading
+// indentation, blockquote rails, a list item marker, then an ATX heading.
+// Precedence matches classification: a thematic break is decided before any
+// list/heading consumption, and a list/quote marker wins over a heading in
+// the same line (`- ## x` is a list item, not a heading block).
+pub(crate) fn parse_prefix(line: &str) -> LinePrefix {
+    let bytes = line.as_bytes();
 
+    let mut indent_len = 0;
+    let mut indent_cols = 0u32;
+    while indent_len < bytes.len() {
+        match bytes[indent_len] {
+            b' ' => {
+                indent_cols += 1;
+                indent_len += 1;
+            }
+            b'\t' => {
+                indent_cols += 2;
+                indent_len += 1;
+            }
+            _ => break,
+        }
+    }
+
+    // Thematic break: past the indentation, the non-space body is 3+ of the
+    // same marker char. Checked before list consumption so `- - -` is a rule
+    // while `- item` is a list item.
+    let body: Vec<char> = line[indent_len..]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if body.len() >= 3
+        && matches!(body[0], '-' | '*' | '_')
+        && body.iter().all(|&c| c == body[0])
+    {
+        return LinePrefix {
+            is_hr: true,
+            ..Default::default()
+        };
+    }
+
+    let mut units: Vec<PrefixUnit> = Vec::new();
+
+    // Blockquote rails: a `>` run, each optionally followed by one space.
+    let mut q = indent_len;
+    let mut quote_len = 0;
+    while q < bytes.len() && bytes[q] == b'>' {
+        quote_len += 1;
+        q += 1;
+        if q < bytes.len() && bytes[q] == b' ' {
+            quote_len += 1;
+            q += 1;
+        }
+    }
+    if quote_len > 0 {
+        units.push(PrefixUnit::Quote { len: quote_len });
+    }
+
+    // A list item marker; loose whitespace before it is part of the marker
+    // region (so `>  - x` parses the same as before a list marker).
+    let mut li = q;
+    while li < bytes.len() && (bytes[li] == b' ' || bytes[li] == b'\t') {
+        li += 1;
+    }
+    if let Some(len) = list_marker_at(&bytes[li.min(bytes.len())..]) {
+        units.push(PrefixUnit::ListItem {
+            len: (li - q) + len,
+        });
+        q = li + len;
+    }
+
+    // An ATX heading after the markers, or as the first marker when the
+    // leading indentation is at most 3 columns (tabs count 2, so `\t## x` is
+    // a heading but `    ## x` is not).
+    if let Some((level, hlen)) = heading_at(bytes, q) {
+        if !units.is_empty() || indent_cols <= 3 {
+            if units.is_empty() && indent_len > 0 {
+                units.push(PrefixUnit::Indent {
+                    cols: indent_cols,
+                    len: indent_len,
+                });
+            }
+            units.push(PrefixUnit::Heading { level, len: hlen });
+        }
+    }
+
+    // Leading indentation counts as a marker only when a block marker follows.
+    if !units.is_empty() && indent_len > 0 && !matches!(units[0], PrefixUnit::Indent { .. }) {
+        units.insert(0, PrefixUnit::Indent {
+            cols: indent_cols,
+            len: indent_len,
+        });
+    }
+
+    LinePrefix {
+        units,
+        indent_cols,
+        is_hr: false,
+    }
+}
+
+// A "- ", "* ", "+ " (2 bytes) or "N. "/"N) " list marker at the start of `b`.
+fn list_marker_at(b: &[u8]) -> Option<usize> {
     if b.is_empty() {
         return None;
     }
 
     if matches!(b[0], b'-' | b'*' | b'+') {
-        if b.len() >= 2 && (b[1] == b' ' || b[1] == b'\t') {
-            return Some(indent + 2);
+        if b.len() >= 2 && matches!(b[1], b' ' | b'\t') {
+            return Some(2);
         }
         return None;
     }
@@ -281,11 +412,86 @@ pub fn list_info(line: &str) -> Option<usize> {
     if b.len() > digits
         && matches!(b[digits], b'.' | b')')
         && b.len() > digits + 1
-        && (b[digits + 1] == b' ' || b[digits + 1] == b'\t')
+        && matches!(b[digits + 1], b' ' | b'\t')
     {
-        return Some(indent + digits + 2);
+        return Some(digits + 2);
     }
     None
+}
+
+// 1..=6 "#" then whitespace or end, at byte `p`. Returns (level, byte length
+// of the "#..."+space marker).
+fn heading_at(bytes: &[u8], p: usize) -> Option<(u32, usize)> {
+    if p >= bytes.len() || bytes[p] != b'#' {
+        return None;
+    }
+    let mut level = 0;
+    while p + level < bytes.len() && bytes[p + level] == b'#' {
+        level += 1;
+    }
+    if level > 6 {
+        return None;
+    }
+    match bytes.get(p + level) {
+        None => Some((level as u32, level)),
+        Some(&c) if c == b' ' || c == b'\t' => Some((level as u32, level + 1)),
+        _ => None,
+    }
+}
+
+// An ATX heading at the start of the line (allowing up to 3 columns of leading
+// indentation, tabs=2): return (level 1..=6, byte offset past the whitespace
+// plus "#..."+space markers). `#foo` (no space) is not a heading.
+pub fn heading_info(line: &str) -> Option<(u32, usize)> {
+    match parse_prefix(line).units.as_slice() {
+        [PrefixUnit::Heading { level, len }] => Some((*level, *len)),
+        [PrefixUnit::Indent { len, .. }, PrefixUnit::Heading { level, len: hlen }] => {
+            Some((*level, len + hlen))
+        }
+        _ => None,
+    }
+}
+
+// Byte offset just past any leading display-only markers on a raw line: the
+// blockquote rail(s) (with their indentation) and then a single list item
+// marker. Examples: `- ` -> 2, `> ` -> 2, `> - ` -> 4, `1. ` -> 3. The
+// content after the markers may still start with a heading.
+pub(crate) fn marker_content_skip(line: &str) -> usize {
+    parse_prefix(line).content_before_heading()
+}
+
+// Like heading_info but for a line whose heading sits after leading
+// list/quote markers, e.g. `- ## hello`, `> ## hi`, `1. ## x` or `\t- ## x`.
+// Returns the heading level and the byte offset to the heading's content
+// (markers plus "#..."+space already accounted for). None when there is no
+// such heading.
+pub fn heading_after_markers(line: &str) -> Option<(u32, usize)> {
+    let p = parse_prefix(line);
+    p.heading_level().map(|level| (level, p.content()))
+}
+
+// A horizontal rule line: 3+ of the same char among '-', '*', '_'
+// (whitespace between characters allowed).
+pub fn is_horizontal_rule(line: &str) -> bool {
+    parse_prefix(line).is_hr
+}
+
+pub fn is_blockquote(line: &str) -> bool {
+    parse_prefix(line).has_quote()
+}
+
+// Byte length of the leading blockquote markers on a raw line: the leading
+// whitespace plus each `>` (optionally followed by a single space), e.g.
+// `> foo` -> 2, `>> bar` -> 3, `  > baz` -> 4. Content starts after this.
+// Returns None when the line isn't a quote.
+pub fn blockquote_marker_len(line: &str) -> Option<usize> {
+    parse_prefix(line).blockquote_skip()
+}
+
+// A list item marker: "- ", "* ", "+ " or "1..9. "/"9) " (after optional
+// indentation). Returns the byte offset where the visible content begins.
+pub fn list_info(line: &str) -> Option<usize> {
+    parse_prefix(line).list_skip()
 }
 
 // The on-screen text for a list marker: "- "/"+ " become "* " (indentation
@@ -293,21 +499,13 @@ pub fn list_info(line: &str) -> Option<usize> {
 // The display text always measures identical to the raw marker, so cursor
 // and selection positions derived from raw offsets stay aligned.
 pub fn list_marker_display(line: &str) -> Option<(String, usize)> {
-    let skip = list_info(line)?;
+    let skip = parse_prefix(line).list_skip()?;
     let marker = &line[..skip];
-    let has_bullet = marker
-        .trim_start()
+    // "- "+"+ " become "* " (indentation preserved); ordered "N. " stays.
+    let disp: String = marker
         .chars()
-        .next()
-        .is_some_and(|c| c == '-' || c == '+');
-    let disp: String = if has_bullet {
-        marker
-            .chars()
-            .map(|c| if c == '-' || c == '+' { '*' } else { c })
-            .collect()
-    } else {
-        marker.to_string()
-    };
+        .map(|c| if c == '-' || c == '+' { '*' } else { c })
+        .collect();
     Some((disp, skip))
 }
 
@@ -416,6 +614,47 @@ mod tests {
         assert_eq!(heading_info("#foo"), None);
         assert_eq!(heading_info("plain"), None);
         assert_eq!(heading_info("#"), Some((1, 1)));
+    }
+
+    #[test]
+    fn heading_inside_list_and_quote_markers() {
+        // A heading nested in a list/quote must be found past the markers and
+        // report the byte offset to the actual content (markers consumed).
+        assert_eq!(heading_after_markers("## plain"), Some((2, 3)));
+        assert_eq!(heading_after_markers("- ## hi"), Some((2, 5)));
+        assert_eq!(heading_after_markers("* ### hi"), Some((3, 6)));
+        assert_eq!(heading_after_markers("> ## hi"), Some((2, 5)));
+        assert_eq!(heading_after_markers("> - ## x"), Some((2, 7)));
+        assert_eq!(heading_after_markers("1. ## hi"), Some((2, 6)));
+        assert_eq!(heading_after_markers("- #hi"), None);
+        assert_eq!(heading_after_markers("- plain"), None);
+        assert_eq!(heading_after_markers("> plain"), None);
+        assert_eq!(marker_content_skip("- ## hi"), 2);
+        assert_eq!(marker_content_skip("> ## hi"), 2);
+        assert_eq!(marker_content_skip("> - ## x"), 4);
+        assert_eq!(marker_content_skip("## plain"), 0);
+    }
+
+    #[test]
+    fn indented_headings() {
+        // Up to 3 leading columns (tabs=2) still count as a heading; 4+ do not.
+        assert_eq!(heading_info("## x"), Some((2, 3)));
+        assert_eq!(heading_info("  ## x"), Some((2, 5)));
+        assert_eq!(heading_info("\t## x"), Some((2, 4)));
+        assert_eq!(heading_info("   ## x"), Some((2, 6)));
+        assert_eq!(heading_info("    ## x"), None);
+        assert_eq!(heading_info("\t\t## x"), None);
+        assert_eq!(heading_info("\t# x"), Some((1, 3)));
+
+        // Composition: indent + markers + heading all resolve to one offset.
+        assert_eq!(heading_after_markers("\t## x"), Some((2, 4)));
+        assert_eq!(heading_after_markers("\t- ## x"), Some((2, 6)));
+        assert_eq!(heading_after_markers("  > ## x"), Some((2, 7)));
+        // Only a single optional space may sit between marker and heading.
+        assert_eq!(heading_after_markers("-   ## x"), None);
+        assert_eq!(heading_after_markers(">  ## x"), None);
+        assert_eq!(marker_content_skip("\t## x"), 1);
+        assert_eq!(marker_content_skip("  > ## x"), 4);
     }
 
     #[test]

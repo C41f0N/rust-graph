@@ -26,8 +26,15 @@ fn line_layout(
     max_width: i32,
 ) -> (i32, i32, Option<(PathBuf, i32, i32)>) {
     let mut line_font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
-    if !editing_line {
-        if let Some((level, _)) = markdown::heading_info(line_text) {
+    let is_fence = matches!(
+        kind,
+        blocks::LineKind::FencedCode | blocks::LineKind::FenceDelimiter
+    );
+    if !editing_line
+        && !is_fence
+        && kind != blocks::LineKind::Frontmatter
+    {
+        if let Some(level) = markdown::parse_prefix(line_text).heading_level() {
             line_font_size = config::scaled_size(config::EDITOR_HEADING_SIZE[(level - 1) as usize]);
         }
     }
@@ -826,6 +833,34 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 } else {
                     let slice_text = buf[line.line][line.start..line.end].to_string();
 
+                    // A heading nested inside a list/quote item (`- ## hi`,
+                    // `> ## hi`) keeps its display-only markers out of the
+                    // rendered text: once the leading quote/list markers are
+                    // accounted for, the "#..."+space before the content is
+                    // stripped so it renders heading-sized text (see
+                    // line_layout). Editing view shows the raw source instead.
+                    let view_text = if !editing_line && !is_fence && line.start == 0 {
+                        if let Some((_, full_skip)) = markdown::heading_after_markers(&buf[line.line])
+                        {
+                            let off = markdown::marker_content_skip(&buf[line.line]);
+                            let heading_skip = full_skip.saturating_sub(off);
+                            if heading_skip > 0 {
+                                let take = off.min(slice_text.len());
+                                format!(
+                                    "{}{}",
+                                    &slice_text[..take],
+                                    &slice_text[(off + heading_skip).min(slice_text.len())..]
+                                )
+                            } else {
+                                slice_text.clone()
+                            }
+                        } else {
+                            slice_text.clone()
+                        }
+                    } else {
+                        slice_text.clone()
+                    };
+
                     let fence_color = if is_fence {
                         if matches!(kind, blocks::LineKind::FenceDelimiter) {
                             Some(config::EDITOR_FENCE_COLOR)
@@ -836,7 +871,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         None
                     };
 
-                    let segments = markdown::render_line(&slice_text, format);
+                    let segments = markdown::render_line(&view_text, format);
                     let mut seg_x = content_x;
 
                     for (si, seg) in segments.iter().enumerate() {

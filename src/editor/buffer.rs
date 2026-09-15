@@ -199,9 +199,17 @@ fn wrap_line(
     let mut start = 0;
     let mut line_font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
 
-    if let Some((level, skip)) = markdown::heading_info(line) {
+    let prefix = markdown::parse_prefix(line);
+    if let Some(level) = prefix.heading_level() {
         if format {
-            start = skip;
+            // Skip the heading markers into the content when the heading starts
+            // the raw line (`## hi`, `\t## hi`, `  ## hi`). When it sits inside
+            // a list/quote item (e.g. `- ## hi`) the leading markers stay in the
+            // text and the draw pass strips them, so only the font size changes
+            // here.
+            if markdown::heading_info(line).is_some() {
+                start = prefix.content();
+            }
             line_font_size =
                 config::scaled_size(config::EDITOR_HEADING_SIZE[(level - 1) as usize]);
         }
