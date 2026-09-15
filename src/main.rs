@@ -1,6 +1,7 @@
 use raylib::prelude::*;
 use std::path::PathBuf;
 
+mod app_config;
 mod config;
 mod editor;
 mod filesystem;
@@ -28,8 +29,12 @@ fn open_editing_subgraph() {
 }
 
 fn main() {
-    let height = config::DEFAULT_H;
-    let width = config::DEFAULT_W;
+    // The global appdata config supplies the initial window size (and, once
+    // the window exists, the zoom/font/force settings); missing file = the
+    // defaults below.
+    let startup = app_config::load();
+    let height = startup.window.1.max(config::MIN_WINDOW_H);
+    let width = startup.window.0.max(config::MIN_WINDOW_W);
 
     // Parse CLI arg for the directory
     let args: Vec<String> = std::env::args().collect();
@@ -66,13 +71,36 @@ fn main() {
 
     // Store the directory and generate nodes from it
     *DIR_PATH.write().unwrap() = dir_path.clone();
-    // Restore slider-tuned force params from this graph's .graph-params file
-    // (if one exists) before the first layout so it starts at last-run values.
-    load_graph_params(&dir_path);
+
+    // On the first launch (no global config yet), import the legacy
+    // per-folder `.graph-params` file so previously dialled-in values
+    // aren't lost. The global file is written once during the import
+    // and the old file is deleted from the folder.
+    let cfg = if app_config::has_global_config() {
+        startup
+    } else {
+        app_config::import_legacy_graph_params(&dir_path).unwrap_or(startup)
+    };
+    // Apply first so the (re)written global file reflects the live settings.
+    cfg.apply();
+    app_config::save();
     generate_nodes_from_directory(&dir_path);
 
     // Enumerate system fonts for the settings dialog's font picker.
     graph::settings::build_font_list();
+    // Activate the persisted font family (if it still exists on this system),
+    // so the loop's per-frame REQUEST_LOAD_FONT handler picks it up on the
+    // first frame without a round-trip through the settings dialog.
+    {
+        let fonts = graph::settings::FONTS.read().unwrap();
+        let idx = fonts
+            .iter()
+            .position(|f| !cfg.font_name.is_empty() && f.name == cfg.font_name);
+        if let Some(i) = idx {
+            *graph::settings::SELECTED_FONT.write().unwrap() = Some(i);
+            *graph::settings::REQUEST_LOAD_FONT.write().unwrap() = Some(i);
+        }
+    }
 
     let mut editor_was_open = false;
     // Autosave fires when the buffer has edits and no input has happened for
@@ -362,8 +390,8 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
         sidebar::draw(&mut d, editor_open);
     }
 
-    // Persist the force params into the last-viewed graph directory's
-    // .graph-params file, so slider-tuned layouts survive a restart.
-    save_graph_params(&DIR_PATH.read().unwrap());
+    // Persist the current settings (window size, zoom, font, force values) to
+    // the global appdata config so everything survives a restart.
+    app_config::save();
 }
 

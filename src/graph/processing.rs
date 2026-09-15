@@ -21,7 +21,7 @@ pub const NODE_RADIUS_GROWTH: f32 = 2.0;
 // multiplies every size, and radius variation compresses the degree growth
 // toward zero (1.0 = all nodes uniform at the base size, 0.0 = the full
 // base+growth spread). Reads the PARAM_* statics so the panel dials and the
-// persisted .graph-params both flow through here.
+// persisted app config both flow through here.
 fn radius_for(degree: u32) -> f32 {
     let scale = *PARAM_RADIUS_SCALE.read().unwrap();
     let variation = *PARAM_RADIUS_VARIATION.read().unwrap();
@@ -256,9 +256,9 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32, nodes: &mut [Node]) {
 }
 
 // ---- Parameter persistence ------------------------------------------------
-// Slider-tuned force values survive a restart. Written as a tiny .graph-params
-// key=value file next to the graph directory being viewed, so each folder can
-// carry its own force settings. Unreadable/missing file = keep current values.
+// Force values live in the appdata config (see crate::app_config) so every
+// graph shares one set and the panel survives a restart. These accessors are
+// the model interface the config module and the debug panel both use.
 
 /// The 9 force values in slider order (spring_tightness ... nonlink_attraction).
 pub fn param_values() -> [f32; 9] {
@@ -288,7 +288,9 @@ pub fn set_param_values(values: [f32; 9]) {
     *PARAM_NONLINK_ATTRACTION.write().unwrap() = values[8];
 }
 
-const PARAM_KEYS: [&str; 9] = [
+/// Key names (in slider order) used to persist the force values. Exposed so
+/// crate::app_config can (de)serialize the same letters in the global config.
+pub(crate) const PARAM_KEYS: [&str; 9] = [
     "spring_k",
     "damping",
     "center_pull",
@@ -299,87 +301,6 @@ const PARAM_KEYS: [&str; 9] = [
     "radius_variation",
     "attraction",
 ];
-
-const GRAPH_PARAMS_FILE: &str = ".graph-params";
-
-/// Serialize force settings to .graph-params text.
-pub fn serialize_params(values: [f32; 9], alpha_cooling: bool, show_panel: bool) -> String {
-    let mut out = String::new();
-    for (i, key) in PARAM_KEYS.iter().enumerate() {
-        out.push_str(&format!("{key}={:.4}\n", values[i]));
-    }
-    out.push_str(&format!(
-        "alpha_cooling={}\nshow_force_panel={}\n",
-        if alpha_cooling { 1 } else { 0 },
-        if show_panel { 1 } else { 0 },
-    ));
-    out
-}
-
-/// Parse .graph-params text over `defaults`. Missing/unknown keys keep the
-/// default slot; the two booleans come back as None when the key is absent.
-pub fn parse_params(text: &str, defaults: [f32; 9]) -> ([f32; 9], Option<bool>, Option<bool>) {
-    let mut values = defaults;
-    let mut cooling = None;
-    let mut panel = None;
-    for raw in text.lines() {
-        let line = raw.trim();
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        let v = v.trim();
-        if let Some(idx) = PARAM_KEYS.iter().position(|&key| key == k) {
-            if let Ok(num) = v.parse::<f32>() {
-                values[idx] = num;
-            }
-        } else if k == "alpha_cooling" {
-            match v {
-                "1" => cooling = Some(true),
-                "0" => cooling = Some(false),
-                _ => {}
-            }
-        } else if k == "show_force_panel" {
-            match v {
-                "1" => panel = Some(true),
-                "0" => panel = Some(false),
-                _ => {}
-            }
-        }
-    }
-    (values, cooling, panel)
-}
-
-/// Apply the graph's .graph-params file to the live statics, if present.
-/// Missing file or parse noise leaves the offending slot untouched.
-pub fn load_graph_params(dir: &Path) {
-    let path = dir.join(GRAPH_PARAMS_FILE);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return;
-    };
-    let (values, cooling, panel) = parse_params(&text, param_values());
-    set_param_values(values);
-    if let Some(c) = cooling {
-        *ALPHA_COOLING_ENABLED.write().unwrap() = c;
-    }
-    if let Some(p) = panel {
-        *SHOW_FORCE_PANEL.write().unwrap() = p;
-    }
-}
-
-/// Write the current force settings to the graph directory's .graph-params
-/// file. Written to a temp sibling then renamed so a crash can't leave a
-/// half-written file.
-pub fn save_graph_params(dir: &Path) {
-    let values = param_values();
-    let cooling = *ALPHA_COOLING_ENABLED.read().unwrap();
-    let panel = *SHOW_FORCE_PANEL.read().unwrap();
-    let text = serialize_params(values, cooling, panel);
-    let path = dir.join(GRAPH_PARAMS_FILE);
-    let tmp = dir.join(format!(".{}.tmp", GRAPH_PARAMS_FILE));
-    if std::fs::write(&tmp, &text).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
-    }
-}
 
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static HOVER_NODE: RwLock<Option<usize>> = RwLock::new(None);
@@ -1543,32 +1464,6 @@ mod tests {
         assert_eq!(node.header.as_deref(), Some("assets/pic.png"));
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn graph_params_round_trip_through_serialization() {
-        // Pure functions only: no global statics, so this is parallel-safe.
-        let values = [1.5, 0.97, 0.42, 300.0, 12000.0, 0.02, 1.3, 0.4, 0.15];
-        let text = serialize_params(values, false, true);
-        let defaults = [0.90, 0.95, 0.1, 360.0, 10000.0, 0.0228, 1.0, 0.0, 0.05];
-        let (got, cooling, panel) = parse_params(&text, defaults);
-        assert_eq!(got, values);
-        assert_eq!(cooling, Some(false));
-        assert_eq!(panel, Some(true));
-    }
-
-    #[test]
-    fn graph_params_partial_file_keeps_defaults_for_missing_keys() {
-        let defaults = [0.90, 0.95, 0.1, 360.0, 10000.0, 0.0228, 1.0, 0.0, 0.05];
-        // Only spring_k and the panel flag present; junk lines and an unnamed
-        // key must be ignored, everything else falls back to the defaults.
-        let text = "spring_k=2.25\n\nnot-a-param=99\nbogus\nalpha_cooling=0\n      \n";
-        let (got, cooling, panel) = parse_params(text, defaults);
-        let mut expect = defaults;
-        expect[0] = 2.25;
-        assert_eq!(got, expect);
-        assert_eq!(cooling, Some(false));
-        assert_eq!(panel, None);
     }
 
     #[test]

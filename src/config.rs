@@ -7,6 +7,12 @@ use std::sync::RwLock;
 pub const DEFAULT_W: i32 = 1920 * 3 / 4;
 pub const DEFAULT_H: i32 = 1080 * 3 / 4;
 
+// Floor for a persisted window size: a config file with a degenerate value
+// (e.g. overscrolled to zero) is clamped back up so the window always opens
+// with usable room.
+pub const MIN_WINDOW_W: i32 = 800;
+pub const MIN_WINDOW_H: i32 = 600;
+
 // Current window size in pixels. Written by main.rs each frame from
 // get_screen_width/height(); read by every layout function so geometry always
 // matches the real window even across resizes.
