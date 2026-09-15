@@ -17,28 +17,78 @@ pub const NODE_MAX_RADIUS: f32 = 15.0;
 // hub-ness without exploding linearly.
 pub const NODE_RADIUS_GROWTH: f32 = 2.0;
 
-// Extra clearance every edge's spring keeps between the two discs it joins.
-// Added to the combined radii below, so every pair settles well beyond
-// touching regardless of how big the individual nodes are.
-const EDGE_REST_GAP: f32 = 179.0;
+// Effective disc radius for a node of `degree`: the live radius scale
+// multiplies every size, and radius variation compresses the degree growth
+// toward zero (1.0 = all nodes uniform at the base size, 0.0 = the full
+// base+growth spread). Reads the PARAM_* statics so the panel dials and the
+// persisted .graph-params both flow through here.
+fn radius_for(degree: u32) -> f32 {
+    let scale = *PARAM_RADIUS_SCALE.read().unwrap();
+    let variation = *PARAM_RADIUS_VARIATION.read().unwrap();
+    let growth = NODE_RADIUS_GROWTH * (1.0 - variation);
+    (NODE_BASE_RADIUS + growth * (degree as f32).sqrt()).min(NODE_MAX_RADIUS) * scale
+}
+
+// Re-apply the live radial controls (scale/variation) to `nodes` from the
+// current edge degrees and report whether anything changed. Never locks NODES:
+// the caller hands in its own (already-write-locked) slice - handle_input
+// holds the NODES write lock for its whole frame, so locking here would
+// self-deadlock. A true change needs the sim reheated afterwards.
+pub fn apply_radii(nodes: &mut [Node]) -> bool {
+    if nodes.is_empty() {
+        return false;
+    }
+    let degree = {
+        let edges = EDGES.read().unwrap();
+        let mut degree = vec![0u32; nodes.len()];
+        for edge in edges.iter() {
+            degree[edge.n1] += 1;
+            degree[edge.n2] += 1;
+        }
+        degree
+    };
+    let mut dirty = false;
+    for (node, &count) in nodes.iter_mut().zip(&degree) {
+        let r = radius_for(count);
+        dirty |= (node.radius - r).abs() > 1e-4;
+        node.radius = r;
+    }
+    dirty
+}
+
+// Spring rest gap derived from the spring strength: one dial (Spring
+// Tightness) drives the whole spring. High strength = snug target distance
+// (tight cluster); low strength = far target (loose, widely spread). At the
+// default 0.40 this returns ~181, matching the old fixed 179 gap.
+const SPRING_GAP_LO: f32 = 40.0;
+const SPRING_GAP_RANGE: f32 = 480.0;
+const SPRING_GAP_SHARPNESS: f32 = 6.0;
+fn spring_rest_gap(spring_k: f32) -> f32 {
+    SPRING_GAP_LO + SPRING_GAP_RANGE / (1.0 + SPRING_GAP_SHARPNESS * spring_k)
+}
 
 // Repulsion interaction radius (world units). Pairs closer than this feel each
 // other's repulsion; beyond it the force is zero, so the spatial grid never
 // checks them. Bigger spreads every cluster out, smaller keeps clusters
-// compact while still preventing nodes from touching.
+// compact.
 const REPULSION_RADIUS: f32 = 652.0;
 // Soft component (inverse-square of the pair distance): keeps clusters open
-// and gives every node gentle breathing room at any range under the cutoff.
+// and gives every node gentle breathing room under the cutoff. The only node
+// separation force - nodes may momentarily squeeze close under spring tension,
+// and that's accepted.
 const REPULSION_K: f32 = 50000.0;
-// Hard component (inverse-square of the CLEARANCE between the two discs, i.e.
-// distance minus the sum of their radii). It grows without limit as a pair
-// approaches contact, so the repulsion itself is the barrier: no spring can
-// ever press two nodes into one another, and no overlap check exists.
-const REPULSION_CORE_K: f32 = 9200.0;
-// Clamp for the clearance fed to the hard core. 1px stops a divide-by-zero
-// when discs coincide while still giving the term ~4000 there - an order of
-// magnitude stronger than any spring force, so overlap is never reached.
-const REPULSION_MIN_CLEAR: f32 = 1.0;
+
+// Radial controls (force panel sliders 7-8). Radius scale multiplies every
+// node disc; radius variation compresses the degree-based growth toward zero,
+// so at 1.0 small and large nodes collapse onto one uniform size, at 0.0 the
+// full base+growth spread returns.
+const RADIUS_SCALE_DEFAULT: f32 = 1.0;
+const RADIUS_VARIATION_DEFAULT: f32 = 0.0;
+
+// Soft pull between non-linked pairs that share a repulsion grid cell. Done in
+// the same spatial pass as the repulsion (no second O(n^2) scan) and kept
+// weaker than the inverse-square repulsion so clusters stay open but coherent.
+const NONLINK_ATTRACTION_DEFAULT: f32 = 0.05;
 
 // Live-tunable force parameters. The statics below mirror the physical
 // constants above (which stay as defaults/for tests) so a temporary debug
@@ -49,9 +99,10 @@ pub static PARAM_DAMPING: RwLock<f32> = RwLock::new(0.95);
 pub static PARAM_GRAVITY_K: RwLock<f32> = RwLock::new(0.04);
 pub static PARAM_REPULSION_RADIUS: RwLock<f32> = RwLock::new(REPULSION_RADIUS);
 pub static PARAM_REPULSION_K: RwLock<f32> = RwLock::new(REPULSION_K);
-pub static PARAM_REPULSION_CORE_K: RwLock<f32> = RwLock::new(REPULSION_CORE_K);
-pub static PARAM_EDGE_REST_GAP: RwLock<f32> = RwLock::new(EDGE_REST_GAP);
 pub static PARAM_ALPHA_DECAY: RwLock<f32> = RwLock::new(ALPHA_DECAY);
+pub static PARAM_RADIUS_SCALE: RwLock<f32> = RwLock::new(RADIUS_SCALE_DEFAULT);
+pub static PARAM_RADIUS_VARIATION: RwLock<f32> = RwLock::new(RADIUS_VARIATION_DEFAULT);
+pub static PARAM_NONLINK_ATTRACTION: RwLock<f32> = RwLock::new(NONLINK_ATTRACTION_DEFAULT);
 
 // Temporary debug panel: a live switch to disable the alpha cooldown (and
 // with it the settle-and-pause behaviour), plus the panel's visibility and
@@ -70,19 +121,21 @@ pub const PANEL_TITLE_H: i32 = 32;
 pub const PANEL_ROW_H: i32 = 28;
 pub const TRACK_LEFT: i32 = 100;
 pub const TRACK_RIGHT: i32 = PANEL_W - 10;
-pub const SLIDER_COUNT: usize = 8;
+pub const SLIDER_COUNT: usize = 9;
 
 // (min, max) range of each slider, in the same order as the PARAM_* list.
-// Index 0 is the spring, 1 damping, ... 7 alpha decay.
+// Index 0 is the spring (tightness), 1 damping, ... 8 is the non-link
+// attraction.
 pub const SLIDER_RANGES: [(f32, f32); SLIDER_COUNT] = [
-    (0.0, 5.0),
+    (0.0, 20.0),
     (0.5, 1.0),
     (0.0, 0.5),
     (50.0, 700.0),
     (0.0, 50000.0),
-    (0.0, 20000.0),
-    (0.0, 200.0),
     (0.005, 0.05),
+    (0.5, 2.0),
+    (0.0, 1.0),
+    (0.0, 0.01),
 ];
 
 // Return True if the pointer is over the alpha-cooling toggle row (the first
@@ -97,9 +150,9 @@ pub fn hit_test_alpha_toggle(mx: f32, my: f32) -> bool {
 }
 
 // Return the index of the slider whose row the pointer is over, or None.
-// Indexes run top-to-bottom: 0 = Spring K ... 7 = Alpha Decay. The whole row
-// is the hit target (not just the thin track band) so grabbing a slider is
-// forgiving; the renderer draws rows from the same helpers below.
+// Indexes run top-to-bottom: 0 = Spring Tightness ... 8 = Attraction. The
+// whole row is the hit target (not just the thin track band) so grabbing a
+// slider is forgiving; the renderer draws rows from the same helpers below.
 pub fn hit_test_slider(mx: f32, my: f32) -> Option<usize> {
     let px = PANEL_X as f32;
     let row_h = config::scaled_size(PANEL_ROW_H) as f32;
@@ -151,8 +204,10 @@ pub fn respawn_graph() {
     generate_nodes_from_directory(&dir);
 }
 
-// Map the pointer's x onto the slider at `idx` and store the resulting value.
-pub fn update_slider_from_mouse(idx: usize, mx: f32) {
+// Map the pointer's x onto the slider at `idx`, store the resulting value, and
+// (for the radial controls) resize discs on the caller's already-locked node
+// slice. `nodes` must be the live NODES write guard - see apply_radii.
+pub fn update_slider_from_mouse(idx: usize, mx: f32, nodes: &mut [Node]) {
     let px = PANEL_X as f32;
     let track_l = px + config::scaled_size(TRACK_LEFT) as f32;
     let track_r = px + config::scaled_size(TRACK_RIGHT) as f32;
@@ -167,9 +222,10 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32) {
         2 => (v * 100.0).round() / 100.0,
         3 => v.round(),
         4 => (v / 100.0).round() * 100.0,
-        5 => (v / 50.0).round() * 50.0,
-        6 => v.round(),
-        7 => (v * 1000.0).round() / 1000.0,
+        5 => (v * 1000.0).round() / 1000.0,
+        6 => (v * 100.0).round() / 100.0,
+        7 => (v * 100.0).round() / 100.0,
+        8 => (v * 100.0).round() / 100.0,
         _ => v,
     };
     match idx {
@@ -178,10 +234,18 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32) {
         2 => *PARAM_GRAVITY_K.write().unwrap() = value,
         3 => *PARAM_REPULSION_RADIUS.write().unwrap() = value,
         4 => *PARAM_REPULSION_K.write().unwrap() = value,
-        5 => *PARAM_REPULSION_CORE_K.write().unwrap() = value,
-        6 => *PARAM_EDGE_REST_GAP.write().unwrap() = value,
-        7 => *PARAM_ALPHA_DECAY.write().unwrap() = value,
+        5 => *PARAM_ALPHA_DECAY.write().unwrap() = value,
+        6 => *PARAM_RADIUS_SCALE.write().unwrap() = value,
+        7 => *PARAM_RADIUS_VARIATION.write().unwrap() = value,
+        8 => *PARAM_NONLINK_ATTRACTION.write().unwrap() = value,
         _ => {}
+    }
+
+    // Changing a radial control resizes every disc immediately.
+    if idx == 6 || idx == 7 {
+        if apply_radii(nodes) {
+            wake_simulation();
+        }
     }
 
     // Reheat the sim so the layout visibly responds to the new force: while
@@ -196,47 +260,50 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32) {
 // key=value file next to the graph directory being viewed, so each folder can
 // carry its own force settings. Unreadable/missing file = keep current values.
 
-/// The 8 force values in slider order (spring_k ... alpha_decay).
-pub fn param_values() -> [f32; 8] {
+/// The 9 force values in slider order (spring_tightness ... nonlink_attraction).
+pub fn param_values() -> [f32; 9] {
     [
         *PARAM_SPRING_K.read().unwrap(),
         *PARAM_DAMPING.read().unwrap(),
         *PARAM_GRAVITY_K.read().unwrap(),
         *PARAM_REPULSION_RADIUS.read().unwrap(),
         *PARAM_REPULSION_K.read().unwrap(),
-        *PARAM_REPULSION_CORE_K.read().unwrap(),
-        *PARAM_EDGE_REST_GAP.read().unwrap(),
         *PARAM_ALPHA_DECAY.read().unwrap(),
+        *PARAM_RADIUS_SCALE.read().unwrap(),
+        *PARAM_RADIUS_VARIATION.read().unwrap(),
+        *PARAM_NONLINK_ATTRACTION.read().unwrap(),
     ]
 }
 
 /// Overwrite every force value from `values` (slider order).
-pub fn set_param_values(values: [f32; 8]) {
+pub fn set_param_values(values: [f32; 9]) {
     *PARAM_SPRING_K.write().unwrap() = values[0];
     *PARAM_DAMPING.write().unwrap() = values[1];
     *PARAM_GRAVITY_K.write().unwrap() = values[2];
     *PARAM_REPULSION_RADIUS.write().unwrap() = values[3];
     *PARAM_REPULSION_K.write().unwrap() = values[4];
-    *PARAM_REPULSION_CORE_K.write().unwrap() = values[5];
-    *PARAM_EDGE_REST_GAP.write().unwrap() = values[6];
-    *PARAM_ALPHA_DECAY.write().unwrap() = values[7];
+    *PARAM_ALPHA_DECAY.write().unwrap() = values[5];
+    *PARAM_RADIUS_SCALE.write().unwrap() = values[6];
+    *PARAM_RADIUS_VARIATION.write().unwrap() = values[7];
+    *PARAM_NONLINK_ATTRACTION.write().unwrap() = values[8];
 }
 
-const PARAM_KEYS: [&str; 8] = [
+const PARAM_KEYS: [&str; 9] = [
     "spring_k",
     "damping",
     "center_pull",
     "repulsion_radius",
     "repulsion_k",
-    "repulsion_core_k",
-    "rest_gap",
     "alpha_decay",
+    "radius_scale",
+    "radius_variation",
+    "attraction",
 ];
 
 const GRAPH_PARAMS_FILE: &str = ".graph-params";
 
 /// Serialize force settings to .graph-params text.
-pub fn serialize_params(values: [f32; 8], alpha_cooling: bool, show_panel: bool) -> String {
+pub fn serialize_params(values: [f32; 9], alpha_cooling: bool, show_panel: bool) -> String {
     let mut out = String::new();
     for (i, key) in PARAM_KEYS.iter().enumerate() {
         out.push_str(&format!("{key}={:.4}\n", values[i]));
@@ -251,7 +318,7 @@ pub fn serialize_params(values: [f32; 8], alpha_cooling: bool, show_panel: bool)
 
 /// Parse .graph-params text over `defaults`. Missing/unknown keys keep the
 /// default slot; the two booleans come back as None when the key is absent.
-pub fn parse_params(text: &str, defaults: [f32; 8]) -> ([f32; 8], Option<bool>, Option<bool>) {
+pub fn parse_params(text: &str, defaults: [f32; 9]) -> ([f32; 9], Option<bool>, Option<bool>) {
     let mut values = defaults;
     let mut cooling = None;
     let mut panel = None;
@@ -609,8 +676,7 @@ pub fn refresh_saved_node(path: &Path) {
         degree[edge.n2] += 1;
     }
     for (node, &count) in nodes.iter_mut().zip(&degree) {
-        node.radius =
-            (NODE_BASE_RADIUS + NODE_RADIUS_GROWTH * (count as f32).sqrt()).min(NODE_MAX_RADIUS);
+        node.radius = radius_for(count);
     }
 }
 
@@ -692,8 +758,7 @@ pub fn rebuild_edges() {
         degree[edge.n2] += 1;
     }
     for (node, &count) in nodes.iter_mut().zip(&degree) {
-        node.radius =
-            (NODE_BASE_RADIUS + NODE_RADIUS_GROWTH * (count as f32).sqrt()).min(NODE_MAX_RADIUS);
+        node.radius = radius_for(count);
     }
 }
 
@@ -834,10 +899,10 @@ pub fn rename_node(idx: usize, new_name: &str) -> bool {
 // constants).
 fn repulsion_forces(
     positions: &[Vector2],
-    radii: &[f32],
     repulsion_radius: f32,
     repulsion_k: f32,
-    repulsion_core_k: f32,
+    linked: &std::collections::HashSet<(usize, usize)>,
+    attraction_k: f32,
 ) -> Vec<Vector2> {
     let mut forces = vec![Vector2::zero(); positions.len()];
 
@@ -869,22 +934,30 @@ fn repulsion_forces(
                     if dist >= repulsion_radius {
                         continue;
                     }
-                    // Soft term: inward-square of the pair distance, keeping
-                    // clusters open at any range under the cutoff.
+                    // Soft term: inverse-square of the pair distance, keeping
+                    // clusters open at any range under the cutoff. Pure springs
+                    // may press discs together at short range; that's allowed
+                    // now that the old hard "never overlap" core is gone.
                     let soft = if dist > 1e-3 {
                         repulsion_k / (dist * dist)
                     } else {
                         0.0
                     };
-                    // Hard term: inverse-square of the clearance between the
-                    // two discs, unbounded as they near contact. This - not any
-                    // overlap fix-up - is what stops discs from ever touching.
-                    let clearance = (dist - (radii[i] + radii[j])).max(REPULSION_MIN_CLEAR);
-                    let hard = repulsion_core_k / (clearance * clearance);
-                    // Both vanish smoothly at the interaction radius (no hard
-                    // pop at the edge of the grid cell).
-                    let mag = (soft + hard) * (1.0 - dist / repulsion_radius);
+                    // The fade keeps the force continuous out to the edge of
+                    // the grid cell (no hard pop there).
+                    let mag = soft * (1.0 - dist / repulsion_radius);
                     forces[i] += diff.scale(mag / dist.max(1e-6));
+
+                    // Pairs WITHOUT an edge between them feel a soft pull toward
+                    // each other, computed in this same spatial pass (no second
+                    // O(n^2) scan): it fades to zero at the cell-adjacent
+                    // boundary exactly like the repulsion, and stays weaker so
+                    // clusters cohere without collapsing.
+                    if attraction_k > 0.0 && !linked.contains(&(i.min(j), i.max(j))) {
+                        let mag_attr = attraction_k * dist * (1.0 - dist / repulsion_radius);
+                        forces[i] -= diff.scale(mag_attr / dist.max(1e-6));
+                        forces[j] += diff.scale(mag_attr / dist.max(1e-6));
+                    }
                 }
             }
         }
@@ -919,11 +992,10 @@ pub fn update_forces(rl: &mut RaylibHandle) {
     // slider handlers wake the sim explicitly instead.
     let repulsion_radius = *PARAM_REPULSION_RADIUS.read().unwrap();
     let repulsion_k = *PARAM_REPULSION_K.read().unwrap();
-    let repulsion_core_k = *PARAM_REPULSION_CORE_K.read().unwrap();
     let spring_k = *PARAM_SPRING_K.read().unwrap();
     let damping = *PARAM_DAMPING.read().unwrap();
     let gravity_k = *PARAM_GRAVITY_K.read().unwrap();
-    let edge_rest_gap = *PARAM_EDGE_REST_GAP.read().unwrap();
+    let edge_rest_gap = spring_rest_gap(spring_k);
     let alpha_decay = *PARAM_ALPHA_DECAY.read().unwrap();
     let alpha_cooling_enabled = *ALPHA_COOLING_ENABLED.read().unwrap();
 
@@ -944,8 +1016,13 @@ pub fn update_forces(rl: &mut RaylibHandle) {
     *SIM_ALPHA.write().unwrap() = alpha;
 
     let positions: Vec<Vector2> = nodes.iter().map(|n| n.position).collect();
-    let radii: Vec<f32> = nodes.iter().map(|n| n.radius).collect();
-    let mut forces = repulsion_forces(&positions, &radii, repulsion_radius, repulsion_k, repulsion_core_k);
+    let mut linked: std::collections::HashSet<(usize, usize)> =
+        std::collections::HashSet::with_capacity(edges.len());
+    for edge in edges.iter() {
+        linked.insert((edge.n1.min(edge.n2), edge.n1.max(edge.n2)));
+    }
+    let attraction_k = *PARAM_NONLINK_ATTRACTION.read().unwrap();
+    let mut forces = repulsion_forces(&positions, repulsion_radius, repulsion_k, &linked, attraction_k);
 
     let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
 
@@ -1000,9 +1077,14 @@ mod tests {
             Vector2::new(0.0, 5.0),
             Vector2::new(-3.0, -2.0),
         ];
-        let radii = vec![7.0; cluster.len()];
-        let f =
-            repulsion_forces(&cluster, &radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
+        let _radii = vec![7.0; cluster.len()];
+        let f = repulsion_forces(
+            &cluster,
+            REPULSION_RADIUS,
+            REPULSION_K,
+            &Default::default(),
+            0.0,
+        );
         for i in 0..cluster.len() {
             assert!(f[i].length() > 0.0, "cluster members must repel each other");
         }
@@ -1013,10 +1095,51 @@ mod tests {
             Vector2::zero(),
             Vector2::new(REPULSION_RADIUS * 2.0, REPULSION_RADIUS * 2.0),
         ];
-        let far_radii = vec![7.0; 2];
-        let g = repulsion_forces(&far, &far_radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
+        let _far_radii = vec![7.0; 2];
+        let g = repulsion_forces(
+            &far,
+            REPULSION_RADIUS,
+            REPULSION_K,
+            &Default::default(),
+            0.0,
+        );
         assert_eq!(g[0].length(), 0.0);
         assert_eq!(g[1].length(), 0.0);
+    }
+
+    #[test]
+    fn non_linked_pairs_attract_through_the_grid() {
+        let left = Vector2::new(0.0, 0.0);
+        let right = Vector2::new(120.0, 0.0);
+        let positions = vec![left, right];
+
+        // No edge: the grid pass applies the soft pull on top of the repulsion, and
+        // at 120px distance (radius 652) the attraction outweighs the soft
+        // term, so the net force points toward the other node.
+        let f = repulsion_forces(
+            &positions,
+            REPULSION_RADIUS,
+            REPULSION_K,
+            &Default::default(),
+            0.05,
+        );
+        let toward = right - left;
+        assert!(f[0].dot(toward) > 0.0, "free pair must pull together");
+        assert!(f[1].dot(toward) < 0.0);
+
+        // Linked (edge present): spring owns that pair, the grid only
+        // repulses, so the forces point apart again.
+        let mut linked = std::collections::HashSet::new();
+        linked.insert((0usize, 1usize));
+        let g = repulsion_forces(
+            &positions,
+            REPULSION_RADIUS,
+            REPULSION_K,
+            &linked,
+            0.05,
+        );
+        assert!(g[0].dot(toward) < 0.0, "linked pair must keep repelling");
+        assert!(g[1].dot(toward) > 0.0);
     }
 
     #[test]
@@ -1030,10 +1153,13 @@ mod tests {
                 )
             })
             .collect();
-        let radii: Vec<f32> = (0..200).map(|_| rng.random_range(5.0..15.0)).collect();
-
-        let fast =
-            repulsion_forces(&positions, &radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
+        let fast = repulsion_forces(
+            &positions,
+            REPULSION_RADIUS,
+            REPULSION_K,
+            &Default::default(),
+            0.0,
+        );
 
         let mut brute = vec![Vector2::zero(); positions.len()];
         for i in 0..positions.len() {
@@ -1051,9 +1177,7 @@ mod tests {
                 } else {
                     0.0
                 };
-                let clearance = (dist - (radii[i] + radii[j])).max(REPULSION_MIN_CLEAR);
-                let hard = REPULSION_CORE_K / (clearance * clearance);
-                let mag = (soft + hard) * (1.0 - dist / REPULSION_RADIUS);
+                let mag = soft * (1.0 - dist / REPULSION_RADIUS);
                 brute[i] += diff.scale(mag / dist.max(1e-6));
             }
         }
@@ -1070,8 +1194,9 @@ mod tests {
     fn settled_pairs_stay_clear_regardless_of_size() {
         // Integrate the same spring + repulsion forces update_forces uses (no
         // gravity/camera) for a connected pair of very different sizes. The
-        // spring rest length is radii + EDGE_REST_GAP and repulsion balances
-        // just beyond it, so the settled gap is never an overlap.
+        // spring rest length is radii + spring_rest_gap(k) and the soft
+        // repulsion over-pushes, so the settled gap is always clear of the
+        // discs.
         let r1 = NODE_BASE_RADIUS;
         let r2 = NODE_MAX_RADIUS;
         let mut positions = vec![Vector2::new(0.0, 0.0), Vector2::new(3.0, 0.0)];
@@ -1080,12 +1205,17 @@ mod tests {
         let damping = 0.55_f32;
         let dt = 0.01_f32;
         for _ in 0..5000 {
-            let mut forces =
-                repulsion_forces(&positions, &[r1, r2], REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
+            let mut forces = repulsion_forces(
+                &positions,
+                REPULSION_RADIUS,
+                REPULSION_K,
+                &Default::default(),
+                0.0,
+            );
             let diff = positions[1] - positions[0];
             let dist = diff.length().max(1e-4);
             let direction = diff.scale(1.0 / dist);
-            let rest = r1 + r2 + EDGE_REST_GAP;
+            let rest = r1 + r2 + spring_rest_gap(spring_k);
             let force = spring_k * (dist - rest);
             forces[0] += direction * force;
             forces[1] -= direction * force;
@@ -1097,39 +1227,27 @@ mod tests {
 
         let sep = (positions[1] - positions[0]).length();
         assert!(sep >= r1 + r2 + 4.0, "connected pair must sit clearly apart, got {sep}");
-        // Even a violent head-on approach cannot compress the pair under the
-        // contact distance: the hard core's force grows unbounded as they near
-        // each other, so it decelerates them well before the discs touch.
-        let mut p3 = vec![Vector2::new(0.0, 0.0), Vector2::new(40.0, 0.0)];
-        let mut v3 = vec![Vector2::new(15.0, 0.0), Vector2::new(-15.0, 0.0)];
-        let mut min_sep: f32 = f32::MAX;
-        for _ in 0..2000 {
-            let forces =
-                repulsion_forces(&p3, &[r1, r2], REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
-            for i in 0..2 {
-                v3[i] = (v3[i] + forces[i] * dt) * damping;
-                p3[i] += v3[i] * dt;
-            }
-            min_sep = min_sep.min((p3[1] - p3[0]).length());
-        }
-        assert!(
-            min_sep >= r1 + r2 - 0.1,
-            "head-on collision must stop before contact, min separation {min_sep}"
-        );
-        // Disconnected pairs only have repulsion; starting overlapped they too
-        // shove apart and never re-collapse.
+
+        // Disconnected pairs only have repulsion; starting overlapped they shove
+        // apart and nothing draws them back together (soft term has zero range
+        // beyond the interaction radius).
         let mut p2 = vec![Vector2::new(0.0, 0.0), Vector2::new(1.0, 1.0)];
         let mut v2 = vec![Vector2::zero(), Vector2::zero()];
-        let base_radii = [NODE_BASE_RADIUS; 2];
         for _ in 0..3000 {
-            let forces = repulsion_forces(&p2, &base_radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
+            let forces = repulsion_forces(
+                &p2,
+                REPULSION_RADIUS,
+                REPULSION_K,
+                &Default::default(),
+                0.0,
+            );
             for i in 0..2 {
                 v2[i] = (v2[i] + forces[i] * dt) * damping;
                 p2[i] += v2[i] * dt;
             }
         }
         let sep2 = (p2[1] - p2[0]).length();
-        assert!(sep2 >= 2.0 * NODE_BASE_RADIUS, "disconnected pair must not overlap, got {sep2}");
+        assert!(sep2 >= 2.0 * NODE_BASE_RADIUS, "disconnected pair must spread apart, got {sep2}");
     }
 
     #[test]
@@ -1164,8 +1282,13 @@ mod tests {
         // freeze point; budget 2000 so the tail definitely ends below it.
         for _ in 0..2000 {
             alpha += (ALPHA_TARGET - alpha) * ALPHA_DECAY;
-            let mut forces =
-                repulsion_forces(&positions, &radii, REPULSION_RADIUS, REPULSION_K, REPULSION_CORE_K);
+            let mut forces = repulsion_forces(
+                &positions,
+                REPULSION_RADIUS,
+                REPULSION_K,
+                &Default::default(),
+                0.0,
+            );
             for i in 0..n {
                 forces[i] += (center - positions[i]) * gravity_k;
             }
@@ -1173,7 +1296,7 @@ mod tests {
                 let diff = positions[b] - positions[a];
                 let dist = diff.length();
                 let direction = if dist > 0.001 { diff.scale(1.0 / dist) } else { Vector2::zero() };
-                let rest = radii[a] + radii[b] + EDGE_REST_GAP;
+                let rest = radii[a] + radii[b] + spring_rest_gap(spring_k);
                 let force = spring_k * (dist - rest);
                 forces[a] += direction * force;
                 forces[b] -= direction * force;
@@ -1425,9 +1548,9 @@ mod tests {
     #[test]
     fn graph_params_round_trip_through_serialization() {
         // Pure functions only: no global statics, so this is parallel-safe.
-        let values = [1.5, 0.97, 0.42, 300.0, 12000.0, 5550.0, 45.0, 0.02];
+        let values = [1.5, 0.97, 0.42, 300.0, 12000.0, 0.02, 1.3, 0.4, 0.15];
         let text = serialize_params(values, false, true);
-        let defaults = [0.90, 0.95, 0.1, 360.0, 10000.0, 4000.0, 60.0, 0.0228];
+        let defaults = [0.90, 0.95, 0.1, 360.0, 10000.0, 0.0228, 1.0, 0.0, 0.05];
         let (got, cooling, panel) = parse_params(&text, defaults);
         assert_eq!(got, values);
         assert_eq!(cooling, Some(false));
@@ -1436,7 +1559,7 @@ mod tests {
 
     #[test]
     fn graph_params_partial_file_keeps_defaults_for_missing_keys() {
-        let defaults = [0.90, 0.95, 0.1, 360.0, 10000.0, 4000.0, 60.0, 0.0228];
+        let defaults = [0.90, 0.95, 0.1, 360.0, 10000.0, 0.0228, 1.0, 0.0, 0.05];
         // Only spring_k and the panel flag present; junk lines and an unnamed
         // key must be ignored, everything else falls back to the defaults.
         let text = "spring_k=2.25\n\nnot-a-param=99\nbogus\nalpha_cooling=0\n      \n";
@@ -1446,5 +1569,18 @@ mod tests {
         assert_eq!(got, expect);
         assert_eq!(cooling, Some(false));
         assert_eq!(panel, None);
+    }
+
+    #[test]
+    fn spring_rest_gap_tracks_tightness() {
+        // The merged spring dial: grows the rest gap as the spring weakens,
+        // and never lets discs sit closer than the floor gap.
+        let loose = spring_rest_gap(0.05);
+        let default = spring_rest_gap(0.40);
+        let tight = spring_rest_gap(5.0);
+        assert!(loose > default, "weak spring must settle far apart");
+        assert!(default > tight, "strong spring must settle tight");
+        assert!(default > 100.0, "default keeps a real gap, got {default}");
+        assert!(tight >= SPRING_GAP_LO, "tight cannot undershoot floor gap");
     }
 }

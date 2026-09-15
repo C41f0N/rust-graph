@@ -577,14 +577,15 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let track_r = px + config::scaled_size(TRACK_RIGHT);
         let track_w = track_r - track_l;
         let labels = [
-            "Spring K",
+            "Spring Tightness",
             "Damping",
             "Center Gravity",
             "Rep Radius",
             "Rep K",
-            "Rep Core",
-            "Rest Gap",
             "Alpha Decay",
+            "Radius Scale",
+            "Radius Var.",
+            "Attraction",
         ];
         for (idx, label) in labels.iter().enumerate() {
             let row_y = slider_row_y(idx);
@@ -642,8 +643,8 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     }
 }
 
-// Current value of the slider at `idx` (0=Spring K ... 7=Alpha Decay), read
-// from the live PARAM_* statics the debug panel writes.
+// Current value of the slider at `idx` (0=Spring Tightness ... 8=Attraction),
+// read from the live PARAM_* statics the debug panel writes.
 fn read_slider_value(idx: usize) -> f32 {
     match idx {
         0 => *PARAM_SPRING_K.read().unwrap(),
@@ -651,9 +652,10 @@ fn read_slider_value(idx: usize) -> f32 {
         2 => *PARAM_GRAVITY_K.read().unwrap(),
         3 => *PARAM_REPULSION_RADIUS.read().unwrap(),
         4 => *PARAM_REPULSION_K.read().unwrap(),
-        5 => *PARAM_REPULSION_CORE_K.read().unwrap(),
-        6 => *PARAM_EDGE_REST_GAP.read().unwrap(),
-        7 => *PARAM_ALPHA_DECAY.read().unwrap(),
+        5 => *PARAM_ALPHA_DECAY.read().unwrap(),
+        6 => *PARAM_RADIUS_SCALE.read().unwrap(),
+        7 => *PARAM_RADIUS_VARIATION.read().unwrap(),
+        8 => *PARAM_NONLINK_ATTRACTION.read().unwrap(),
         _ => 0.0,
     }
 }

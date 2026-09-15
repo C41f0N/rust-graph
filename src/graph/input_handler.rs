@@ -269,7 +269,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         if rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
             let active = *ACTIVE_SLIDER.read().unwrap();
             if let Some(idx) = active {
-                update_slider_from_mouse(idx, mx);
+                update_slider_from_mouse(idx, mx, &mut nodes);
                 return;
             }
         }
@@ -278,7 +278,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
             if let Some(idx) = hit_test_slider(mx, my) {
                 *ACTIVE_SLIDER.write().unwrap() = Some(idx);
-                update_slider_from_mouse(idx, mx);
+                update_slider_from_mouse(idx, mx, &mut nodes);
                 return;
             } else if hit_test_alpha_toggle(mx, my) {
                 let mut enabled = ALPHA_COOLING_ENABLED.write().unwrap();
