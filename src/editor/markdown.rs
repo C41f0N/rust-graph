@@ -111,12 +111,19 @@ pub fn render_line(line: &str, format: bool) -> Vec<Segment> {
 
 // The text whose measured width matches what render_line draws. Always use
 // this (not the raw line) for cursor/selection/wrap measurements.
-pub fn measure_line(line: &str, format: bool) -> String {
-    if format {
-        strip_inline(line)
-    } else {
-        line.to_string()
-    }
+// Summed measured width of a run of styled segments, mirroring what the draw
+// pass paints: a bold segment measures through the bold face (wider glyphs)
+// so the wrap, cursor and selection never drift from the drawn text. `measure`
+// is injected so wrapping and hit-testing stay unit-testable without raylib.
+pub fn segments_width(
+    segments: &[Segment],
+    font_size: i32,
+    measure: impl Fn(&str, i32, SegmentStyle) -> i32,
+) -> i32 {
+    segments
+        .iter()
+        .map(|s| measure(&s.text, font_size, s.style))
+        .sum()
 }
 
 fn flush_plain(segments: &mut Vec<Segment>, line: &str, start: usize, end: usize) {

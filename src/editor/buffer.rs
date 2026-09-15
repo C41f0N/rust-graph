@@ -178,7 +178,7 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
             hang_indent,
             kind,
             format,
-            |t, size| text::measure(d, t, size),
+            |t, size, style| text::measure_styled(d, t, size, style),
         ));
     }
 }
@@ -198,7 +198,7 @@ fn wrap_line(
     hang_indent: i32,
     kind: crate::editor::blocks::LineKind,
     format: bool,
-    measure: impl Fn(&str, i32) -> i32,
+    measure: impl Fn(&str, i32, crate::editor::markdown::SegmentStyle) -> i32,
 ) -> Vec<VisualLine> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -265,7 +265,11 @@ fn wrap_line(
             }
 
             let width = cur_indent
-                + measure(&markdown::measure_line(&text, format), line_font_size);
+                + markdown::segments_width(
+                    &markdown::render_line(&text, format),
+                    line_font_size,
+                    &measure,
+                );
 
             if width > max_width {
                 break;
@@ -382,7 +386,7 @@ mod tests {
             0,
             LineKind::Paragraph,
             true,
-            pix,
+            |t, s, _st| pix(t, s),
         );
         assert!(vls.len() >= 2);
         for vl in &vls {
@@ -411,7 +415,7 @@ mod tests {
         // View mode: the caller sets base = marker width, hang = 0, so every
         // visual line sits right of the rail. "> " = 2 chars = 20px.
         let line = "> one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 20, 0, LineKind::Blockquote, true, pix);
+        let vls = wrap_line(line, 100, 0, 20, 0, LineKind::Blockquote, true, |t, s, _st| pix(t, s));
         assert!(vls.len() >= 2, "expected the quote to wrap");
         assert_eq!(vls[0].indent, 20, "content starts after the marker");
         for vl in &vls[1..] {
@@ -423,7 +427,7 @@ mod tests {
     fn list_continuation_lines_hang_indented() {
         // 10 chars/line at max_width 100; "    " = 40px indent.
         let line = "- one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 0, 40, LineKind::List { depth: 0 }, true, pix);
+        let vls = wrap_line(line, 100, 0, 0, 40, LineKind::List { depth: 0 }, true, |t, s, _st| pix(t, s));
         assert!(vls.len() >= 2, "expected the item to wrap");
         assert_eq!(vls[0].indent, 0, "first visual line has no indent");
         for vl in &vls[1..] {
@@ -436,7 +440,7 @@ mod tests {
         // depth 1 line: the marker draws the source indent, so the first
         // visual line is flat; continuations hang at base 20px + hang 40px.
         let line = "  - one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 20, 40, LineKind::List { depth: 1 }, true, pix);
+        let vls = wrap_line(line, 100, 0, 20, 40, LineKind::List { depth: 1 }, true, |t, s, _st| pix(t, s));
         assert!(vls.len() >= 2);
         assert_eq!(vls[0].indent, 0);
         for vl in &vls[1..] {
@@ -450,7 +454,7 @@ mod tests {
         // editing line; wrap_line is a mechanical function, so the caller
         // passes 0.
         let line = "- one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 0, 0, LineKind::List { depth: 0 }, false, pix);
+        let vls = wrap_line(line, 100, 0, 0, 0, LineKind::List { depth: 0 }, false, |t, s, _st| pix(t, s));
         for vl in &vls {
             assert_eq!(vl.indent, 0);
         }
@@ -458,7 +462,7 @@ mod tests {
 
     #[test]
     fn empty_line_is_single_visual_line() {
-        let vls = wrap_line("", 100, 3, 0, 0, LineKind::Paragraph, true, pix);
+        let vls = wrap_line("", 100, 3, 0, 0, LineKind::Paragraph, true, |t, s, _st| pix(t, s));
         assert_eq!(vls.len(), 1);
         assert_eq!(vls[0].line, 3);
         assert_eq!(vls[0].indent, 0);

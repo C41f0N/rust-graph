@@ -278,14 +278,34 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
                 if idx == 0 {
                     editor::text::clear_active_font();
                 } else {
-                    let loaded = if let Some(path) = &fam.path {
-                        editor::text::load_font_set(&mut rl, &thread, &path.to_string_lossy())
-                    } else if let Some(data) = &fam.data {
-                        editor::text::load_font_set_from_memory(&mut rl, &thread, ".ttf", data)
-                    } else {
-                        Vec::new()
+                    // Load the family's upright, bold and italic cuts so
+                    // markdown emphasis renders with real glyph shapes. Any
+                    // cut the family doesn't ship stays empty and the editor
+                    // falls back to the upright atlas.
+                    let mut load = |src: &Option<graph::settings::FontStyleSource>| {
+                        if let Some(src) = src {
+                            if let Some(path) = &src.path {
+                                editor::text::load_font_set(&mut rl, &thread, &path.to_string_lossy())
+                            } else if let Some(data) = &src.data {
+                                editor::text::load_font_set_from_memory(&mut rl, &thread, ".ttf", data)
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            Vec::new()
+                        }
                     };
-                    editor::text::set_active_font(loaded);
+                    let regular = load(&Some(graph::settings::FontStyleSource {
+                        path: fam.path.clone(),
+                        data: fam.data.clone(),
+                    }));
+                    let bold = load(&fam.bold);
+                    let italic = load(&fam.italic);
+                    editor::text::set_active_fonts(editor::text::LoadedFontSet {
+                        regular,
+                        bold,
+                        italic,
+                    });
                 }
                 *graph::settings::SELECTED_FONT.write().unwrap() = Some(idx);
             }

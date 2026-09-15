@@ -1,7 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
-use crate::editor::markdown;
-
 // -----------------------------------------------------------------------
 // Hit-test row published by the renderer every frame
 // -----------------------------------------------------------------------
@@ -68,7 +66,7 @@ pub fn offset_at_px(
     line: &str,
     row: &HitRow,
     px_from_padding: i32,
-    measure: impl Fn(&str, i32) -> i32,
+    measure: impl Fn(&str, i32, crate::editor::markdown::SegmentStyle) -> i32,
 ) -> usize {
     if row.image {
         return row.start;
@@ -91,9 +89,13 @@ pub fn offset_at_px(
         if raw == origin_raw {
             continue;
         }
-        let w = measure(
-            &markdown::measure_line(&line[origin_raw..raw], row.view_mode),
+        let w = crate::editor::markdown::segments_width(
+            &crate::editor::markdown::render_line(
+                &line[origin_raw..raw],
+                row.view_mode,
+            ),
             row.font_size,
+            &measure,
         );
         if w > eff {
             break;
@@ -101,9 +103,13 @@ pub fn offset_at_px(
         best = raw;
     }
 
-    let full_w = measure(
-        &markdown::measure_line(&line[origin_raw..safe_end], row.view_mode),
+    let full_w = crate::editor::markdown::segments_width(
+        &crate::editor::markdown::render_line(
+            &line[origin_raw..safe_end],
+            row.view_mode,
+        ),
         row.font_size,
+        &measure,
     );
     if full_w <= eff {
         best = row.end;
@@ -147,27 +153,27 @@ mod tests {
 
     #[test]
     fn plain_offset_before_start() {
-        assert_eq!(offset_at_px("hello", &plain_row(), -5, pix), 0);
+        assert_eq!(offset_at_px("hello", &plain_row(), -5, |t, s, _st| pix(t, s)), 0);
     }
 
     #[test]
     fn plain_offset_at_origin() {
-        assert_eq!(offset_at_px("hello", &plain_row(), 0, pix), 0);
+        assert_eq!(offset_at_px("hello", &plain_row(), 0, |t, s, _st| pix(t, s)), 0);
     }
 
     #[test]
     fn plain_offset_middle() {
-        assert_eq!(offset_at_px("hello", &plain_row(), 25, pix), 2);
+        assert_eq!(offset_at_px("hello", &plain_row(), 25, |t, s, _st| pix(t, s)), 2);
     }
 
     #[test]
     fn plain_offset_at_char_boundary() {
-        assert_eq!(offset_at_px("hello", &plain_row(), 10, pix), 1);
+        assert_eq!(offset_at_px("hello", &plain_row(), 10, |t, s, _st| pix(t, s)), 1);
     }
 
     #[test]
     fn plain_offset_past_end() {
-        assert_eq!(offset_at_px("hello", &plain_row(), 999, pix), 5);
+        assert_eq!(offset_at_px("hello", &plain_row(), 999, |t, s, _st| pix(t, s)), 5);
     }
 
     #[test]
@@ -183,7 +189,7 @@ mod tests {
             ..plain_row()
         };
         // "## Hi" – origin_raw=2, px 15 → eff 15, "H" = 10 ≤ 15, "Hi" = 20 > 15 → offset 3
-        assert_eq!(offset_at_px("## Hi", &row, 15, pix), 3);
+        assert_eq!(offset_at_px("## Hi", &row, 15, |t, s, _st| pix(t, s)), 3);
     }
 
     #[test]
@@ -198,7 +204,7 @@ mod tests {
             ..plain_row()
         };
         // px=30 → eff=10; origin_raw=2; "f" (10) ≤ 10 → best=3; "fo"(20)>10 → 3
-        assert_eq!(offset_at_px("> foo", &row, 30, pix), 3);
+        assert_eq!(offset_at_px("> foo", &row, 30, |t, s, _st| pix(t, s)), 3);
     }
 
     #[test]
@@ -212,7 +218,7 @@ mod tests {
             quote_skip: 2,
             ..plain_row()
         };
-        assert_eq!(offset_at_px("> foo", &row, 5, pix), 2);
+        assert_eq!(offset_at_px("> foo", &row, 5, |t, s, _st| pix(t, s)), 2);
     }
 
     #[test]
@@ -221,7 +227,7 @@ mod tests {
             image: true,
             ..plain_row()
         };
-        assert_eq!(offset_at_px("[[pic.png]]", &row, 50, pix), 0);
+        assert_eq!(offset_at_px("[[pic.png]]", &row, 50, |t, s, _st| pix(t, s)), 0);
     }
 
     #[test]
@@ -234,7 +240,7 @@ mod tests {
             advance: 20,
             ..plain_row()
         };
-        assert_eq!(offset_at_px("abc", &row, 0, pix), 3);
+        assert_eq!(offset_at_px("abc", &row, 0, |t, s, _st| pix(t, s)), 3);
     }
 
     #[test]

@@ -318,6 +318,8 @@ mod tests {
                 name: n.to_string(),
                 path: None,
                 data: None,
+                bold: None,
+                italic: None,
             })
             .collect();
     }

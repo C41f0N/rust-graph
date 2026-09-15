@@ -291,9 +291,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
 
                     if !row.image {
                         let px = m.x as i32 - (ex + config::scaled_size(config::EDITOR_PADDING));
-                        let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s| {
-                            text::measure(&rl, t, s)
-                        });
+                        let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s, st| text::measure_styled(&rl, t, s, st));
                         let off = off as i32;
 
                         let now_ms = (rl.get_time() * 1000.0) as u64;
@@ -369,8 +367,8 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                     if let Some(row) = hit_test::row_at_y(&hits, rel_y) {
                         if !row.image && !row.fm_bar {
                             let px = m.x as i32 - (ex + config::scaled_size(config::EDITOR_PADDING));
-                            let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s| {
-                                text::measure(&rl, t, s)
+                            let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s, st| {
+                                text::measure_styled(&rl, t, s, st)
                             });
                             *cursor_x = off as i32;
                             *cursor_y = row.line as i32;

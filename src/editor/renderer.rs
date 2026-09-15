@@ -605,16 +605,18 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                                     && vis_sel_start == line.start)
                             {
                                 let x_start = content_x
-                                    + text::measure(&*s, 
-                                        &markdown::measure_line(
+                                    + text::segments_measure(
+                                        &*s,
+                                        &markdown::render_line(
                                             &buf[line.line][line.start..vis_sel_start],
                                             format,
                                         ),
                                         line_font_size,
                                     );
                                 let x_end = content_x
-                                    + text::measure(&*s, 
-                                        &markdown::measure_line(
+                                    + text::segments_measure(
+                                        &*s,
+                                        &markdown::render_line(
                                             &buf[line.line][line.start..vis_sel_end],
                                             format,
                                         ),
@@ -639,8 +641,9 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     && *cursor_x <= line.end as i32
                 {
                     let cursor_x_abs = content_x
-                        + text::measure(&*s, 
-                            &markdown::measure_line(
+                        + text::segments_measure(
+                            &*s,
+                            &markdown::render_line(
                                 &buf[line.line][line.start..*cursor_x as usize],
                                 format,
                             ),
@@ -830,7 +833,11 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         config::EDITOR_IMAGE_MAX_HEIGHT,
                     );
                     let _ = (*iw, *ih);
-                } else {
+                } else if !matches!(kind, blocks::LineKind::FenceDelimiter) || editing_line {
+                    // A fence's opening/closing "```" markers are only part of
+                    // the source: view mode hides them (the line still reserves
+                    // its height) so a code block reads as plain code. The
+                    // editing view shows the raw markers.
                     let slice_text = buf[line.line][line.start..line.end].to_string();
 
                     // A heading nested inside a list/quote item (`- ## hi`,
@@ -862,11 +869,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     };
 
                     let fence_color = if is_fence {
-                        if matches!(kind, blocks::LineKind::FenceDelimiter) {
-                            Some(config::EDITOR_FENCE_COLOR)
-                        } else {
-                            Some(config::EDITOR_CODE_COLOR)
-                        }
+                        Some(config::EDITOR_CODE_COLOR)
                     } else {
                         None
                     };
@@ -935,12 +938,17 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                             );
                         }
 
-                        text::draw(&mut *s, 
+                        // Emphasis (bold/italic) renders through the family's
+                        // style atlas so "*word*" shows a real slanted cut and
+                        // "**word**" a real heavy one.
+                        text::draw_styled(
+                            &mut *s,
                             text,
                             seg_x,
                             draw_top + padding / 2,
                             line_font_size,
                             color,
+                            seg.style,
                         );
                         seg_x += seg_w;
                     }

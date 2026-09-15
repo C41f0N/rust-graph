@@ -47,10 +47,21 @@ pub static REQUEST_LOAD_FONT: RwLock<Option<usize>> = RwLock::new(None);
 // One selectable entry in the font list. Entry 0 is always the "(Default)"
 // sentinel meaning "use raylib's built-in font".
 #[derive(Clone)]
+pub struct FontStyleSource {
+    pub path: Option<PathBuf>,
+    pub data: Option<Vec<u8>>,
+}
+
+#[derive(Clone)]
 pub struct FontFamily {
     pub name: String,
     pub path: Option<PathBuf>,
     pub data: Option<Vec<u8>>,
+    // Sibling cuts of the same family for markdown emphasis. Loaded lazily by
+    // main.rs next to the upright roster; None when the family ships no such
+    // file (the rendering then falls back to the upright glyphs).
+    pub bold: Option<FontStyleSource>,
+    pub italic: Option<FontStyleSource>,
 }
 
 pub static FONTS: RwLock<Vec<FontFamily>> = RwLock::new(Vec::new());
@@ -68,27 +79,99 @@ pub fn panel_y() -> i32 {
 // when a Normal face exists. Lower is better.
 type RegularScore = (u8, u16, u16);
 
-fn regular_score(face: &fontdb::FaceInfo) -> RegularScore {
-    let style = match face.style {
+fn style_rank(style: fontdb::Style) -> u8 {
+    match style {
         fontdb::Style::Normal => 0,
         fontdb::Style::Italic => 1,
         fontdb::Style::Oblique => 2,
+    }
+}
+
+fn regular_score(face: &fontdb::FaceInfo) -> RegularScore {
+    (
+        style_rank(face.style),
+        face.weight.0.abs_diff(400),
+        face.stretch.to_number().abs_diff(5),
+    )
+}
+
+// Bold cut: still upright, but as close to weight 700 as the family gets.
+type BoldScore = (u8, u16, u16);
+
+fn bold_score(face: &fontdb::FaceInfo) -> BoldScore {
+    (
+        style_rank(face.style),
+        face.weight.0.abs_diff(700),
+        face.stretch.to_number().abs_diff(5),
+    )
+}
+
+// Italic cut: a slanted face (italic preferred over oblique) at weight 400.
+type ItalicScore = (u8, u16, u16);
+
+fn italic_score(face: &fontdb::FaceInfo) -> ItalicScore {
+    let slant = match face.style {
+        fontdb::Style::Italic => 0,
+        fontdb::Style::Oblique => 1,
+        fontdb::Style::Normal => 2,
     };
-    (style, face.weight.0.abs_diff(400), face.stretch.to_number().abs_diff(5))
+    (
+        slant,
+        face.weight.0.abs_diff(400),
+        face.stretch.to_number().abs_diff(5),
+    )
+}
+
+fn insert_best<S: Ord>(
+    map: &mut std::collections::HashMap<String, (usize, S)>,
+    name: &str,
+    i: usize,
+    score: S,
+) {
+    match map.get(name) {
+        Some(&(_, ref cur)) if *cur <= score => {}
+        _ => {
+            map.insert(name.to_string(), (i, score));
+        }
+    }
+}
+
+fn style_source(face: &fontdb::FaceInfo) -> FontStyleSource {
+    match &face.source {
+        fontdb::Source::File(path) => FontStyleSource {
+            path: Some(path.clone()),
+            data: None,
+        },
+        fontdb::Source::SharedFile(path, _) => FontStyleSource {
+            path: Some(path.clone()),
+            data: None,
+        },
+        fontdb::Source::Binary(bytes) => FontStyleSource {
+            path: None,
+            data: Some(bytes.as_ref().as_ref().to_vec()),
+        },
+    }
 }
 
 // Enumerate the system's installed fonts (fontdb scans the standard font
-// directories on Windows, Linux and macOS). One face per family is kept -
-// whichever sits closest to the regular cut - so the editor never inherits a
-// sibling style (italic/oblique/black) just because it happened to be the
-// first face fontdb enumerated. Families are sorted alphabetically.
+// directories on Windows, Linux and macOS). One entry per family is kept,
+// carrying the upright, bold and italic cuts the family actually ships (a
+// missing cut stays None and rendering falls back to upright glyphs). The
+// upright cut is picked so an Italic/Oblique sibling can never win the slot
+// just because it was the first face fontdb enumerated. Families are sorted
+// alphabetically.
 pub fn build_font_list() {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
     let faces: Vec<fontdb::FaceInfo> = db.faces().cloned().collect();
 
-    let mut best: std::collections::HashMap<String, (usize, RegularScore)> =
+    let mut reg: std::collections::HashMap<String, (usize, RegularScore)> =
         std::collections::HashMap::new();
+    let mut bold: std::collections::HashMap<String, (usize, BoldScore)> =
+        std::collections::HashMap::new();
+    let mut ital: std::collections::HashMap<String, (usize, ItalicScore)> =
+        std::collections::HashMap::new();
+
     for (i, face) in faces.iter().enumerate() {
         let Some((name, _)) = face.families.first() else {
             continue;
@@ -97,40 +180,43 @@ pub fn build_font_list() {
         if name.is_empty() {
             continue;
         }
-        let score = regular_score(face);
-        match best.get(name) {
-            Some(&(_, current)) if current <= score => continue,
-            _ => {
-                best.insert(name.to_string(), (i, score));
-            }
-        }
+        insert_best(&mut reg, name, i, regular_score(face));
+        insert_best(&mut bold, name, i, bold_score(face));
+        insert_best(&mut ital, name, i, italic_score(face));
     }
 
-    let mut indices: Vec<usize> = best.into_values().map(|(i, _)| i).collect();
-    indices.sort_by(|&a, &b| {
-        let (na, _) = faces[a].families.first().unwrap();
-        let (nb, _) = faces[b].families.first().unwrap();
-        na.to_lowercase().cmp(&nb.to_lowercase())
-    });
+    let mut names: Vec<&str> = reg.keys().map(|n| n.as_str()).collect();
+    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
 
     let mut families: Vec<FontFamily> = vec![FontFamily {
         name: "(Default)".to_string(),
         path: None,
         data: None,
+        bold: None,
+        italic: None,
     }];
 
-    for i in indices {
-        let face = &faces[i];
-        let (name, _) = face.families.first().unwrap();
-        let (path, data) = match &face.source {
-            fontdb::Source::File(path) => (Some(path.clone()), None),
-            fontdb::Source::SharedFile(path, _) => (Some(path.clone()), None),
-            fontdb::Source::Binary(bytes) => (None, Some(bytes.as_ref().as_ref().to_vec())),
-        };
+    for name in names {
+        let (fi, _) = reg[name];
+        let src = style_source(&faces[fi]);
+        // A family with no real bold/italic cut (e.g. Fira Code) scores its
+        // regular face for those slots; drop the duplicate so we don't raster
+        // the same file three times. Rendering then falls back to upright.
+        let distinct = |s: &FontStyleSource| s.path != src.path || s.data != src.data;
+        let bold_src = bold
+            .get(name)
+            .map(|(j, _)| style_source(&faces[*j]))
+            .filter(&distinct);
+        let italic_src = ital
+            .get(name)
+            .map(|(j, _)| style_source(&faces[*j]))
+            .filter(&distinct);
         families.push(FontFamily {
-            name: name.clone(),
-            path,
-            data,
+            name: name.to_string(),
+            path: src.path.clone(),
+            data: src.data.clone(),
+            bold: bold_src,
+            italic: italic_src,
         });
     }
 
