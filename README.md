@@ -13,11 +13,11 @@ notes are still exactly what they were before you started.
      markdown editor with tabs, and one of the smaller test_graphs to show
      sub-graph structure. -->
 
-![Graph view](screenshots/graph.png)
+![Graph view](screenshots/graph.jpg)
 
-![Editor view](screenshots/editor.png)
+![Editor view](screenshots/editor.jpg)
 
-![Sub-graph navigation](screenshots/subgraph.png)
+![Sub-graph navigation](screenshots/subgraph.jpg)
 
 ## Features
 
