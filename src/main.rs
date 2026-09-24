@@ -66,8 +66,9 @@ fn main() {
     rl.set_target_fps(60);
 
     // Capture raylib's built-in font so node labels can be drawn at subpixel
-    // positions even before the user picks a custom font in the settings.
-    editor::text::capture_default_font(rl.get_font_default());
+    // positions even before the user picks a custom font in the settings, and
+    // compile the SDF field-text shader used by every loaded font.
+    editor::text::init_text(&mut rl, &thread);
 
     // Store the directory and generate nodes from it
     *DIR_PATH.write().unwrap() = dir_path.clone();
@@ -278,21 +279,24 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
                 if idx == 0 {
                     editor::text::clear_active_font();
                 } else {
-                    // Load the family's upright, bold and italic cuts so
-                    // markdown emphasis renders with real glyph shapes. Any
-                    // cut the family doesn't ship stays empty and the editor
-                    // falls back to the upright atlas.
-                    let mut load = |src: &Option<graph::settings::FontStyleSource>| {
+                    // Build an SDF field-font for the family's upright, bold
+                    // and italic cuts so markdown emphasis renders with real
+                    // glyph shapes. Any cut the family doesn't ship stays empty
+                    // and the editor falls back to the upright font. Rasterizing
+                    // the fields takes a moment on the first pick of a family.
+                    let load = |src: &Option<graph::settings::FontStyleSource>| {
                         if let Some(src) = src {
                             if let Some(path) = &src.path {
-                                editor::text::load_font_set(&mut rl, &thread, &path.to_string_lossy())
+                                std::fs::read(path)
+                                    .ok()
+                                    .and_then(|b| editor::text::load_sdf_font(&b))
                             } else if let Some(data) = &src.data {
-                                editor::text::load_font_set_from_memory(&mut rl, &thread, ".ttf", data)
+                                editor::text::load_sdf_font(data)
                             } else {
-                                Vec::new()
+                                None
                             }
                         } else {
-                            Vec::new()
+                            None
                         }
                     };
                     let regular = load(&Some(graph::settings::FontStyleSource {
