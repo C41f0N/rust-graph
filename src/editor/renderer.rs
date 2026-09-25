@@ -513,6 +513,11 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         let mut cursor_line_top: Option<i32> = None;
         let mut cursor_line_bottom: Option<i32> = None;
 
+        // Pixel width of one indent-guide level ("    ", a tab width): guides
+        // sit at content-x0 + padding + level * step_px.
+        let indent_step_px =
+            text::measure(d, "    ", config::scaled_size(config::EDITOR_FONT_SIZE));
+
         // Clip all content drawing to the area below the heading bar and
         // translate it up by the scroll offset.
         d.draw_scissor_mode(content_x0, content_y, content_w, editor_height - header_h - crate::editor::tabs::TABS_H, |mut s| {
@@ -599,12 +604,32 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 let content_x = content_x0 + padding + line.indent;
                 let draw_top = content_y + line_y - scroll;
 
+                // Indent guides: one faint 1px vertical per indent level,
+                // spanning the visual line's band. Consecutive lines sharing a
+                // level draw one continuous guide, and any line dedenting back
+                // below a level ends it. Skipped inside code fences (raw
+                // source) and for shallow indentation (fewer than a tab).
+                if !is_fence {
+                    let cols = markdown::content_indent(&buf[line.line]).1;
+                    for lvl in markdown::indent_guide_levels(cols, 4) {
+                        let gx = content_x0 + padding + indent_step_px * lvl as i32;
+                        s.draw_line(
+                            gx,
+                            draw_top,
+                            gx,
+                            draw_top + line_font_size,
+                            config::EDITOR_INDENT_GUIDE,
+                        );
+                    }
+                }
+
                 // Fold caret for a source line that starts a deeper-indented
-                // block: a small triangle just left of the head line's text,
-                // pointing right while the block is open (click to fold) and
-                // down once folded (click to unfold). Drawn on the first
-                // visual line of the head, as primitives so it never depends
-                // on the font atlas.
+                // block: a small chevron just left of the head line's text.
+                // Following editor convention this app rotates as the state
+                // changes — pointing right while the block is collapsed
+                // (click to expand) and down once a fold exists to close
+                // (click to fold). Drawn on the first visual line of the
+                // head, as primitives so it never depends on the font atlas.
                 if first_vl_of_line && folds.iter().any(|&(head, _)| head == line.line) {
                     let cw = 13;
                     let ch = 13;
@@ -627,28 +652,28 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     };
                     let t = 2.0;
                     if folded_heads.contains(&line.line) {
-                        // "v": click to expand
-                        let a = Vector2::new((cx + 3) as f32, (cy + 3) as f32);
-                        let b = Vector2::new((cx + cw / 2) as f32, (cy + ch - 3) as f32);
-                        let c = Vector2::new((cx + cw - 3) as f32, (cy + 3) as f32);
-                        s.draw_line_ex(a, b, t, ccolor);
-                        s.draw_line_ex(b, c, t, ccolor);
-                    } else {
-                        // ">": click to fold
+                        // ">": collapsed, click to expand.
                         let a = Vector2::new((cx + 3) as f32, (cy + 3) as f32);
                         let mid = Vector2::new((cx + cw / 2) as f32, (cy + ch / 2) as f32);
                         let c = Vector2::new((cx + 3) as f32, (cy + ch - 3) as f32);
                         s.draw_line_ex(a, mid, t, ccolor);
                         s.draw_line_ex(mid, c, t, ccolor);
+                    } else {
+                        // "v": open, click to fold.
+                        let a = Vector2::new((cx + 3) as f32, (cy + 3) as f32);
+                        let b = Vector2::new((cx + cw / 2) as f32, (cy + ch - 3) as f32);
+                        let c = Vector2::new((cx + cw - 3) as f32, (cy + 3) as f32);
+                        s.draw_line_ex(a, b, t, ccolor);
+                        s.draw_line_ex(b, c, t, ccolor);
                     }
                     s.draw_rectangle_rounded(
                         Rectangle::new(cx as f32, cy as f32, cw as f32, ch as f32),
                         0.5,
                         4,
                         if over {
-                            Color::new(180, 200, 235, 55)
+                            Color::new(180, 200, 235, 80)
                         } else {
-                            Color::new(150, 165, 200, 34)
+                            Color::new(150, 165, 200, 55)
                         },
                     );
                     fold_markers.push((cx, cy, cw, ch, line.line));

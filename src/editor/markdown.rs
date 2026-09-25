@@ -524,6 +524,18 @@ pub fn content_indent(line: &str) -> (usize, u32) {
     (bytes, cols)
 }
 
+// Indent-guide levels for a line with `cols` indentation columns: one level
+// per `step` columns (step = 4, a tab width, matching list depth). A line
+// indented 4 cols yields level 1 (one guide), 8 cols yields 1 and 2, and so
+// on; 0-3 cols yield none. Consecutive lines sharing a level draw one
+// continuous vertical guide.
+pub fn indent_guide_levels(cols: u32, step: u32) -> Vec<u32> {
+    if step == 0 {
+        return Vec::new();
+    }
+    (1..=cols / step).collect()
+}
+
 // The on-screen text for a list marker: "- "/"+ " become "* " (indentation
 // preserved), "N. " stays as-is. Returns (display_text, raw_marker_len).
 // The display text always measures identical to the raw marker, so cursor
@@ -801,6 +813,21 @@ mod tests {
         assert_eq!(content_indent("    four and trailing"), (4, 4));
         // Indentation stops at the first content character.
         assert_eq!(content_indent("  - list marker"), (2, 2));
+    }
+
+    #[test]
+    fn indent_guide_levels_follow_tab_width() {
+        assert_eq!(indent_guide_levels(0, 4), vec![]);
+        assert_eq!(indent_guide_levels(1, 4), vec![]);
+        assert_eq!(indent_guide_levels(3, 4), vec![]);
+        assert_eq!(indent_guide_levels(4, 4), vec![1]);
+        assert_eq!(indent_guide_levels(8, 4), vec![1, 2]);
+        // 11 columns: levels 1 and 2 only (multiple of 4, no rounding).
+        assert_eq!(indent_guide_levels(11, 4), vec![1, 2]);
+        assert_eq!(indent_guide_levels(16, 4), vec![1, 2, 3, 4]);
+        // Custom step, and a step of zero can never divide.
+        assert_eq!(indent_guide_levels(6, 3), vec![1, 2]);
+        assert_eq!(indent_guide_levels(8, 0), vec![]);
     }
 
     #[test]

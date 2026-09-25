@@ -81,6 +81,9 @@ pub const EDITOR_CODE_BG: Color = Color::new(50, 50, 60, 220);
 pub const EDITOR_BLOCKQUOTE_COLOR: Color = Color::new(170, 190, 220, 255);
 pub const EDITOR_BLOCKQUOTE_BAR: Color = Color::new(120, 150, 210, 255);
 pub const EDITOR_HR_COLOR: Color = Color::new(120, 120, 120, 255);
+// Guides tuned for the dark editor background: a soft blue that reads
+// clearly on black without shouting over the text.
+pub const EDITOR_INDENT_GUIDE: Color = Color::new(150, 175, 220, 75);
 pub const EDITOR_LIST_MARKER_COLOR: Color = Color::new(160, 160, 220, 255);
 
 pub const AUTOCOMPLETE_MAX_VISIBLE: usize = 8;
