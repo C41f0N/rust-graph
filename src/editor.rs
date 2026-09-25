@@ -31,6 +31,13 @@ pub static NAV_MODE: AtomicBool = AtomicBool::new(false);
 // Consumed once by main.
 pub static OPEN_SUBGRAPH_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+// Inline rename of the active note: clicking the header title starts it, the
+// input handler routes keystrokes into TITLE_RENAME_DRAFT instead of the
+// buffer, and Enter commits the rename (draft cleared). Renderer draws the
+// draft with an editing caret while ACTIVE is set.
+pub static TITLE_RENAME_ACTIVE: AtomicBool = AtomicBool::new(false);
+pub static TITLE_RENAME_DRAFT: RwLock<String> = RwLock::new(String::new());
+
 // The buffer has unsaved edits since the last save.
 pub static DIRTY: AtomicBool = AtomicBool::new(false);
 

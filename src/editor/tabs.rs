@@ -287,6 +287,56 @@ pub fn deactivate_current() {
     }
 }
 
+// Rename the active tab's note: flush any unsaved edits, rename the .md file
+// (and companion sub-graph folder) through processing::rename_node, which also
+// rewrites every [[old]] reference elsewhere, then rebind the tab to the new
+// path. Returns false when the name is empty/unchanged or the rename failed.
+pub fn rename_active(new_name: &str) -> bool {
+    let Some(path) = active_path() else {
+        return false;
+    };
+    let old_stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let clean = new_name.trim().trim_end_matches(".md").to_string();
+    if clean.is_empty() || clean == old_stem {
+        return false;
+    }
+
+    // The node index is found by path so the editor never has to know how the
+    // graph bookkeeps; missing node (e.g. orphan tab) just bails.
+    let idx = {
+        let nodes = crate::graph::processing::NODES.read().unwrap();
+        nodes.iter().position(|n| n.path == path)
+    };
+    let Some(idx) = idx else {
+        return false;
+    };
+
+    // Flush in-flight edits to the old path before the file moves under it.
+    if crate::editor::DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
+        buffer::save_to_file(&path);
+    }
+    if !crate::graph::processing::rename_node(idx, &clean) {
+        return false;
+    }
+
+    let new_path = path.with_file_name(format!("{clean}.md"));
+    {
+        let mut tabs = TABS.write().unwrap();
+        if let Some(p) = *ACTIVE.read().unwrap() {
+            if let Some(t) = tabs.get_mut(p) {
+                t.name = clean.clone();
+                t.path = new_path;
+            }
+        }
+    }
+    crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::editor::LAST_EDIT_MILLIS.store(0, std::sync::atomic::Ordering::Relaxed);
+    true
+}
+
 // Create a new note file (unique name) and open it as the active tab. Used by
 // the placeholder screen; mirrors the graph's add-node flow so the new note
 // also appears as a graph node.
@@ -560,5 +610,46 @@ mod tests {
         assert!(close(0));
         assert_eq!(*ACTIVE.read().unwrap(), None);
         assert!(!has_any());
+    }
+
+    #[test]
+    fn rename_active_updates_tab_node_and_file() {
+        reset();
+        let root = std::env::temp_dir().join("rg_tab_rename_test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        crate::graph::processing::DIR_PATH
+            .write()
+            .unwrap()
+            .clone_from(&root);
+
+        let idx = crate::graph::processing::add_node(&root, "alpha");
+        let (path, name) = {
+            let nodes = crate::graph::processing::NODES.read().unwrap();
+            let n = &nodes[idx];
+            (n.path.clone(), n.name.clone())
+        };
+        crate::editor::tabs::open(&path, &name);
+        assert_eq!(active_name().as_deref(), Some("alpha"));
+
+        assert!(rename_active("beta"));
+        {
+            let tabs = TABS.read().unwrap();
+            let t = &tabs[0];
+            assert_eq!(t.name, "beta");
+            assert_eq!(t.path, root.join("beta.md"));
+        }
+        assert!(root.join("beta.md").exists());
+        assert!(!root.join("alpha.md").exists());
+        let nodes = crate::graph::processing::NODES.read().unwrap();
+        let n = &nodes[idx];
+        assert_eq!(n.name, "beta");
+        assert_eq!(n.path, root.join("beta.md"));
+        drop(nodes);
+
+        assert!(!rename_active(" "), "blank name rejected");
+        assert!(!rename_active("beta"), "unchanged name rejected");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

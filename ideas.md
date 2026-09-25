@@ -1,0 +1,5 @@
+- tree view
+- pdf rendering
+- whiteboards attached to each node
+- fix segmentation fault
+- fix the loading block after id 5 in the start

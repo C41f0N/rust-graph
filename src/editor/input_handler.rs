@@ -159,6 +159,38 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         return;
     }
 
+    // ------------------------------------------------------------
+    // Inline title rename: while active, every keystroke edits the draft
+    // instead of the note. Enter commits, Escape cancels. Runs before the
+    // buffer/caret handlers so typing never leaks into the document.
+    // ------------------------------------------------------------
+    if crate::editor::TITLE_RENAME_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        while let Some(ch) = rl.get_char_pressed() {
+            let c = char::from_u32(ch as u32).unwrap();
+            if !c.is_control() {
+                crate::editor::TITLE_RENAME_DRAFT.write().unwrap().push(c);
+            }
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_BACKSPACE)
+        {
+            crate::editor::TITLE_RENAME_DRAFT.write().unwrap().pop();
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+            || rl.is_key_pressed(KeyboardKey::KEY_KP_ENTER)
+        {
+            let name = crate::editor::TITLE_RENAME_DRAFT.read().unwrap().clone();
+            crate::editor::TITLE_RENAME_DRAFT.write().unwrap().clear();
+            crate::editor::TITLE_RENAME_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+            crate::editor::tabs::rename_active(&name);
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            crate::editor::TITLE_RENAME_DRAFT.write().unwrap().clear();
+            crate::editor::TITLE_RENAME_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        return;
+    }
+
     let visual_lines = buffer::VISUAL_LINES.lock().unwrap();
 
     // ------------------------------------------------------------

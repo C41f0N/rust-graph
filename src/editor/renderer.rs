@@ -184,16 +184,68 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             Color::new(30, 30, 35, 200),
         );
 
-        // Note name on the left
+        // Note name on the left. Click it to rename the open file: while renaming
+        // the draft is drawn with an editing caret, otherwise a hover underline
+        // hints at the affordance.
+        let renaming = editor::TITLE_RENAME_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
         let note_name = crate::editor::tabs::active_name().unwrap_or_default();
+        let shown_name = if renaming {
+            editor::TITLE_RENAME_DRAFT.read().unwrap().clone()
+        } else {
+            note_name.clone()
+        };
         let name_y = editor_y + (header_h - config::EDITOR_FONT_SIZE) / 2;
-        text::draw(d, 
-            &note_name,
+        let name_color = if renaming {
+            config::EDITOR_LINK_COLOR
+        } else {
+            config::EDITOR_FONT_COLOR
+        };
+        text::draw(
+            d,
+            &shown_name,
             editor_x + padding,
             name_y,
             config::EDITOR_FONT_SIZE,
-            config::EDITOR_FONT_COLOR,
+            name_color,
         );
+        let name_w = text::measure(&d, &shown_name, config::EDITOR_FONT_SIZE);
+        let name_hover = {
+            let m = d.get_mouse_position();
+            m.y as i32 >= editor_y
+                && m.y as i32 <= editor_y + header_h
+                && m.x as i32 >= editor_x + padding - 2
+                && m.x as i32 <= editor_x + padding + name_w + 2
+        };
+        if renaming {
+            let blink = ((d.get_time() * 2.0) as i32) % 2 == 0;
+            if blink {
+                d.draw_rectangle(
+                    editor_x + padding + name_w + 3,
+                    name_y + 3,
+                    2,
+                    config::EDITOR_FONT_SIZE - 5,
+                    Color::WHITE,
+                );
+            }
+        } else if name_hover {
+            d.draw_line(
+                editor_x + padding,
+                name_y + config::EDITOR_FONT_SIZE + 2,
+                editor_x + padding + name_w,
+                name_y + config::EDITOR_FONT_SIZE + 2,
+                Color::new(150, 180, 240, 220),
+            );
+            if d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+                editor::TITLE_RENAME_DRAFT
+                    .write()
+                    .unwrap()
+                    .clone_from(&note_name);
+                editor::TITLE_RENAME_ACTIVE.store(
+                    true,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+        }
 
         // Close X button on the right
         let x_label = "X";

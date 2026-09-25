@@ -782,9 +782,10 @@ pub fn add_node(dir: &Path, filename: &str) -> usize {
     let stem = if stem.is_empty() { "untitled" } else { stem };
     let filename = filesystem::unique_filename(dir, stem);
     let file_path = dir.join(&filename);
-    let title = filename.trim_end_matches(".md");
 
-    filesystem::create_file(&file_path, &format!("# {}\n", title));
+    // New notes start empty: the file name is the node's identity, not a
+    // "# Title" first line the user then has to delete.
+    filesystem::create_file(&file_path, "");
 
     let mut nodes = NODES.write().unwrap();
 
