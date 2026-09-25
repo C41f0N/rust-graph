@@ -397,6 +397,37 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         return;
     }
 
+    // Alt + left arrow leaves the current sub-graph for its parent, mirroring
+    // the Alt + left-click breadcrumb shortcut below for keyboard users. At
+    // the root the stack is empty, so this is a no-op.
+    if (rl.is_key_down(KeyboardKey::KEY_LEFT_ALT) || rl.is_key_down(KeyboardKey::KEY_RIGHT_ALT))
+        && rl.is_key_pressed(KeyboardKey::KEY_LEFT)
+    {
+        let parent = {
+            let stack = NAV_STACK.read().unwrap();
+            stack.len().checked_sub(1)
+        };
+        if let Some(level) = parent {
+            drop(nodes);
+            drop(dragging_node);
+            drop(hover_node);
+            drop(selected_node);
+            drop(delete_pending);
+            drop(editing_node);
+            drop(adding_note);
+            drop(adding_name);
+            drop(context_node);
+            drop(context_pos);
+            drop(renaming);
+            drop(rename_name);
+            drop(dir_path);
+            drop(context_empty);
+            navigate_to_level(level);
+            generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+        }
+        return;
+    }
+
     // ------------------------------------------------------------
     // Mouse click handling
     // ------------------------------------------------------------

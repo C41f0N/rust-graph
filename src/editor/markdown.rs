@@ -14,8 +14,8 @@ pub struct Segment {
 }
 
 // Split a line into styled segments. Markers: [[wikilink]] (Link) and
-// `inline code` (Code) keep their markers; emphasis (**bold**, __bold__,
-// *italic*, _italic_) drops its markers into Bold/Italic segments so the
+// `inline code` (Code) keep their markers; emphasis (*bold*, **bold**,
+// __bold__, _italic_) drops its markers into Bold/Italic segments so the
 // content can be drawn with whichever font is available. Unclosed markers
 // stay plain. Nested markers inside a link or code span are not parsed.
 pub fn line_segments(line: &str) -> Vec<Segment> {
@@ -172,7 +172,7 @@ fn find_closer_single(bytes: &[u8], from: usize, c: u8) -> Option<usize> {
     None
 }
 
-// "**" or "__" -> (2, Bold), "*" or "_" -> (1, Italic).
+// "*" and "**" both -> Bold; "_" -> (1, Italic), "__" -> (2, Bold).
 fn emphasis_marker(bytes: &[u8], i: usize) -> Option<(usize, SegmentStyle)> {
     let c = bytes[i];
     if c != b'*' && c != b'_' {
@@ -180,6 +180,8 @@ fn emphasis_marker(bytes: &[u8], i: usize) -> Option<(usize, SegmentStyle)> {
     }
     if i + 1 < bytes.len() && bytes[i + 1] == c {
         Some((2, SegmentStyle::Bold))
+    } else if c == b'*' {
+        Some((1, SegmentStyle::Bold))
     } else {
         Some((1, SegmentStyle::Italic))
     }
@@ -731,7 +733,7 @@ mod tests {
 
     #[test]
     fn bold_italic_emphasis() {
-        let segs = line_segments("**bold** and *italic* mix");
+        let segs = line_segments("**bold** and _italic_ mix");
         assert_eq!(
             segs.iter().map(|s| s.style).collect::<Vec<_>>(),
             vec![
@@ -781,7 +783,7 @@ mod tests {
         assert_eq!(list_info("12) item"), Some(4));
         assert_eq!(list_info("  - nested"), Some(4));
         assert_eq!(list_info("-"), None);
-        assert_eq!(list_info("*item* (italic, not a list)"), None);
+        assert_eq!(list_info("*item* (emphasis, not a list)"), None);
         assert_eq!(list_info("---is a rule"), None);
         assert_eq!(list_info("plain"), None);
         assert_eq!(list_info("1.item no space"), None);

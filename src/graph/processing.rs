@@ -683,6 +683,94 @@ pub fn rebuild_edges() {
     }
 }
 
+// Non-note targets that a [[link]] may name but that can never be opened as a
+// note: image and media files (the editor renders those inline or as
+// thumbnails). Everything else with an extension still resolves as a note.
+fn is_asset_name(target: &str) -> bool {
+    let ext = target
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "png" | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "svg"
+            | "bmp"
+            | "ico"
+            | "mp3"
+            | "mp4"
+            | "webm"
+            | "mov"
+            | "avi"
+            | "ogg"
+            | "wav"
+            | "pdf"
+    )
+}
+
+// Resolve a [[target]] written in a note body to the file it points at, for
+// the editor's click-to-open. The resolution order mirrors both worlds: the
+// current graph folder's nodes first (exactly like `rebuild_edges`), then
+// path-like targets (e.g. [[sub/name]]) relative to the project root, then a
+// bare-stem match anywhere under the root (the Ctrl+K palette's scope). Image
+// and other non-note targets never resolve. Returns (path, note name).
+pub fn resolve_wikilink(target: &str) -> Option<(PathBuf, String)> {
+    let t = target.trim().trim_end_matches(".md");
+    if t.is_empty() || is_asset_name(t) {
+        return None;
+    }
+
+    // Folder-first: the note the graph already knows in the current directory,
+    // matching `rebuild_edges`'s stem/filename map.
+    {
+        let nodes = NODES.read().unwrap();
+        for node in nodes.iter() {
+            let stem = node.file_name.trim_end_matches(".md");
+            if node.file_name == t || stem == t {
+                return Some((node.path.clone(), node.name.clone()));
+            }
+        }
+    }
+
+    let root = project_root();
+
+    // Path-like targets: [[sub/deep/name]] under the project root.
+    if t.contains('/') || t.contains('\\') {
+        let cand = root.join(t);
+        let cand = if cand.extension().is_none() {
+            cand.with_extension("md")
+        } else {
+            cand
+        };
+        if cand.is_file() {
+            let name = cand
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            return Some((cand, name));
+        }
+        return None;
+    }
+
+    // Bare-stem fallback anywhere in the project tree (deterministic: the
+    // tree scan is path-sorted, so a duplicate stem wins on lexicographic
+    // order).
+    for p in crate::filesystem::scan_tree(&root) {
+        let name = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name == t {
+            return Some((p, name));
+        }
+    }
+
+    None
+}
+
 pub fn add_node(dir: &Path, filename: &str) -> usize {
     let mut rng = rand::rng();
 
@@ -1373,6 +1461,51 @@ mod tests {
             assert_eq!(b_rad, NODE_BASE_RADIUS);
             assert!(c_rad > b_rad);
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_wikilink_folder_first_then_tree() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_resolve_link_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::create_dir(&dir.join("sub"));
+        filesystem::write_file(&dir.join("alpha.md"), "# Alpha\n");
+        filesystem::write_file(&dir.join("sub").join("beta.md"), "# Beta\n");
+        filesystem::write_file(&dir.join("sub").join("also.md"), "# Also\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        // Folder-first bare stem (matches the graph's own node).
+        let (p, name) = resolve_wikilink("alpha").unwrap();
+        assert_eq!(p, dir.join("alpha.md"));
+        assert_eq!(name, "alpha");
+
+        // .md spelling resolves identically.
+        let (p, _) = resolve_wikilink("alpha.md").unwrap();
+        assert_eq!(p, dir.join("alpha.md"));
+
+        // Path-like target under the project root, even though the node from
+        // the current folder is absent.
+        let (p, name) = resolve_wikilink("sub/beta").unwrap();
+        assert_eq!(p, dir.join("sub").join("beta.md"));
+        assert_eq!(name, "beta");
+
+        // Bare stem fallback into the tree.
+        let (p, name) = resolve_wikilink("also").unwrap();
+        assert_eq!(p, dir.join("sub").join("also.md"));
+        assert_eq!(name, "also");
+
+        // Assets and missing targets never resolve.
+        assert!(resolve_wikilink("beta.png").is_none());
+        assert!(resolve_wikilink("nosuch").is_none());
+        assert!(resolve_wikilink("sub/missing").is_none());
+        assert!(resolve_wikilink("").is_none());
+        assert!(resolve_wikilink("   ").is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

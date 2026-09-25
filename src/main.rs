@@ -6,6 +6,7 @@ mod config;
 mod editor;
 mod filesystem;
 mod frontmatter;
+mod global_palette;
 mod graph;
 mod sidebar;
 
@@ -116,13 +117,23 @@ fn main() {
         // Capture editor state BEFORE input handling
         let was_open = editor_was_open;
 
-        // Read user input. A click landing on the view-switcher bar consumes
+        // Read user input. The Ctrl+K node palette runs first: when it is
+        // open it is modal and its keystrokes must never reach the sidebar or
+        // the active view. A click landing on the view-switcher bar consumes
         // the frame: nothing behind it (editor caret/buttons, graph camera,
         // node drag) gets that press.
+        let palette_consumed = global_palette::handle_input(&mut rl, &mut editor_open);
         let bar_consumed = sidebar::handle_input(&mut rl, &mut editor_open);
-        if !bar_consumed {
+        if !bar_consumed && !palette_consumed {
             if editor_open {
                 editor::input_handler::handle_input(&mut rl);
+            }
+
+            // A click on a rendered [[wikilink]] only queued the target while
+            // the editor input handler held the buffer lock; the tab actually
+            // opens here, once the lock is released.
+            if let Some((path, name)) = editor::OPEN_NOTE_REQUESTED.write().unwrap().take() {
+                editor::tabs::open(&path, &name);
             }
 
             // Close button in the editor heading bar
@@ -396,6 +407,9 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
 
         // The view-switcher bar is drawn last so it stays on top of both views.
         sidebar::draw(&mut d, editor_open);
+
+        // The Ctrl+K palette overlays everything, dimming both views.
+        global_palette::draw(&mut d);
     }
 
     // Persist the current settings (window size, zoom, font, force values) to

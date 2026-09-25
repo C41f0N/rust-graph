@@ -402,6 +402,34 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
                     }
                 }
 
+                // A click on a rendered [[wikilink]] opens the note it names.
+                // Only the target is recorded here (via OPEN_NOTE_REQUESTED):
+                // the input handler holds BUFFER's write lock for its whole
+                // run, so main opens the tab after it returns. This wins over
+                // caret placement on formatted lines and never starts a drag.
+                {
+                    let hits = hit_test::LINK_HITS.lock().unwrap();
+                    let clicked = hits.iter().find(|hit| {
+                        m.x as i32 >= hit.x
+                            && m.x as i32 <= hit.x + hit.w
+                            && m.y as i32 >= hit.y
+                            && m.y as i32 <= hit.y + hit.h
+                    });
+                    if let Some(hit) = clicked {
+                        let target = hit.target.clone();
+                        drop(hits);
+                        if let Some((path, name)) =
+                            crate::graph::processing::resolve_wikilink(&target)
+                        {
+                            *crate::editor::OPEN_NOTE_REQUESTED.write().unwrap() =
+                                Some((path, name));
+                            hit_test::MOUSE_DRAGGING.store(false, std::sync::atomic::Ordering::Relaxed);
+                            hit_test::reset_click_state();
+                            return;
+                        }
+                    }
+                }
+
                 let scroll = *buffer::SCROLL_Y.read().unwrap();
                 if std::env::var("FOLD_DEBUG").is_ok() {
                     eprintln!(

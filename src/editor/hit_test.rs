@@ -41,6 +41,21 @@ pub static FRONTMATTER_PILL: std::sync::Mutex<Option<(i32, i32, i32, i32)>> =
 pub static FOLD_MARKERS: std::sync::Mutex<Vec<(i32, i32, i32, i32, usize)>> =
     std::sync::Mutex::new(Vec::new());
 
+// Rendered [[wikilink]] on a formatted line plus the raw target it names,
+// published by the renderer each frame. A click inside the rect opens the
+// target note (resolved by graph::processing::resolve_wikilink), and the
+// renderer underlines/backs the rect under the cursor on hover.
+#[derive(Debug, Clone)]
+pub struct LinkHit {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub target: String,
+}
+
+pub static LINK_HITS: std::sync::Mutex<Vec<LinkHit>> = std::sync::Mutex::new(Vec::new());
+
 // -----------------------------------------------------------------------
 // Mouse click state (used by the input handler)
 // -----------------------------------------------------------------------

@@ -395,6 +395,9 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         let folded_heads: std::collections::HashSet<usize> =
             crate::editor::FOLDED_LINES.read().unwrap().iter().copied().collect();
         let mut fold_markers = Vec::new();
+        // Screen rects of rendered [[wikilinks]] this frame, published to the
+        // input handler (click = open) and used here for hover highlighting.
+        let mut link_hits: Vec<hit_test::LinkHit> = Vec::new();
 
         // Layout every visual line up front. This single layout is the source
         // of truth for the draw loop, the content height (which bounds the
@@ -465,6 +468,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         let mut cleared_markers = hit_test::FOLD_MARKERS.lock().unwrap();
         cleared_markers.clear();
         drop(cleared_markers);
+        hit_test::LINK_HITS.lock().unwrap().clear();
 
         // Clamp the scroll offset to the real content height.
         let viewport_h = (editor_height - header_h - crate::editor::tabs::TABS_H - padding).max(1);
@@ -1139,6 +1143,46 @@ guide_runs.retain(|r| {
                         };
                         let seg_w = text::measure(&*s, text, line_font_size);
 
+                        // Rendered [[wikilinks]] are interactive: record their
+                        // screen rect for the input handler and, when the mouse
+                        // is over one, back and underline it so it reads as a
+                        // clickable affordance.
+                        if seg.style == markdown::SegmentStyle::Link {
+                            let hit = hit_test::LinkHit {
+                                x: seg_x,
+                                y: draw_top + padding / 2,
+                                w: seg_w,
+                                h: line_font_size,
+                                target: seg
+                                    .text
+                                    .trim_start_matches("[[")
+                                    .trim_end_matches("]]")
+                                    .to_string(),
+                            };
+                            let m = s.get_mouse_position();
+                            if m.x as i32 >= hit.x
+                                && m.x as i32 <= hit.x + hit.w
+                                && m.y as i32 >= hit.y
+                                && m.y as i32 <= hit.y + hit.h
+                            {
+                                s.draw_rectangle(
+                                    hit.x,
+                                    hit.y,
+                                    hit.w,
+                                    hit.h,
+                                    Color::new(76, 128, 204, 70),
+                                );
+                                s.draw_line(
+                                    hit.x,
+                                    hit.y + hit.h,
+                                    hit.x + hit.w,
+                                    hit.y + hit.h,
+                                    config::EDITOR_LINK_COLOR,
+                                );
+                            }
+                            link_hits.push(hit);
+                        }
+
                         if seg.style == markdown::SegmentStyle::Code {
                             s.draw_rectangle(
                                 seg_x,
@@ -1180,6 +1224,10 @@ guide_runs.retain(|r| {
 
         // Publish this frame's fold carets for the input handler.
         *hit_test::FOLD_MARKERS.lock().unwrap() = fold_markers;
+
+        // Publish this frame's rendered [[wikilink]] rects for the input
+        // handler (a click inside one opens the target note).
+        *hit_test::LINK_HITS.lock().unwrap() = link_hits;
 
         // Diagnose fold rendering/hit-testing. Run with FOLD_DEBUG=1, fold a
         // block closed then open it again, and paste the printed lines:

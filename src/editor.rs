@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::RwLock;
 
@@ -5,6 +6,12 @@ use crate::config;
 
 // Set by the X close button to request the editor close.
 pub static CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+// Set by the input handler when a rendered [[wikilink]] is clicked. It only
+// records path+name and returns: the input handler holds BUFFER's write lock
+// for its whole run, so the tab is actually opened by main after it returns
+// (same deferred-consumer pattern as CLOSE_REQUESTED).
+pub static OPEN_NOTE_REQUESTED: RwLock<Option<(PathBuf, String)>> = RwLock::new(None);
 
 // Fullscreen editor: the panel covers the whole window and its background is
 // solid. Toggled by the heading-bar button (or the `q` key in navigation

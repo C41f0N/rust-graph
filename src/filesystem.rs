@@ -19,6 +19,41 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+// Recursive whole-tree walk: every `.md` file under `root`, hidden (`.*`)
+// directories skipped so the scan never drags in `.git` and the like. Files
+// are sorted by full path, which groups a note right after any parent folder
+// hierarchy it belongs to. This is the Ctrl+K palette's note index.
+pub fn scan_tree(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(root) {
+        let mut dirs = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let hidden = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().starts_with('.'))
+                    .unwrap_or(false);
+                if !hidden {
+                    dirs.push(path);
+                }
+            } else if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "md" {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+        dirs.sort();
+        for d in dirs {
+            out.extend(scan_tree(&d));
+        }
+    }
+    out.sort();
+    out
+}
+
 pub fn read_file(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
@@ -196,6 +231,32 @@ pub fn parse_links(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_tree_recurses_and_skips_hidden() {
+        let root = std::env::temp_dir().join("rg_scan_tree_test");
+        let _ = std::fs::remove_dir_all(&root);
+        create_dir(&root);
+        std::fs::write(root.join("a.md"), "x").unwrap();
+        create_dir(&root.join("sub"));
+        std::fs::write(root.join("sub").join("b.md"), "x").unwrap();
+        create_dir(&root.join("sub").join("deep"));
+        std::fs::write(root.join("sub").join("deep").join("c.md"), "x").unwrap();
+        // Non-md files, a plain (empty) folder and a hidden dir must be ignored.
+        std::fs::write(root.join("pic.png"), "x").unwrap();
+        create_dir(&root.join("empty"));
+        create_dir(&root.join(".git"));
+        std::fs::write(root.join(".git").join("hooks.md"), "x").unwrap();
+
+        let files = scan_tree(&root);
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.md", "sub/b.md", "sub/deep/c.md"]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn parses_wikilinks() {
