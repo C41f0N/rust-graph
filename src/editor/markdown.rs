@@ -501,6 +501,29 @@ pub fn list_info(line: &str) -> Option<usize> {
     parse_prefix(line).list_skip()
 }
 
+// Leading source indentation of a line: the byte length (what a caller slices
+// off to reach the content) and its column width (spaces=1, tabs=4, matching
+// list_depth). A prose line uses this as its wrap indent so continuations
+// hang at the same left edge as the first line.
+pub fn content_indent(line: &str) -> (usize, u32) {
+    let mut bytes = 0;
+    let mut cols = 0u32;
+    for c in line.chars() {
+        match c {
+            ' ' => {
+                bytes += 1;
+                cols += 1;
+            }
+            '\t' => {
+                bytes += 1;
+                cols += 4;
+            }
+            _ => break,
+        }
+    }
+    (bytes, cols)
+}
+
 // The on-screen text for a list marker: "- "/"+ " become "* " (indentation
 // preserved), "N. " stays as-is. Returns (display_text, raw_marker_len).
 // The display text always measures identical to the raw marker, so cursor
@@ -766,6 +789,18 @@ mod tests {
             Some(("1. ".to_string(), 3))
         );
         assert_eq!(list_marker_display("plain"), None);
+    }
+
+    #[test]
+    fn content_indent_covers_bytes_and_columns() {
+        assert_eq!(content_indent("plain"), (0, 0));
+        assert_eq!(content_indent(""), (0, 0));
+        assert_eq!(content_indent("  two spaces"), (2, 2));
+        // A tab is one byte but four columns, matching list depth.
+        assert_eq!(content_indent("\tone tab"), (1, 4));
+        assert_eq!(content_indent("    four and trailing"), (4, 4));
+        // Indentation stops at the first content character.
+        assert_eq!(content_indent("  - list marker"), (2, 2));
     }
 
     #[test]

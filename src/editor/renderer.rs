@@ -101,8 +101,17 @@ fn line_editing(
     cursor_y as usize == line.line
 }
 
+mod debug {
+    use std::sync::Mutex;
+    pub(super) static DEBUG_FOLD_LINE: Mutex<String> = Mutex::new(String::new());
+}
+
 pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
     let buf = buffer::BUFFER.read().unwrap();
+    // A fold may have hidden the caret since the last frame; snap it out
+    // before the cursor guards are taken (generate_visual_lines runs later
+    // while those guards are still live).
+    buffer::snap_cursors_out_of_folds();
     let cursor_x = buffer::CURSOR_X.read().unwrap();
     let cursor_y = buffer::CURSOR_Y.read().unwrap();
     let anchor_x = buffer::ANCHOR_X.read().unwrap();
@@ -360,7 +369,17 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         let kinds = blocks::classify(&buf);
         let fm_range = frontmatter::line_range(&buf);
 
+        // Fold heads (source lines that start a deeper-indented block) and
+        // which of them are folded right now; the draw loop paints a caret on
+        // each head and the input handler toggles it. Read after the visual
+        // pass so stale heads already pruned away never draw a dead caret.
+        let folds = crate::editor::buffer::fold_ranges(&buf);
+
         crate::editor::buffer::generate_visual_lines(max_width, d);
+
+        let folded_heads: std::collections::HashSet<usize> =
+            crate::editor::FOLDED_LINES.read().unwrap().iter().copied().collect();
+        let mut fold_markers = Vec::new();
 
         // Layout every visual line up front. This single layout is the source
         // of truth for the draw loop, the content height (which bounds the
@@ -427,6 +446,10 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // draw loop so a stale rect from a scrolled-away popup never lingers.
         *hit_test::AUTOCOMPLETE_RECT.lock().unwrap() = None;
         *hit_test::COMMAND_RECT.lock().unwrap() = None;
+        *hit_test::FRONTMATTER_PILL.lock().unwrap() = None;
+        let mut cleared_markers = hit_test::FOLD_MARKERS.lock().unwrap();
+        cleared_markers.clear();
+        drop(cleared_markers);
 
         // Clamp the scroll offset to the real content height.
         let viewport_h = (editor_height - header_h - crate::editor::tabs::TABS_H - padding).max(1);
@@ -495,8 +518,14 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         d.draw_scissor_mode(content_x0, content_y, content_w, editor_height - header_h - crate::editor::tabs::TABS_H, |mut s| {
             let mut line_y = 0;
             let mut quote_rail: Option<(i32, i32, i32)> = None;
+            // Set so a fold caret links to the FIRST visual line of its head
+            // source line, even when that line is a heading or indented prose
+            // whose first slice starts past offset 0.
+            let mut prev_source_line = usize::MAX;
 
             for (vi, line) in vlines.iter().enumerate() {
+                let first_vl_of_line = line.line != prev_source_line;
+                prev_source_line = line.line;
                 let (line_font_size, advance, ref image) = layouts[vi];
                 let editing_line = line_editing(line, fm_range, *cursor_y);
                 let kind = kinds
@@ -507,29 +536,51 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     matches!(kind, blocks::LineKind::FencedCode | blocks::LineKind::FenceDelimiter);
                 let format = !editing_line && !is_fence;
 
-                // Hidden frontmatter bar: collapsed when the cursor is outside
-                // the block. Shown on the very first visual line (line 0,
-                // start 0); all remaining block lines contribute zero height
-                // from the layout pass and fall through here.
+                // A collapsed frontmatter block shows as one small pill on the very
+                // first visual line (line 0, start 0); all remaining block
+                // lines contribute zero height from the layout pass and fall
+                // through here. Clicking the pill opens the raw block for
+                // editing (see the fm_bar branch in the input handler).
                 if kind == blocks::LineKind::Frontmatter && !editing_line {
                     if line.line == 0 && line.start == 0 {
                         let draw_top = content_y + line_y - scroll;
                         let fm_h = config::scaled_size(config::EDITOR_FRONTMATTER_HEIGHT);
-                        s.draw_rectangle(
-                            content_x0 + padding,
-                            draw_top,
-                            max_width,
-                            fm_h,
+                        let fs = config::scaled_size(config::EDITOR_FONT_SIZE - 2);
+                        // Chevron drawn as a triangle: no font is guaranteed to
+                        // carry an arrow glyph.
+                        let label = "frontmatter";
+                        let lw = text::measure(&mut s, label, fs);
+                        let pill_w = lw + 22;
+                        let pill_x = content_x0 + padding;
+                        s.draw_rectangle_rounded(
+                            Rectangle::new(
+                                pill_x as f32,
+                                draw_top as f32,
+                                pill_w as f32,
+                                fm_h as f32,
+                            ),
+                            1.0,
+                            8,
                             config::EDITOR_FRONTMATTER_BG,
                         );
                         text::draw(
                             &mut s,
-                            "--- frontmatter ---",
-                            content_x0 + padding + 6,
-                            draw_top + (fm_h - config::scaled_size(config::EDITOR_FONT_SIZE - 2)) / 2,
-                            config::scaled_size(config::EDITOR_FONT_SIZE - 2),
+                            label,
+                            pill_x + 7,
+                            draw_top + (fm_h - fs) / 2,
+                            fs,
                             config::EDITOR_FRONTMATTER_COLOR,
                         );
+                        let mid = draw_top + fm_h / 2;
+                        let ch_x = pill_x + 7 + lw + 6;
+                        s.draw_triangle(
+                            Vector2::new(ch_x as f32, (mid - 4) as f32),
+                            Vector2::new(ch_x as f32, (mid + 4) as f32),
+                            Vector2::new((ch_x + 7) as f32, mid as f32),
+                            config::EDITOR_FRONTMATTER_COLOR,
+                        );
+                        *hit_test::FRONTMATTER_PILL.lock().unwrap() =
+                            Some((pill_x, draw_top, pill_w, fm_h));
                     }
                     line_y += advance + config::EDITOR_LINE_SPACING;
                     continue;
@@ -547,6 +598,61 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
 
                 let content_x = content_x0 + padding + line.indent;
                 let draw_top = content_y + line_y - scroll;
+
+                // Fold caret for a source line that starts a deeper-indented
+                // block: a small triangle just left of the head line's text,
+                // pointing right while the block is open (click to fold) and
+                // down once folded (click to unfold). Drawn on the first
+                // visual line of the head, as primitives so it never depends
+                // on the font atlas.
+                if first_vl_of_line && folds.iter().any(|&(head, _)| head == line.line) {
+                    let cw = 13;
+                    let ch = 13;
+                    let cx = content_x - cw - 6;
+                    let cy = draw_top + (line_font_size - ch) / 2;
+                    let over = {
+                        let m = s.get_mouse_position();
+                        m.x as i32 >= cx
+                            && m.x as i32 <= cx + cw
+                            && m.y as i32 >= cy
+                            && m.y as i32 <= cy + ch
+                    };
+                    // Chevrons as thick line strokes (like the HR rules), so
+                    // they read as arrows at this size; a filled backing keeps
+                    // the control visible whether the block is open or folded.
+                    let ccolor = if over {
+                        Color::WHITE
+                    } else {
+                        Color::new(205, 215, 235, 255)
+                    };
+                    let t = 2.0;
+                    if folded_heads.contains(&line.line) {
+                        // "v": click to expand
+                        let a = Vector2::new((cx + 3) as f32, (cy + 3) as f32);
+                        let b = Vector2::new((cx + cw / 2) as f32, (cy + ch - 3) as f32);
+                        let c = Vector2::new((cx + cw - 3) as f32, (cy + 3) as f32);
+                        s.draw_line_ex(a, b, t, ccolor);
+                        s.draw_line_ex(b, c, t, ccolor);
+                    } else {
+                        // ">": click to fold
+                        let a = Vector2::new((cx + 3) as f32, (cy + 3) as f32);
+                        let mid = Vector2::new((cx + cw / 2) as f32, (cy + ch / 2) as f32);
+                        let c = Vector2::new((cx + 3) as f32, (cy + ch - 3) as f32);
+                        s.draw_line_ex(a, mid, t, ccolor);
+                        s.draw_line_ex(mid, c, t, ccolor);
+                    }
+                    s.draw_rectangle_rounded(
+                        Rectangle::new(cx as f32, cy as f32, cw as f32, ch as f32),
+                        0.5,
+                        4,
+                        if over {
+                            Color::new(180, 200, 235, 55)
+                        } else {
+                            Color::new(150, 165, 200, 34)
+                        },
+                    );
+                    fold_markers.push((cx, cy, cw, ch, line.line));
+                }
 
                 // Horizontal rule: draw a line instead of text.
                 if !editing_line && matches!(kind, blocks::LineKind::HorizontalRule) {
@@ -587,14 +693,18 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         }
                     } else {
                         if line.line >= sy && line.line <= ey {
-                            // Determine the selection range within this visual line
+// Determine the selection range within this visual line
                             let vis_sel_start = if line.line == sy {
                                 sx.max(line.start)
                             } else {
                                 line.start
                             };
+                            // `.max(line.start)`: a visual line's slice hides
+                            // display whitespace before its start, so a
+                            // selection ending inside that hidden zone maps to
+                            // the line's start.
                             let vis_sel_end = if line.line == ey {
-                                ex.min(line.end)
+                                ex.min(line.end).max(line.start)
                             } else {
                                 line.end
                             };
@@ -961,6 +1071,27 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 s.draw_rectangle(x, top, 3, h, config::EDITOR_BLOCKQUOTE_BAR);
             }
         });
+
+        // Publish this frame's fold carets for the input handler.
+        *hit_test::FOLD_MARKERS.lock().unwrap() = fold_markers;
+
+        // Diagnose fold rendering/hit-testing. Run with FOLD_DEBUG=1, fold a
+        // block closed then open it again, and paste the printed lines:
+        // heads = foldable source lines, folded = collapsed ones, markers =
+        // carets published this frame (empty means the click goes nowhere).
+        if std::env::var("FOLD_DEBUG").is_ok() {
+            let line = format!(
+                "heads={} folded={:?} markers={}",
+                folds.len(),
+                *crate::editor::FOLDED_LINES.read().unwrap(),
+                hit_test::FOLD_MARKERS.lock().unwrap().len()
+            );
+            let mut last = debug::DEBUG_FOLD_LINE.lock().unwrap();
+            if *last != line {
+                *last = line.clone();
+                eprintln!("[fold] {}", line);
+            }
+        }
 
         // Follow the cursor only when it has moved since the last frame (arrow key,
 // typing, opening a file...). A wheel scroll leaves the cursor put, so the

@@ -25,6 +25,12 @@ pub static DIRTY: AtomicBool = AtomicBool::new(false);
 pub static CREATING_NODE: AtomicBool = AtomicBool::new(false);
 pub static NEW_NODE_NAME: RwLock<String> = RwLock::new(String::new());
 
+// Indent-folding: source lines whose indentation sits strictly deeper than a
+// fold-head line's can be folded away (like a code editor's outline). The Vec
+// holds the source-line indices that are folded right now (their folded block
+// is hidden). Toggled by clicking the caret on a fold-head line.
+pub static FOLDED_LINES: RwLock<Vec<usize>> = RwLock::new(Vec::new());
+
 // Screen rect of the placeholder's "Create New Node" button, written by the
 // renderer each placeholder frame and read by the input handler for clicks.
 pub static NEW_NODE_BUTTON: RwLock<Option<(i32, i32, i32, i32)>> = RwLock::new(None);

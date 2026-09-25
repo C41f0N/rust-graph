@@ -268,12 +268,62 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                 m.x as i32 >= bar_x - 4 && m.x as i32 <= bar_x + bar_w + 4;
 
             if inside_content && !over_bar {
+                // A click on a fold caret toggles that fold; it wins over
+                // caret placement and never starts a drag.
+                {
+                    let markers = hit_test::FOLD_MARKERS.lock().unwrap();
+                    let clicked = markers.iter().find(|(fx, fy, fw, fh, _)| {
+                        m.x as i32 >= *fx
+                            && m.x as i32 <= *fx + *fw
+                            && m.y as i32 >= *fy
+                            && m.y as i32 <= *fy + *fh
+                    });
+                    if let Some(&(_, _, _, _, head)) = clicked {
+                        drop(markers);
+                        buffer::toggle_fold(head);
+                        if std::env::var("FOLD_DEBUG").is_ok() {
+                            eprintln!(
+                                "[fold] click hit head={} folded_after={:?}",
+                                head,
+                                *crate::editor::FOLDED_LINES.read().unwrap()
+                            );
+                        }
+                        hit_test::MOUSE_DRAGGING.store(false, std::sync::atomic::Ordering::Relaxed);
+                        hit_test::reset_click_state();
+                        return;
+                    }
+                }
+
                 let scroll = *buffer::SCROLL_Y.read().unwrap();
+                if std::env::var("FOLD_DEBUG").is_ok() {
+                    eprintln!(
+                        "[fold] click NOT on marker m=({}, {}) folded={:?}",
+                        m.x as i32, m.y as i32,
+                        *crate::editor::FOLDED_LINES.read().unwrap()
+                    );
+                }
                 let rel_y = m.y as i32 - content_top + scroll;
                 let hits = hit_test::VISUAL_HIT.lock().unwrap();
 
                 if let Some(row) = hit_test::row_at_y(&hits, rel_y) {
                     if row.fm_bar {
+                        // The fm_bar row spans the whole content width as a
+                        // collapsed area, but only clicks on the pill itself
+                        // open the block. Clicks on the dead band around it
+                        // place no caret.
+                        let pill = hit_test::FRONTMATTER_PILL.lock().unwrap();
+                        let in_pill = pill.is_some_and(|(px, py, pw, ph)| {
+                            m.x as i32 >= px
+                                && m.x as i32 <= px + pw
+                                && m.y as i32 >= py
+                                && m.y as i32 <= py + ph
+                        });
+                        drop((hits, pill));
+                        if !in_pill {
+                            hit_test::MOUSE_DRAGGING.store(false, std::sync::atomic::Ordering::Relaxed);
+                            hit_test::reset_click_state();
+                            return;
+                        }
                         // Place the caret at the end of the frontmatter block
                         // so opening the note's collapsed metadata expands it.
                         if let Some((_, fm_end)) = frontmatter::line_range(&buffer) {
@@ -284,7 +334,6 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                             *anchor_x = x as i32;
                             *anchor_y = y as i32;
                         }
-                        drop(hits);
                         hit_test::MOUSE_DRAGGING.store(true, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }

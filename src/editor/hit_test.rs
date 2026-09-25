@@ -29,6 +29,18 @@ pub static AUTOCOMPLETE_RECT: std::sync::Mutex<Option<(i32, i32, i32, i32)>> =
 pub static COMMAND_RECT: std::sync::Mutex<Option<(i32, i32, i32, i32)>> =
     std::sync::Mutex::new(None);
 
+// The collapsed-frontmatter pill, published by the renderer. The band behind
+// it is a full-width fm_bar row; only clicks inside this rect toggle the
+// block open, so stray clicks on the empty band do nothing.
+pub static FRONTMATTER_PILL: std::sync::Mutex<Option<(i32, i32, i32, i32)>> =
+    std::sync::Mutex::new(None);
+
+// Fold caret for every fold-head line drawn this frame, published by the
+// renderer. Each entry is (x, y, w, h, head_source_line); a click inside one
+// toggles that fold open/closed (see the input handler).
+pub static FOLD_MARKERS: std::sync::Mutex<Vec<(i32, i32, i32, i32, usize)>> =
+    std::sync::Mutex::new(Vec::new());
+
 // -----------------------------------------------------------------------
 // Mouse click state (used by the input handler)
 // -----------------------------------------------------------------------

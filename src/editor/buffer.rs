@@ -121,15 +121,117 @@ pub fn delete_selection(
     (start_x as i32, start_y as i32)
 }
 
+// Indent-folding tree for the buffer: one (head, hidden_until) pair per line
+// whose following line is strictly deeper-indented. `hidden_until` is the
+// first line NOT more indented than `head`, so the foldable block is
+// head+1..hidden_until-1. A heading opens an indentation block: neither the
+// heading itself nor anything holding its indentation folds, because
+// "content belongs to a heading" is expressed by indent, not by collapsing.
+// Otherwise purely whitespace-based (tabs count as a tab width), the same way
+// a code editor outlines a block.
+pub fn fold_ranges(buf: &[String]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut heading_indent: Option<u32> = None;
+    for i in 0..buf.len().saturating_sub(1) {
+        let (_, cols) = markdown::content_indent(&buf[i]);
+
+        // Leave the heading block once a line dedents back to the heading's
+        // own indent or shallower.
+        if let Some(h) = heading_indent {
+            if cols <= h {
+                heading_indent = None;
+            }
+        }
+        if markdown::heading_after_markers(&buf[i]).is_some() {
+            heading_indent = Some(cols);
+            continue;
+        }
+        if heading_indent.is_some() {
+            continue;
+        }
+
+        if markdown::content_indent(&buf[i + 1]).1 > cols {
+            let mut j = i + 1;
+            while j < buf.len() && markdown::content_indent(&buf[j]).1 > cols {
+                j += 1;
+            }
+            out.push((i, j));
+        }
+    }
+    out
+}
+
+// Snap a source-line index out of any fold currently hiding it. When the
+// caret (or selection anchor) lands inside a folded block returns the first
+// line after that block; otherwise returns `idx` untouched.
+pub fn snap_out_of_fold(idx: usize) -> usize {
+    let buffer = BUFFER.read().unwrap();
+    let ranges = fold_ranges(&buffer);
+    let folded = crate::editor::FOLDED_LINES.read().unwrap();
+    for &(head, end) in &ranges {
+        if idx > head && idx < end && folded.contains(&head) {
+            return end.min(buffer.len().saturating_sub(1));
+        }
+    }
+    idx
+}
+
+// Snap the caret (and selection anchor) out of any fold that is currently
+// folded, so a cursor can never sit inside an invisible region. The renderer
+// calls this before taking its cursor guards (generate_visual_lines runs
+// later, while those guards may be held).
+pub fn snap_cursors_out_of_folds() {
+    let cy = snap_out_of_fold(*CURSOR_Y.read().unwrap() as usize) as i32;
+    let ay = snap_out_of_fold(*ANCHOR_Y.read().unwrap() as usize) as i32;
+    let cur_cy = *CURSOR_Y.read().unwrap();
+    let cur_ay = *ANCHOR_Y.read().unwrap();
+    if cy != cur_cy || ay != cur_ay {
+        *CURSOR_Y.write().unwrap() = cy;
+        *ANCHOR_Y.write().unwrap() = ay;
+    }
+}
+
+// Toggle the folded state of a fold-head line. The resulting set is pruned of
+// stale entries each visual-lines pass.
+pub fn toggle_fold(head: usize) {
+    let mut folded = crate::editor::FOLDED_LINES.write().unwrap();
+    if let Some(pos) = folded.iter().position(|h| *h == head) {
+        folded.remove(pos);
+    } else {
+        folded.push(head);
+    }
+}
+
 pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
-    let cursor_y = crate::editor::buffer::CURSOR_Y.read().unwrap();
     let buffer = BUFFER.read().unwrap();
     let mut visual_lines = VISUAL_LINES.lock().unwrap();
     visual_lines.clear();
 
     let kinds = crate::editor::blocks::classify(&buffer);
 
+    // Fold bookkeeping: prune stale folded heads (a dead toggle click must not
+    // fold a block that no longer exists), mark every line an active fold
+    // hides, and snap the caret/anchor out of anything that just got hidden so
+    // a cursor can never end up inside an invisible region.
+    let ranges = fold_ranges(&buffer);
+    {
+        let mut folded = crate::editor::FOLDED_LINES.write().unwrap();
+        folded.retain(|h| ranges.iter().any(|&(head, _)| head == *h));
+    }
+    let folded = crate::editor::FOLDED_LINES.read().unwrap();
+    let mut hidden = std::collections::HashSet::new();
+    for &(head, end) in &ranges {
+        if folded.contains(&head) {
+            hidden.extend(head + 1..end);
+        }
+    }
+
+    let cursor_y = CURSOR_Y.read().unwrap();
+
     for (line_index, line) in buffer.iter().enumerate() {
+        if hidden.contains(&line_index) {
+            continue;
+        }
         // While a mouse selection is in progress every line is measured in
         // view mode (matching renderer::line_editing), so wrapping can't shift
         // under the pointer mid-drag.
@@ -141,8 +243,11 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
         // depth; wrapped continuations hang by two spaces so they align under
         // the item text after the marker. A quote line is nudged right by its
         // marker width so wrapped continuations align under the quote text
-        // instead of the `>` marker. All are measured like real spaces so the
-        // wrap and the render never disagree.
+        // instead of the `>` marker. A prose/heading line with leading source
+        // indentation is shifted right by that indentation, so its wrapped
+        // continuations hang at the same left edge as the first line instead
+        // of snapping back to the margin. All are measured like real spaces
+        // so the wrap and the render never disagree.
         let mut base_indent = 0;
         let mut hang_indent = 0;
         if !editing_line {
@@ -158,6 +263,19 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
                         .unwrap_or(0);
                     hang_indent = 0;
                 }
+                crate::editor::blocks::LineKind::Paragraph
+                | crate::editor::blocks::LineKind::Heading { .. } => {
+                    // Whole-line image links draw their image (see line_layout),
+                    // which already honors line.indent, so source indentation
+                    // must not re-shift them through the text path.
+                    if markdown::image_link_target(line).is_none() {
+                        let (bytes, cols) = markdown::content_indent(line);
+                        if bytes > 0 {
+                            base_indent = text::measure(d, &" ".repeat(cols as usize), font_size);
+                            hang_indent = 0;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -170,6 +288,22 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
                     | crate::editor::blocks::LineKind::FenceDelimiter
             );
 
+        // Prose with base_indent gives its leading whitespace to the wrap pass,
+        // which starts measuring past it; the renderer then slices from that
+        // same offset, so the whitespace is never drawn twice. Lists/quotes
+        // own their leading region through the marker/rail draw, so only prose
+        // lines take the skip.
+        let skip = if base_indent > 0
+            && matches!(
+                kind,
+                crate::editor::blocks::LineKind::Paragraph
+                    | crate::editor::blocks::LineKind::Heading { .. }
+            ) {
+            markdown::content_indent(line).0
+        } else {
+            0
+        };
+
         visual_lines.extend(wrap_line(
             line,
             max_width,
@@ -178,6 +312,7 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
             hang_indent,
             kind,
             format,
+            skip,
             |t, size, style| text::measure_styled(d, t, size, style),
         ));
     }
@@ -185,11 +320,14 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
 
 // Wrap one buffer line into visual lines. `measure` is injected so the
 // logic is unit-testable; on-screen it is the raylib measure_text.
-// `base_indent` shifts the whole item (nested list depth, quote rail),
-// `hang_indent` is added to every line after the first in a list item,
-// `kind` decides whether the line's source indent is drawn by the marker
-// (lists) or by the renderer (everything else), and `format` selects
-// formatted vs raw measurement (fence lines stay raw).
+// `base_indent` shifts the whole item (nested list depth, quote rail, prose
+// indentation), `hang_indent` is added to every line after the first in a
+// list item, `kind` decides whether the line's source indent is drawn by the
+// marker (lists) or by the renderer (everything else), and `format` selects
+// formatted vs raw measurement (fence lines stay raw). For formatted prose
+// `skip` is the leading-indentation width already accounted for by
+// base_indent: measurement starts past it and the first visual line reports
+// that offset, so the renderer slices straight to the content.
 fn wrap_line(
     line: &str,
     max_width: i32,
@@ -198,6 +336,7 @@ fn wrap_line(
     hang_indent: i32,
     kind: crate::editor::blocks::LineKind,
     format: bool,
+    skip: usize,
     measure: impl Fn(&str, i32, crate::editor::markdown::SegmentStyle) -> i32,
 ) -> Vec<VisualLine> {
     let mut out = Vec::new();
@@ -218,6 +357,11 @@ fn wrap_line(
             line_font_size =
                 config::scaled_size(config::EDITOR_HEADING_SIZE[(level - 1) as usize]);
         }
+    } else if format && skip > 0 {
+        // Prose indentation: base_indent already shifts the line; `skip` moves
+        // measurement (and the first visual line's slice) past the whitespace
+        // so it is never drawn a second time.
+        start = skip;
     }
 
     let chars: Vec<char> = line.chars().collect();
@@ -336,6 +480,8 @@ pub fn load_from_file(path: &Path) {
     crate::editor::hit_test::reset_click_state();
     // A newly loaded note starts with a clean undo/redo history.
     crate::editor::history::clear();
+    // Folds belong to the note that produced them; a fresh note starts open.
+    crate::editor::FOLDED_LINES.write().unwrap().clear();
 
     buffer.clear();
     // Force a follow on the first rendered frame after opening: the cursor is
@@ -386,12 +532,58 @@ mod tests {
             0,
             LineKind::Paragraph,
             true,
+            0,
             |t, s, _st| pix(t, s),
         );
         assert!(vls.len() >= 2);
         for vl in &vls {
             assert_eq!(vl.indent, 0);
         }
+    }
+
+    #[test]
+    fn indented_paragraph_hangs_at_written_indent() {
+        // 10px/char at max_width 100. "    " is 4 chars = 40px of leading ws.
+        let line = "    alpha beta gamma delta epsilon zeta";
+        let vls = wrap_line(
+            line,
+            100,
+            0,
+            40,
+            0,
+            LineKind::Paragraph,
+            true,
+            4,
+            |t, s, _st| pix(t, s),
+        );
+        assert!(vls.len() >= 2, "expected the indented paragraph to wrap");
+        assert_eq!(vls[0].indent, 40, "first line sits at the written indent");
+        assert_eq!(vls[0].start, 4, "measurement starts past the whitespace");
+        for vl in &vls[1..] {
+            assert_eq!(vl.indent, 40, "continuations hang at the written indent");
+            assert!(vl.start >= 4, "no continuation re-draws the whitespace");
+        }
+    }
+
+    #[test]
+    fn editing_line_prose_keeps_zero_skip() {
+        // The caret line renders raw: no indent, no skip.
+        let line = "    alpha beta gamma delta epsilon zeta";
+        let vls = wrap_line(
+            line,
+            100,
+            0,
+            0,
+            0,
+            LineKind::Paragraph,
+            false,
+            0,
+            |t, s, _st| pix(t, s),
+        );
+        for vl in &vls {
+            assert_eq!(vl.indent, 0);
+        }
+        assert_eq!(vls[0].start, 0, "raw editing keeps the leading whitespace");
     }
 
     #[test]
@@ -415,7 +607,7 @@ mod tests {
         // View mode: the caller sets base = marker width, hang = 0, so every
         // visual line sits right of the rail. "> " = 2 chars = 20px.
         let line = "> one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 20, 0, LineKind::Blockquote, true, |t, s, _st| pix(t, s));
+        let vls = wrap_line(line, 100, 0, 20, 0, LineKind::Blockquote, true, 0, |t, s, _st| pix(t, s));
         assert!(vls.len() >= 2, "expected the quote to wrap");
         assert_eq!(vls[0].indent, 20, "content starts after the marker");
         for vl in &vls[1..] {
@@ -427,7 +619,7 @@ mod tests {
     fn list_continuation_lines_hang_indented() {
         // 10 chars/line at max_width 100; "    " = 40px indent.
         let line = "- one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 0, 40, LineKind::List { depth: 0 }, true, |t, s, _st| pix(t, s));
+        let vls = wrap_line(line, 100, 0, 0, 40, LineKind::List { depth: 0 }, true, 0, |t, s, _st| pix(t, s));
         assert!(vls.len() >= 2, "expected the item to wrap");
         assert_eq!(vls[0].indent, 0, "first visual line has no indent");
         for vl in &vls[1..] {
@@ -440,7 +632,7 @@ mod tests {
         // depth 1 line: the marker draws the source indent, so the first
         // visual line is flat; continuations hang at base 20px + hang 40px.
         let line = "  - one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 20, 40, LineKind::List { depth: 1 }, true, |t, s, _st| pix(t, s));
+        let vls = wrap_line(line, 100, 0, 20, 40, LineKind::List { depth: 1 }, true, 0, |t, s, _st| pix(t, s));
         assert!(vls.len() >= 2);
         assert_eq!(vls[0].indent, 0);
         for vl in &vls[1..] {
@@ -454,7 +646,7 @@ mod tests {
         // editing line; wrap_line is a mechanical function, so the caller
         // passes 0.
         let line = "- one two three four five six seven eight nine ten";
-        let vls = wrap_line(line, 100, 0, 0, 0, LineKind::List { depth: 0 }, false, |t, s, _st| pix(t, s));
+        let vls = wrap_line(line, 100, 0, 0, 0, LineKind::List { depth: 0 }, false, 0, |t, s, _st| pix(t, s));
         for vl in &vls {
             assert_eq!(vl.indent, 0);
         }
@@ -462,10 +654,62 @@ mod tests {
 
     #[test]
     fn empty_line_is_single_visual_line() {
-        let vls = wrap_line("", 100, 3, 0, 0, LineKind::Paragraph, true, |t, s, _st| pix(t, s));
+        let vls = wrap_line("", 100, 3, 0, 0, LineKind::Paragraph, true, 0, |t, s, _st| pix(t, s));
         assert_eq!(vls.len(), 1);
         assert_eq!(vls[0].line, 3);
         assert_eq!(vls[0].indent, 0);
+    }
+
+    #[test]
+    fn fold_ranges_outline_deeper_indented_block() {
+        // A line with tabs/spaces under a shallower line is foldable; a
+        // flattened sibling ends the block. content_indent counts a tab as 4
+        // columns, so "\t\t" = 8.
+        let buf = vec![
+            "- item".to_string(),
+            "\t- sub".to_string(),
+            "\t\t- deep".to_string(),
+            "plain".to_string(),
+        ];
+        let ranges = fold_ranges(&buf);
+        assert_eq!(ranges, vec![(0, 3), (1, 3)]);
+    }
+
+    #[test]
+    fn fold_ranges_skip_flat_sequence() {
+        let buf = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert!(fold_ranges(&buf).is_empty());
+    }
+
+    #[test]
+    fn fold_ranges_stop_at_blank_and_less_indented_lines() {
+        // blank (0 cols) and the dedented sibling close the deeper run.
+        let buf = vec![
+            "head".to_string(),
+            "    a".to_string(),
+            "".to_string(),
+            "tail".to_string(),
+        ];
+        assert_eq!(fold_ranges(&buf), vec![(0, 2)]);
+    }
+
+    #[test]
+    fn fold_ranges_skip_heading_heads() {
+        // Content "belongs to" a heading by indentation, never by folding, so
+        // a heading line is not a fold head even when deeper lines follow.
+        let buf = vec![
+            "## Title".to_string(),
+            "    detail".to_string(),
+            "        more".to_string(),
+        ];
+        assert!(fold_ranges(&buf).is_empty());
+    }
+
+    #[test]
+    fn fold_ranges_heading_inside_list_still_not_a_head() {
+        // "- ## hi" renders as a heading too; its continuation stays visible.
+        let buf = vec!["- ## hi".to_string(), "      body".to_string()];
+        assert!(fold_ranges(&buf).is_empty());
     }
 
     #[test]
