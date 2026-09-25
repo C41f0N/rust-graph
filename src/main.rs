@@ -5,6 +5,7 @@ mod app_config;
 mod config;
 mod editor;
 mod filesystem;
+mod fonts;
 mod frontmatter;
 mod global_palette;
 mod graph;
@@ -39,6 +40,43 @@ fn main() {
 
     // Parse CLI arg for the directory
     let args: Vec<String> = std::env::args().collect();
+
+    // Dev-time bake tool: `rust-sandbox --dump-font-sdf <in.ttf> <out.bin>`
+    // rasterizes a font's charset into the serialized SDF-atlas cache that the
+    // packed-font catalog embeds (editor::text::serialize_sdf_font_cache).
+    // Entirely CPU-side (stb_truetype), so it runs before the window exists.
+    if args.len() > 1 && args[1] == "--dump-font-sdf" {
+        let (Some(ttf), Some(out)) = (args.get(2), args.get(3)) else {
+            eprintln!("Usage: {} --dump-font-sdf <in.ttf> <out.bin>", args[0]);
+            std::process::exit(1);
+        };
+        let bytes = match std::fs::read(ttf) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Error: cannot read '{}': {e}", ttf);
+                std::process::exit(1);
+            }
+        };
+        let Some(sdf) = editor::text::rasterize_sdf_atlas(&bytes) else {
+            eprintln!("Error: '{}' is not a rasterizable font", ttf);
+            std::process::exit(1);
+        };
+        let cache = editor::text::serialize_sdf_font_cache(&sdf);
+        if let Err(e) = std::fs::write(out, &cache) {
+            eprintln!("Error: cannot write '{}': {e}", out);
+            std::process::exit(1);
+        }
+        println!(
+            "wrote {} ({}x{} SDF atlas, {} glyphs, {} bytes)",
+            out,
+            sdf.width,
+            sdf.height,
+            sdf.codepoints.len(),
+            cache.len()
+        );
+        std::process::exit(0);
+    }
+
     let dir_path = if args.len() > 1 {
         PathBuf::from(&args[1])
     } else {
@@ -277,41 +315,27 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
         if let Some(idx) = font_request {
             let fonts = graph::settings::FONTS.read().unwrap();
             if let Some(fam) = fonts.get(idx) {
-                if idx == 0 {
-                    editor::text::clear_active_font();
-                } else {
-                    // Build an SDF field-font for the family's upright, bold
-                    // and italic cuts so markdown emphasis renders with real
-                    // glyph shapes. Any cut the family doesn't ship stays empty
-                    // and the editor falls back to the upright font. Rasterizing
-                    // the fields takes a moment on the first pick of a family.
-                    let load = |src: &Option<graph::settings::FontStyleSource>| {
-                        if let Some(src) = src {
-                            if let Some(path) = &src.path {
-                                std::fs::read(path)
-                                    .ok()
-                                    .and_then(|b| editor::text::load_sdf_font(&b))
-                            } else if let Some(data) = &src.data {
-                                editor::text::load_sdf_font(data)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    };
-                    let regular = load(&Some(graph::settings::FontStyleSource {
-                        path: fam.path.clone(),
-                        data: fam.data.clone(),
-                    }));
-                    let bold = load(&fam.bold);
-                    let italic = load(&fam.italic);
-                    editor::text::set_active_fonts(editor::text::LoadedFontSet {
-                        regular,
-                        bold,
-                        italic,
-                    });
-                }
+                // Every catalog row carries pre-baked serialized SDF atlas bytes
+                // for the style cuts it ships, so a font switch is a parse +
+                // texture upload with no rasterization. Any cut without baked
+                // bytes stays empty and the editor falls back to the upright
+                // font (and that failing too falls back to the built-in font).
+                let load = |src: &Option<graph::settings::FontStyleSource>| {
+                    src.as_ref()
+                        .and_then(|s| s.data.as_deref())
+                        .and_then(editor::text::load_sdf_font_from_bytes)
+                };
+                let regular = fam
+                    .data
+                    .as_deref()
+                    .and_then(editor::text::load_sdf_font_from_bytes);
+                let bold = load(&fam.bold);
+                let italic = load(&fam.italic);
+                editor::text::set_active_fonts(editor::text::LoadedFontSet {
+                    regular,
+                    bold,
+                    italic,
+                });
                 *graph::settings::SELECTED_FONT.write().unwrap() = Some(idx);
             }
             *graph::settings::REQUEST_LOAD_FONT.write().unwrap() = None;

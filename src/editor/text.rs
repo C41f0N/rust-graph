@@ -150,19 +150,52 @@ fn charset() -> String {
     s
 }
 
-// Rasterize every charset glyph of a font into one SDF field-texture.
-// Returns None when the bytes are not a parseable font or produce no glyphs.
+// --- Serialized SDF atlas cache --------------------------------------------
 //
-// This is the single unsafe construction site in the module: the SDF building
-// blocks (LoadFontData, GenImageFontAtlas, the texture upload and the freed
-// recs/glyph table) have no safe counterpart in the stock raylib-rs 6.0 API.
-// Everything downstream is safe raylib-rs.
-pub fn load_sdf_font(data: &[u8]) -> Option<SdfFont> {
+// The shipped app bakes every bundled font into a byte-serialized SDF atlas at
+// dev time (the `--dump-font-sdf` CLI pass, run against the TTFs in
+// assets/fonts/) and embeds the result, so startup and font switches never run
+// a rasterizer on the user's machine. The byte format mirrors the live raylib
+// Font one-for-one, so rehydration is a pure pointer rebuild and raylib's own
+// DrawTextEx / measure machinery keeps working unchanged.
+//
+// Layout (little-endian):
+//   "SDF1"                     4-byte magic
+//   version                   u32 (=1)
+//   glyph_count               u32
+//   atlas_width, atlas_height u32
+//   format                    i32   raylib PixelFormat (GRAY_ALPHA = 6)
+//   bytes_per_pixel           u32   (=2 for GRAY_ALPHA)
+//   pixels                    width*height*bpp  (gray channel flush, SDF byte in alpha)
+//   glyphs                    glyph_count * { value i32, offsetX i32, offsetY i32, advanceX i32 }
+//   rects                     glyph_count * { x f32, y f32, width f32, height f32 }
+pub const SDF_CACHE_MAGIC: [u8; 4] = *b"SDF1";
+pub const SDF_CACHE_VERSION: u32 = 1;
+
+// CPU-side rasterization of one family cut: a packed SDF atlas plus every
+// glyph's metrics and atlas rect. Holds no GL resources, so the bake CLI can
+// produce it without a live window.
+pub struct RasterizedSdf {
+    pub pixels: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub format: i32,
+    pub bpp: u32,
+    pub codepoints: Vec<i32>,
+    pub offsets_x: Vec<i32>,
+    pub offsets_y: Vec<i32>,
+    pub advances: Vec<i32>,
+    pub rects: Vec<Rectangle>,
+}
+
+// Rasterize a TTF/OTF's charset into one CPU-side SDF atlas (LoadFontData +
+// GenImageFontAtlas, pure stb_truetype). Returns None for unparseable bytes or
+// a charset that produces no glyphs.
+pub fn rasterize_sdf_atlas(data: &[u8]) -> Option<RasterizedSdf> {
     let codepoints: Vec<i32> = charset().chars().map(|c| c as i32).collect();
     let mut glyph_count: std::ffi::c_int = 0;
-    // SAFETY: data is a live byte slice and codepoints a live array; raylib
-    // copies both while rasterizing, and the returned array is passed to
-    // GenImageFontAtlas/UnloadFont which own it from here on.
+    // SAFETY: as in load_sdf_font: data and codepoints outlive the call, and
+    // the returned glyphs array is owned and freed below.
     let glyphs = unsafe {
         raylib::ffi::LoadFontData(
             data.as_ptr(),
@@ -177,57 +210,207 @@ pub fn load_sdf_font(data: &[u8]) -> Option<SdfFont> {
     if glyphs.is_null() || glyph_count <= 0 {
         if !glyphs.is_null() {
             // SAFETY: the array came from LoadFontData above.
-            unsafe {
-                raylib::ffi::UnloadFontData(glyphs, glyph_count);
-            }
+            unsafe { raylib::ffi::UnloadFontData(glyphs, glyph_count) };
         }
         return None;
     }
 
-    // Pack the per-glyph fields into one atlas image; recs (glyph rects in the
-    // atlas) are raylib-allocated and freed together with everything else.
     let mut recs: *mut raylib::ffi::Rectangle = std::ptr::null_mut();
-    // SAFETY: glyphs/glyphCount are valid from LoadFontData for the call.
+    // SAFETY: glyphs and glyph_count are valid from LoadFontData, and GRAY_ALPHA
+    // output lets the shader read the SDF byte straight from the alpha channel.
     let atlas = unsafe {
-        raylib::ffi::GenImageFontAtlas(
-            glyphs,
-            &mut recs,
-            glyph_count,
-            SDF_BASE_SIZE,
-            SDF_PAD,
-            0,
-        )
+        raylib::ffi::GenImageFontAtlas(glyphs, &mut recs, glyph_count, SDF_BASE_SIZE, SDF_PAD, 0)
     };
     if atlas.data.is_null() {
         // SAFETY: the array came from LoadFontData above.
-        unsafe {
-            raylib::ffi::UnloadFontData(glyphs, glyph_count);
-        }
+        unsafe { raylib::ffi::UnloadFontData(glyphs, glyph_count) };
         return None;
     }
 
-    // SAFETY: atlas is a valid raylib Image (GRAY_ALPHA) that stays untouched
-    // for the call; LoadTextureFromImage copies it into VRAM.
-    let tex = unsafe { raylib::ffi::LoadTextureFromImage(atlas) };
-    // SAFETY: atlas is a CPU image we own; its pixels are already uploaded.
+    let width = atlas.width as u32;
+    let height = atlas.height as u32;
+    // GRAY_ALPHA packs two bytes per texel: an opaque gray flush plus the
+    // distance byte the shader reads from .a.
+    let bpp: u32 = 2;
+    let total = (width * height * bpp) as usize;
+    let mut pixels = vec![0u8; total];
+    // SAFETY: atlas.data points at `total` owned GRAY_ALPHA bytes.
     unsafe {
-        raylib::ffi::UnloadImage(atlas);
-    }
-    // SAFETY: tex was just created; bilinear (instead of nearest) lets the
-    // distance field interpolate smoothly when a glyph is scaled in size.
-    unsafe {
-        raylib::ffi::SetTextureFilter(tex, raylib::ffi::TextureFilter::TEXTURE_FILTER_BILINEAR as std::ffi::c_int);
+        std::ptr::copy_nonoverlapping(atlas.data as *const u8, pixels.as_mut_ptr(), total);
     }
 
-    let font = raylib::ffi::Font {
-        baseSize: SDF_BASE_SIZE,
-        glyphCount: glyph_count,
-        glyphPadding: SDF_PAD,
-        texture: tex,
-        recs,
-        glyphs,
+    let n = glyph_count as usize;
+    let mut result = RasterizedSdf {
+        pixels,
+        width,
+        height,
+        format: atlas.format,
+        bpp,
+        codepoints: Vec::with_capacity(n),
+        offsets_x: Vec::with_capacity(n),
+        offsets_y: Vec::with_capacity(n),
+        advances: Vec::with_capacity(n),
+        rects: Vec::with_capacity(n),
     };
-    Some(SdfFont { font })
+    for i in 0..n {
+        // SAFETY: glyphs holds glyph_count live GlyphInfos; recs the same count
+        // of live Rectangles from GenImageFontAtlas.
+        let g = unsafe { *glyphs.add(i) };
+        result.codepoints.push(g.value);
+        result.offsets_x.push(g.offsetX);
+        result.offsets_y.push(g.offsetY);
+        result.advances.push(g.advanceX);
+        let r = unsafe { *recs.add(i) };
+        result.rects.push(r);
+    }
+
+    // SAFETY: glyphs (with its per-glyph images), recs and the atlas image are
+    // all raylib-owned CPU allocations; free them now their bytes are copied.
+    unsafe {
+        raylib::ffi::UnloadFontData(glyphs, glyph_count);
+        raylib::ffi::MemFree(recs as *mut std::ffi::c_void);
+        raylib::ffi::UnloadImage(atlas);
+    }
+    Some(result)
+}
+
+// Flatten one family cut into the byte-cache format. Glyph metrics are i32 and
+// rects f32, matching raylib's Font layout.
+pub fn serialize_sdf_font_cache(sdf: &RasterizedSdf) -> Vec<u8> {
+    let n = sdf.codepoints.len();
+    let mut out = Vec::with_capacity(28 + sdf.pixels.len() + n * 16 * 2);
+    out.extend_from_slice(&SDF_CACHE_MAGIC);
+    out.extend_from_slice(&SDF_CACHE_VERSION.to_le_bytes());
+    out.extend_from_slice(&(n as u32).to_le_bytes());
+    out.extend_from_slice(&sdf.width.to_le_bytes());
+    out.extend_from_slice(&sdf.height.to_le_bytes());
+    out.extend_from_slice(&sdf.format.to_le_bytes());
+    out.extend_from_slice(&sdf.bpp.to_le_bytes());
+    out.extend_from_slice(&sdf.pixels);
+    for i in 0..n {
+        out.extend_from_slice(&sdf.codepoints[i].to_le_bytes());
+        out.extend_from_slice(&sdf.offsets_x[i].to_le_bytes());
+        out.extend_from_slice(&sdf.offsets_y[i].to_le_bytes());
+        out.extend_from_slice(&sdf.advances[i].to_le_bytes());
+    }
+    for r in &sdf.rects {
+        out.extend_from_slice(&r.x.to_le_bytes());
+        out.extend_from_slice(&r.y.to_le_bytes());
+        out.extend_from_slice(&r.width.to_le_bytes());
+        out.extend_from_slice(&r.height.to_le_bytes());
+    }
+    out
+}
+
+fn take(cache: &[u8], off: usize, len: usize) -> Option<&[u8]> {
+    cache.get(off..off + len)
+}
+
+fn u32_at(cache: &[u8], off: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(take(cache, off, 4)?.try_into().ok()?))
+}
+
+fn i32_at(cache: &[u8], off: usize) -> Option<i32> {
+    Some(i32::from_le_bytes(take(cache, off, 4)?.try_into().ok()?))
+}
+
+fn f32_at(cache: &[u8], off: usize) -> Option<f32> {
+    Some(f32::from_le_bytes(take(cache, off, 4)?.try_into().ok()?))
+}
+
+// Headless validity check for the serialized format: magic, version and a
+// non-empty glyph table. Used by tests once the embedded catalog exists.
+#[cfg(test)]
+pub fn sdf_cache_ok(cache: &[u8]) -> bool {
+    if cache.len() < 28 || take(cache, 0, 4) != Some(&SDF_CACHE_MAGIC) {
+        return false;
+    }
+    match u32_at(cache, 4) {
+        Some(SDF_CACHE_VERSION) => {}
+        _ => return false,
+    }
+    u32_at(cache, 8).map(|n| n > 0).unwrap_or(false)
+}
+
+// Restore a serialized cache into a live SDF field-font. Glyphs and rect arrays
+// come from raylib's own allocator so SdfFont's UnloadFont (RL_FREE on both)
+// matches; the atlas re-uploads as a texture exactly like load_sdf_font does.
+// Returns None for malformed or version-mismatched bytes.
+pub fn load_sdf_font_from_bytes(cache: &[u8]) -> Option<SdfFont> {
+    let glyph_count = u32_at(cache, 8)? as usize;
+    let width = u32_at(cache, 12)? as usize;
+    let height = u32_at(cache, 16)? as usize;
+    let format = i32_at(cache, 20)?;
+    let bpp = u32_at(cache, 24)? as usize;
+    if glyph_count == 0 || width == 0 || height == 0 || bpp == 0 {
+        return None;
+    }
+
+    let pixel_bytes = width * height * bpp;
+    let glyph_block = glyph_count * 16;
+    let pixels = take(cache, 28, pixel_bytes)?;
+    let rect_off = 28 + pixel_bytes + glyph_block;
+    if take(cache, rect_off, glyph_count * 16).is_none() {
+        return None;
+    }
+
+    // SAFETY: everything allocated with raylib's allocator below is freed by
+    // SdfFont's UnloadFont with matching RL_FREE. Zero-fill first so the
+    // per-glyph `image` fields are null (UnloadImage(NULL) is a no-op).
+    unsafe {
+        let glyphs = raylib::ffi::MemAlloc(
+            (std::mem::size_of::<raylib::ffi::GlyphInfo>() * glyph_count) as u32,
+        ) as *mut raylib::ffi::GlyphInfo;
+        let rects = raylib::ffi::MemAlloc(
+            (std::mem::size_of::<raylib::ffi::Rectangle>() * glyph_count) as u32,
+        ) as *mut raylib::ffi::Rectangle;
+        std::ptr::write_bytes(glyphs, 0, glyph_count);
+        std::ptr::write_bytes(rects, 0, glyph_count);
+        let mut glyph_off = 28 + pixel_bytes;
+        let mut rec_off = rect_off;
+        for i in 0..glyph_count {
+            let g = glyphs.add(i);
+            (*g).value = i32_at(cache, glyph_off)?;
+            (*g).offsetX = i32_at(cache, glyph_off + 4)?;
+            (*g).offsetY = i32_at(cache, glyph_off + 8)?;
+            (*g).advanceX = i32_at(cache, glyph_off + 12)?;
+            glyph_off += 16;
+            let r = rects.add(i);
+            *r = raylib::ffi::Rectangle {
+                x: f32_at(cache, rec_off)?,
+                y: f32_at(cache, rec_off + 4)?,
+                width: f32_at(cache, rec_off + 8)?,
+                height: f32_at(cache, rec_off + 12)?,
+            };
+            rec_off += 16;
+        }
+
+        // SAFETY: pixels is a live slice; LoadTextureFromImage copies it into
+        // VRAM before we return, so no borrow escapes the call.
+        let image = raylib::ffi::Image {
+            data: pixels.as_ptr() as *mut std::ffi::c_void,
+            width: width as i32,
+            height: height as i32,
+            mipmaps: 1,
+            format,
+        };
+        let tex = raylib::ffi::LoadTextureFromImage(image);
+        // SAFETY: tex was just created; bilinear interpolates the distance
+        // field when a glyph scales, matching load_sdf_font.
+        raylib::ffi::SetTextureFilter(
+            tex,
+            raylib::ffi::TextureFilter::TEXTURE_FILTER_BILINEAR as std::ffi::c_int,
+        );
+        let font = raylib::ffi::Font {
+            baseSize: SDF_BASE_SIZE,
+            glyphCount: glyph_count as std::ffi::c_int,
+            glyphPadding: SDF_PAD,
+            texture: tex,
+            recs: rects as *mut raylib::ffi::Rectangle,
+            glyphs: glyphs as *mut raylib::ffi::GlyphInfo,
+        };
+        Some(SdfFont { font })
+    }
 }
 
 // Everything the editor needs to draw one family: the upright SDF font plus
@@ -248,11 +431,6 @@ pub fn set_active_fonts(set: LoadedFontSet) {
             italic: set.italic,
         };
     });
-}
-
-// Drop all custom fonts and fall back to raylib's built-in font.
-pub fn clear_active_font() {
-    ACTIVE_FONT.with(|slot| *slot.borrow_mut() = FontSet::default());
 }
 
 // Field-font for a segment style; anything that is not emphasized draws
@@ -427,8 +605,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_font_bytes_load_to_nothing() {
+    fn empty_font_bytes_rasterize_to_nothing() {
         // Invalid font bytes bail out before any GL call, so this runs headless.
-        assert!(load_sdf_font(b"\0\0\0").is_none());
+        assert!(rasterize_sdf_atlas(b"\0\0\0").is_none());
+    }
+
+    #[test]
+    fn garbage_bytes_rasterize_and_cache_load_to_nothing() {
+        assert!(rasterize_sdf_atlas(b"\0\0\0").is_none());
+        assert!(!sdf_cache_ok(b"garbage"));
+        assert!(sdf_cache_ok(&serialize_sdf_font_cache(&RasterizedSdf {
+            pixels: vec![0u8; 2],
+            width: 1,
+            height: 1,
+            format: 6,
+            bpp: 2,
+            codepoints: vec![65],
+            offsets_x: vec![0],
+            offsets_y: vec![1],
+            advances: vec![2],
+            rects: vec![Rectangle::new(0.0, 0.0, 1.0, 1.0)],
+        })));
     }
 }

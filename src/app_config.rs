@@ -52,9 +52,10 @@ impl AppConfig {
     }
 }
 
-// Name of the font the font picker currently points at, or "" for the
-// built-in default. The settings dialog only runs after FONTS is built, so
-// save() reads a real name; load-time defaults get "" when FONTS is empty.
+// Name of the font the font picker currently points at, or "" for row 0 (the
+// first packed family — the app default). The settings dialog only runs after
+// FONTS is built, so save() reads a real name; load-time defaults get "" when
+// FONTS is empty.
 fn current_font_name() -> String {
     let fonts = crate::graph::settings::FONTS.read().unwrap();
     match *crate::graph::settings::SELECTED_FONT.read().unwrap() {
@@ -316,7 +317,6 @@ mod tests {
             .iter()
             .map(|n| FontFamily {
                 name: n.to_string(),
-                path: None,
                 data: None,
                 bold: None,
                 italic: None,
@@ -327,25 +327,25 @@ mod tests {
     #[test]
     fn selected_font_persists_through_snapshot_and_apply() {
         use crate::graph::settings::{REQUEST_LOAD_FONT, SELECTED_FONT};
-        seed_fonts(&["(Default)", "Fira Code", "DejaVu Sans"]);
+        seed_fonts(&["Adwaita Sans", "Fira Code"]);
 
-        *SELECTED_FONT.write().unwrap() = Some(2);
+        *SELECTED_FONT.write().unwrap() = Some(1);
         let snap = AppConfig::from_statics();
-        assert_eq!(snap.font_name, "DejaVu Sans");
+        assert_eq!(snap.font_name, "Fira Code");
 
         *SELECTED_FONT.write().unwrap() = Some(0);
         *REQUEST_LOAD_FONT.write().unwrap() = None;
         snap.apply();
-        assert_eq!(*SELECTED_FONT.read().unwrap(), Some(2));
-        assert_eq!(*REQUEST_LOAD_FONT.read().unwrap(), Some(2));
+        assert_eq!(*SELECTED_FONT.read().unwrap(), Some(1));
+        assert_eq!(*REQUEST_LOAD_FONT.read().unwrap(), Some(1));
     }
 
     #[test]
     fn apply_falls_back_to_default_for_missing_or_empty_font() {
         use crate::graph::settings::{REQUEST_LOAD_FONT, SELECTED_FONT};
-        seed_fonts(&["(Default)", "Fira Code"]);
+        seed_fonts(&["Adwaita Sans", "Fira Code"]);
 
-        // Family gone from this system: picker and load request revert to 0.
+        // Family gone from the catalog: picker and load request revert to 0.
         let stale = AppConfig {
             font_name: "Nope".to_string(),
             ..AppConfig::from_statics()
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(*SELECTED_FONT.read().unwrap(), Some(0));
         assert_eq!(*REQUEST_LOAD_FONT.read().unwrap(), Some(0));
 
-        // Empty name (default font): same, and the serialization keeps it "".
+        // Empty name (default row 0): same, and the serialization keeps it "".
         let defaulted = AppConfig {
             font_name: String::new(),
             ..AppConfig::from_statics()

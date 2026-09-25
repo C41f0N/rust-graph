@@ -3,3 +3,4 @@
 - whiteboards attached to each node
 - fix segmentation fault
 - fix the loading block after id 5 in the start
+- graph rewrapping (directed edges converted to subgraph)
