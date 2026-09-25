@@ -29,6 +29,14 @@ pub struct NoteEntry {
     // The name, or `parent/name` when the project holds two notes with the
     // same stem so Ctrl+K can tell them apart.
     pub display: String,
+    // The note path relative to the project root with the ".md" dropped
+    // (`alpha/inner`). Shown dim and small for notes inside a sub-graph.
+    pub path_rel: String,
+    // Whether the note lives inside a sub-graph folder (a sibling directory
+    // of some `owner.md`). The palette flags those nodes so picking a note
+    // that would only be reachable by descending into a nested graph is
+    // recognisable at a glance.
+    pub nested: bool,
 }
 
 pub struct PaletteState {
@@ -58,6 +66,28 @@ fn stem(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+// A directory is a sub-graph folder when a note file with matching name sits
+// next to it (`alpha.md` owns `alpha/`). A note is *inside* a sub-graph when
+// any ancestor directory (up to the project root) is such a folder, so notes
+// nested under `alpha/deep/` still belong to the `alpha` sub-graph.
+fn inside_subgraph(p: &Path) -> bool {
+    let mut dir = p.parent();
+    while let Some(d) = dir {
+        let dir_name = d
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !dir_name.is_empty()
+            && d.parent()
+                .is_some_and(|pp| pp.join(format!("{dir_name}.md")).exists())
+        {
+            return true;
+        }
+        dir = d.parent();
+    }
+    false
+}
+
 fn build_index(root: &Path) -> Vec<NoteEntry> {
     let paths = crate::filesystem::scan_tree(root);
     let mut counts: HashMap<String, usize> = HashMap::new();
@@ -68,25 +98,25 @@ fn build_index(root: &Path) -> Vec<NoteEntry> {
         .into_iter()
         .map(|p| {
             let name = stem(&p);
-            let duplicated = counts.get(&name).copied().unwrap_or(0) > 1;
-            let display = if duplicated {
-                let rel = p
-                    .parent()
-                    .and_then(|par| par.strip_prefix(root).ok())
-                    .map(|r| r.to_string_lossy())
-                    .unwrap_or_default();
-                if rel.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{}/{}", rel, name)
-                }
-            } else {
+            let rel_dir = p
+                .parent()
+                .and_then(|par| par.strip_prefix(root).ok())
+                .map(|r| r.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let path_rel = if rel_dir.is_empty() {
                 name.clone()
+            } else {
+                format!("{}/{}", rel_dir, name)
             };
+            let duplicated = counts.get(&name).copied().unwrap_or(0) > 1;
+            let display = if duplicated { path_rel.clone() } else { name.clone() };
+            let nested = inside_subgraph(&p);
             NoteEntry {
                 name,
                 path: p,
                 display,
+                path_rel,
+                nested,
             }
         })
         .collect()
@@ -300,31 +330,50 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         shown.saturating_sub(1)
     };
 
-    let mut max_w = 0;
-    for i in off..off + st.matches.len().min(mcap) {
-        if let Some(&idx) = st.matches.get(i) {
-            if let Some(e) = st.index.get(idx) {
-                max_w = max_w.max(text::measure(d, &e.display, font_size));
-            }
-        }
-    }
-    if st.show_create {
-        let label = format!("+ Create '{}'", st.filter.trim());
-        max_w = max_w.max(text::measure(d, &label, font_size));
-    }
-
-    let pad_x = 24;
-    let box_w = max_w + pad_x * 2 + 40;
+    let pad_x = 18;
+    let path_font = (font_size * 70 / 100).max(11);
+    let input_h = font_size + 16;
+    // A deliberate 60% of the screen width: the list is not the star here,
+    // the typed query is, and the wide box gives long paths room to breathe.
+    let box_w = ((sw as f32 * 0.6) as i32).max(420);
     let shown_i32 = shown as i32;
-    let box_h = shown_i32 * item_h + 12;
+    let box_h = input_h + shown_i32 * item_h + 12;
     let cx = sw / 2 - box_w / 2;
     let cy = sh / 2 - box_h / 2;
 
     d.draw_rectangle(cx, cy, box_w, box_h, config::AUTOCOMPLETE_BG);
     d.draw_rectangle_lines(cx, cy, box_w, box_h, Color::new(110, 120, 150, 255));
 
+    // Input line: the filter text (or a dim placeholder) plus a blinking
+    // caret, so typing feels like editing rather than hidden single-key pushes.
+    let (input_label, input_color) = if st.filter.is_empty() {
+        ("type a note name...".to_string(), Color::new(150, 160, 180, 180))
+    } else {
+        (st.filter.clone(), Color::WHITE)
+    };
+    let input_top = cy + 10;
+    text::draw(d, &input_label, cx + pad_x, input_top, font_size, input_color);
+    let text_w = text::measure(d, &input_label, font_size);
+    let blink = ((d.get_time() * 2.0) as i32) % 2 == 0;
+    if blink {
+        d.draw_rectangle(
+            cx + pad_x + text_w + 3,
+            input_top + 3,
+            2,
+            font_size - 5,
+            Color::WHITE,
+        );
+    }
+    d.draw_line(
+        cx + 4,
+        cy + input_h,
+        cx + box_w - 4,
+        cy + input_h,
+        Color::new(80, 90, 115, 255),
+    );
+
     for r in 0..shown {
-        let row_y = cy + 6 + r as i32 * item_h;
+        let row_y = cy + 8 + input_h + r as i32 * item_h;
         let create_row = r >= shown - st.show_create as usize && st.show_create;
         if r == hl {
             d.draw_rectangle(
@@ -335,24 +384,42 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                 config::AUTOCOMPLETE_SELECTED_BG,
             );
         }
-        let (label, color) = if create_row {
-            (
-                format!("+ Create '{}'", st.filter.trim()),
+        if create_row {
+            text::draw(
+                d,
+                &format!("+ Create '{}'", st.filter.trim()),
+                cx + pad_x,
+                row_y + (item_h - font_size) / 2,
+                font_size,
                 Color::new(150, 220, 160, 255),
-            )
-        } else {
-            let idx = st.matches[off + r];
-            let e = &st.index[idx];
-            (e.display.clone(), Color::WHITE)
-        };
+            );
+            continue;
+        }
+        let idx = st.matches[off + r];
+        let e = &st.index[idx];
         text::draw(
             d,
-            &label,
+            &e.display,
             cx + pad_x,
             row_y + (item_h - font_size) / 2,
             font_size,
-            color,
+            Color::WHITE,
         );
+        // Notes inside a sub-graph carry a small dim path (their project-root-
+        // relative location) instead of a badge, so the eye distinguishes
+        // "lives in a nested graph" from "plain note" without reading every row.
+        if e.nested {
+            let name_w = text::measure(d, &e.display, font_size);
+            let sub = format!("{}/", e.path_rel);
+            text::draw(
+                d,
+                &sub,
+                cx + pad_x + name_w + 8,
+                row_y + (item_h - path_font) / 2,
+                path_font,
+                Color::new(150, 155, 175, 210),
+            );
+        }
     }
 }
 
@@ -368,6 +435,8 @@ mod tests {
                 name: n.to_string(),
                 path: PathBuf::from(format!("/n{i}.md")),
                 display: n.to_string(),
+                path_rel: n.to_string(),
+                nested: false,
             })
             .collect();
         let mut st = PaletteState {
@@ -426,6 +495,33 @@ mod tests {
         let dup: Vec<&str> = index.iter().map(|e| e.display.as_str()).collect();
         assert!(dup.contains(&"sub/alpha"), "dup gets parent: {dup:?}");
         assert_eq!(index.iter().filter(|e| e.name == "alpha").count(), 2);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn notes_inside_subgraph_folder_are_flagged() {
+        let root = std::env::temp_dir().join("rg_nested_test");
+        let _ = std::fs::remove_dir_all(&root);
+        // `alpha.md` owns the sub-graph folder `alpha/`.
+        std::fs::create_dir_all(root.join("alpha")).unwrap();
+        std::fs::create_dir_all(root.join("alpha").join("deep")).unwrap();
+        std::fs::write(root.join("alpha.md"), "x").unwrap();
+        std::fs::write(root.join("alpha").join("inner.md"), "x").unwrap();
+        std::fs::write(root.join("alpha").join("deep").join("leaf.md"), "x").unwrap();
+        std::fs::write(root.join("plain.md"), "x").unwrap();
+
+        let index = build_index(&root);
+        let inner = index.iter().find(|e| e.name == "inner").unwrap();
+        assert!(inner.nested, "inside alpha/ sub-graph folder");
+        assert_eq!(inner.path_rel, "alpha/inner");
+        let leaf = index.iter().find(|e| e.name == "leaf").unwrap();
+        assert!(leaf.nested, "deep inside the sub-graph");
+        assert_eq!(leaf.path_rel, "alpha/deep/leaf");
+        let owner = index.iter().find(|e| e.name == "alpha").unwrap();
+        assert!(!owner.nested, "the owning note is not inside a sub-graph");
+        let plain = index.iter().find(|e| e.name == "plain").unwrap();
+        assert!(!plain.nested);
 
         let _ = std::fs::remove_dir_all(&root);
     }
