@@ -1143,21 +1143,17 @@ guide_runs.retain(|r| {
                         };
                         let seg_w = text::measure(&*s, text, line_font_size);
 
-                        // Rendered [[wikilinks]] are interactive: record their
-                        // screen rect for the input handler and, when the mouse
-                        // is over one, back and underline it so it reads as a
-                        // clickable affordance.
+                        // Rendered links (both [[wikilinks]] and [text]([[target]])) are
+                        // interactive: record their screen rect for the input
+                        // handler and, when the mouse is over one, back and
+                        // underline it so it reads as a clickable affordance.
                         if seg.style == markdown::SegmentStyle::Link {
                             let hit = hit_test::LinkHit {
                                 x: seg_x,
                                 y: draw_top + padding / 2,
                                 w: seg_w,
                                 h: line_font_size,
-                                target: seg
-                                    .text
-                                    .trim_start_matches("[[")
-                                    .trim_end_matches("]]")
-                                    .to_string(),
+                                target: seg.target.clone().unwrap_or_default(),
                             };
                             let m = s.get_mouse_position();
                             if m.x as i32 >= hit.x

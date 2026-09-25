@@ -11,6 +11,9 @@ pub enum SegmentStyle {
 pub struct Segment {
     pub text: String,
     pub style: SegmentStyle,
+    // For Link segments: the raw target (e.g. "alpha" from [[alpha]] or
+    // "target" from [text]([[target]])). Empty for non-link segments.
+    pub target: Option<String>,
 }
 
 // Split a line into styled segments. Markers: [[wikilink]] (Link) and
@@ -28,13 +31,53 @@ pub fn line_segments(line: &str) -> Vec<Segment> {
         if bytes[i] == b'[' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
             if let Some(le) = find_closer_bytes(bytes, i + 2, b']', b']') {
                 flush_plain(&mut segments, line, plain_start, i);
+                let inner = &line[i + 2..le - 2];
+                let target = inner.trim_end_matches(".md").to_string();
                 segments.push(Segment {
                     text: display_link(&line[i..le]),
                     style: SegmentStyle::Link,
+                    target: Some(target),
                 });
                 plain_start = le;
                 i = le;
                 continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Markdown-style link with wikilink target: [text]([[target]])
+        if bytes[i] == b'[' {
+            // Find the closing ] of the link text
+            if let Some(text_end) = find_closer_single(bytes, i + 1, b']') {
+                // Check for ]([[ pattern (after link text ] comes ( then [[)
+                if text_end + 3 < bytes.len()
+                    && bytes[text_end + 1] == b'('
+                    && bytes[text_end + 2] == b'['
+                    && bytes[text_end + 3] == b'['
+                {
+                    // Find the closing ]]) of the wikilink target
+                    // find_closer_bytes returns position AFTER the pair (j+2)
+                    if let Some(target_end) = find_closer_bytes(bytes, text_end + 4, b']', b']') {
+                        // target_end is position after the closing ]], so the ) is at target_end
+                        if target_end < bytes.len() && bytes[target_end] == b')' {
+                            flush_plain(&mut segments, line, plain_start, i);
+                            let link_text = &line[i + 1..text_end];
+                            // target_inner: from after (( up to before first ] of closing ]]
+                            // target_end is after the pair, so first ] is at target_end - 2
+                            let target_inner = &line[text_end + 4..target_end - 2];
+                            let target = target_inner.trim_end_matches(".md").to_string();
+                            segments.push(Segment {
+                                text: link_text.to_string(),
+                                style: SegmentStyle::Link,
+                                target: Some(target),
+                            });
+                            plain_start = target_end + 1; // skip ])
+                            i = target_end + 1;
+                            continue;
+                        }
+                    }
+                }
             }
             i += 1;
             continue;
@@ -46,6 +89,7 @@ if bytes[i] == b'`' {
             segments.push(Segment {
                 text: line[i..=ce].to_string(),
                 style: SegmentStyle::Code,
+                target: None,
             });
             plain_start = ce + 1;
             i = ce + 1;
@@ -63,6 +107,7 @@ if bytes[i] == b'`' {
                 segments.push(Segment {
                     text: inner,
                     style,
+                    target: None,
                 });
                 let end = j + m_len;
                 plain_start = end;
@@ -96,6 +141,7 @@ pub fn raw_segments(line: &str) -> Vec<Segment> {
     vec![Segment {
         text: line.to_string(),
         style: SegmentStyle::Plain,
+        target: None,
     }]
 }
 
@@ -131,18 +177,17 @@ fn flush_plain(segments: &mut Vec<Segment>, line: &str, start: usize, end: usize
         segments.push(Segment {
             text: line[start..end].to_string(),
             style: SegmentStyle::Plain,
+            target: None,
         });
     }
 }
 
-// The display form of a wikilink: the ".md" extension is hidden, so
-// [[alpha.md]] draws as [[alpha]]. `render_line` and `strip_inline` both
-// build on line_segments, so draw and measure stay in sync.
+// The display form of a wikilink: the ".md" extension is hidden, and
+// the brackets are not drawn, so [[alpha.md]] draws as alpha.
 fn display_link(text: &str) -> String {
     if text.len() >= 4 && text.starts_with("[[") && text.ends_with("]]") {
         let inner = &text[2..text.len() - 2];
-        let inner = inner.trim_end_matches(".md");
-        format!("[[{}]]", inner)
+        inner.trim_end_matches(".md").to_string()
     } else {
         text.to_string()
     }
@@ -603,16 +648,31 @@ mod tests {
                 SegmentStyle::Plain,
             ]
         );
-        assert_eq!(segs[1].text, "[[alpha]]");
+        assert_eq!(segs[1].text, "alpha");
     }
 
     #[test]
     fn wikilink_hides_md_extension() {
-        assert_eq!(display_link("[[alpha.md]]"), "[[alpha]]");
-        assert_eq!(display_link("[[beta]]"), "[[beta]]");
-        assert_eq!(display_link("[[cat.png]]"), "[[cat.png]]");
-        assert_eq!(display_link("[[nested/deep.md]]"), "[[nested/deep]]");
+        assert_eq!(display_link("[[alpha.md]]"), "alpha");
+        assert_eq!(display_link("[[beta]]"), "beta");
+        assert_eq!(display_link("[[cat.png]]"), "cat.png");
+        assert_eq!(display_link("[[nested/deep.md]]"), "nested/deep");
         assert_eq!(display_link("plain"), "plain");
+    }
+
+    #[test]
+    fn markdown_link_with_wikilink_target() {
+        let segs = line_segments("see [show text]([[alpha.md]]) here");
+        assert_eq!(
+            styles(&segs),
+            vec![
+                SegmentStyle::Plain,
+                SegmentStyle::Link,
+                SegmentStyle::Plain,
+            ]
+        );
+        assert_eq!(segs[1].text, "show text");
+        assert_eq!(segs[1].target.as_deref(), Some("alpha"));
     }
 
     #[test]
@@ -628,7 +688,7 @@ mod tests {
             ]
         );
         assert_eq!(segs[1].text, "`x`");
-        assert_eq!(segs[3].text, "[[y]]");
+        assert_eq!(segs[3].text, "y");
     }
 
     #[test]
