@@ -11,6 +11,16 @@ use crate::frontmatter;
 
 use std::path::PathBuf;
 
+// One accumulated indent-guide run: a vertical line spanning the visual lines
+// that all share the same indent level. x is the guide's column x, y the glyph
+// top where the run started, h its accumulated height.
+struct GuideRun {
+    lvl: u32,
+    x: i32,
+    y: i32,
+    h: i32,
+}
+
 // Layout for one visual line: the font size used for its glyphs, its advance
 // height (image height for whole-line image links, otherwise the line font
 // size; line spacing is added by the caller), and the image to draw (if any).
@@ -84,6 +94,11 @@ fn line_editing(
     fm_range: Option<(usize, usize)>,
     cursor_y: i32,
 ) -> bool {
+    // In navigation mode the cursor is detached: nothing edits, every line
+    // renders as formatted view-mode source.
+    if crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
     // While a mouse selection is in progress the layout freezes in view mode:
     // the caret line must not shrink when it is a heading, or the row slides
     // out from under the pointer and the hit-test snaps the caret back ("in
@@ -523,6 +538,10 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         d.draw_scissor_mode(content_x0, content_y, content_w, editor_height - header_h - crate::editor::tabs::TABS_H, |mut s| {
             let mut line_y = 0;
             let mut quote_rail: Option<(i32, i32, i32)> = None;
+            // Accumulating indent-guide runs (see the GuideRun site below);
+            // flushed to screen when a level drops, at hard continuations,
+            // and after the loop.
+            let mut guide_runs: Vec<GuideRun> = Vec::new();
             // Set so a fold caret links to the FIRST visual line of its head
             // source line, even when that line is a heading or indented prose
             // whose first slice starts past offset 0.
@@ -588,15 +607,23 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                             Some((pill_x, draw_top, pill_w, fm_h));
                     }
                     line_y += advance + config::EDITOR_LINE_SPACING;
+                    // A collapsed frontmatter bar is a hard break for any
+                    // pending indent-guide run.
+                    for r in guide_runs.drain(..) {
+                        s.draw_line(r.x, r.y, r.x, r.y + r.h, config::EDITOR_INDENT_GUIDE);
+                    }
                     continue;
                 }
 
                 // Record where the cursor's visual line sits so the view can
-                // follow it after this frame.
-                if editing_line
-                    && *cursor_x as usize >= line.start
-                    && *cursor_x as usize <= line.end
-                {
+                // follow it after this frame. In navigation mode there is no
+                // editing caret, so follow the selected line instead (its whole
+                // source line, wrapping ignored -- any visual row of it counts).
+                let nav_mode = crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed);
+                let on_selected =
+                    editing_line && *cursor_x as usize >= line.start && *cursor_x as usize <= line.end;
+                let on_selected = on_selected || (nav_mode && line.line == *cursor_y as usize);
+                if on_selected {
                     cursor_line_top = Some(line_y);
                     cursor_line_bottom = Some(line_y + advance);
                 }
@@ -604,24 +631,63 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 let content_x = content_x0 + padding + line.indent;
                 let draw_top = content_y + line_y - scroll;
 
-                // Indent guides: one faint 1px vertical per indent level,
-                // spanning the visual line's band. Consecutive lines sharing a
-                // level draw one continuous guide, and any line dedenting back
-                // below a level ends it. Skipped inside code fences (raw
-                // source) and for shallow indentation (fewer than a tab).
-                if !is_fence {
-                    let cols = markdown::content_indent(&buf[line.line]).1;
-                    for lvl in markdown::indent_guide_levels(cols, 4) {
-                        let gx = content_x0 + padding + indent_step_px * lvl as i32;
-                        s.draw_line(
-                            gx,
-                            draw_top,
-                            gx,
-                            draw_top + line_font_size,
-                            config::EDITOR_INDENT_GUIDE,
-                        );
-                    }
+                // Selected line while in navigation mode: a light vertical bar
+                // in the left gutter, drawn over every visual line of the
+                // selected source line (wrapped lines stay highlighted).
+                if crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed)
+                    && line.line == *cursor_y as usize
+                {
+                    // Start the indicator at the glyph top (`draw_top +
+                    // padding/2`, where the textual layer places every line's
+                    // text), not at the raw band top, so it always sits level
+                    // with the highlighted lines.
+                    s.draw_rectangle(
+                        content_x0 + 2,
+                        draw_top + padding / 2,
+                        3,
+                        advance,
+                        config::EDITOR_LINE_SELECT_BAR,
+                    );
                 }
+
+                // Indent guides: consecutive visual lines sharing an indent level merge
+// into ONE continuous vertical line -- each covered line extends the run
+// by its band plus line spacing -- so a guide reads as a single unbroken
+// column instead of per-line segments. Any line that drops below a level
+// (or enters a code fence, where guides are skipped as raw source) ends
+// the run, and a level re-appearing starts a fresh one. Guides run over
+// the glyph band (`padding/2` down from the band top, the same reference
+// the text and horizontal rules use) and centered inside their indent
+// column rather than pinned to its right edge.
+let cols = markdown::content_indent(&buf[line.line]).1;
+let levels = if !is_fence {
+    markdown::indent_guide_levels(cols, 4)
+} else {
+    Vec::new()
+};
+let gy = draw_top + padding / 2;
+let seg_h = advance + config::EDITOR_LINE_SPACING;
+for lvl in &levels {
+    let gx = content_x0 + padding + indent_step_px * *lvl as i32 - indent_step_px / 2;
+    match guide_runs.iter_mut().find(|r| r.lvl == *lvl) {
+        Some(r) => r.h += seg_h,
+        None => guide_runs.push(GuideRun {
+            lvl: *lvl,
+            x: gx,
+            y: gy,
+            h: seg_h,
+        }),
+    }
+}
+// End runs whose level this visual line no longer carries.
+guide_runs.retain(|r| {
+    if levels.contains(&r.lvl) {
+        true
+    } else {
+        s.draw_line(r.x, r.y, r.x, r.y + r.h, config::EDITOR_INDENT_GUIDE);
+        false
+    }
+});
 
                 // Fold caret for a source line that starts a deeper-indented
                 // block: a small chevron just left of the head line's text.
@@ -633,8 +699,8 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 if first_vl_of_line && folds.iter().any(|&(head, _)| head == line.line) {
                     let cw = 13;
                     let ch = 13;
-                    let cx = content_x - cw - 6;
-                    let cy = draw_top + (line_font_size - ch) / 2;
+                    let cx = content_x - cw - 16;
+                    let cy = draw_top + padding / 2 + (line_font_size - ch) / 2;
                     let over = {
                         let m = s.get_mouse_position();
                         m.x as i32 >= cx
@@ -690,6 +756,10 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         config::EDITOR_HR_COLOR,
                     );
                     line_y += advance + config::EDITOR_LINE_SPACING;
+                    // A rule is a hard break for any pending indent-guide run.
+                    for r in guide_runs.drain(..) {
+                        s.draw_line(r.x, r.y, r.x, r.y + r.h, config::EDITOR_INDENT_GUIDE);
+                    }
                     continue;
                 }
 
@@ -770,8 +840,10 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     }
                 }
 
-                // Draw the cursor if it's on this line
-                if *cursor_y == line.line as i32
+                // Draw the cursor if it's on this line (never in navigation mode, where
+                // the caret is detached and the line is only selected).
+                if !crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed)
+                    && *cursor_y == line.line as i32
                     && *cursor_x >= line.start as i32
                     && *cursor_x <= line.end as i32
                 {
@@ -800,9 +872,13 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         );
                     }
 
-                    // Autocomplete popup (drawn below the cursor line)
+                    // Autocomplete popup (drawn below the cursor line); never
+                    // in navigation mode, where the cursor is detached.
                     let autocomplete = crate::editor::autocomplete::AUTOCOMPLETE.read().unwrap();
-                    if autocomplete.active && !autocomplete.matches.is_empty() {
+                    if autocomplete.active
+                        && !autocomplete.matches.is_empty()
+                        && !crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed)
+                    {
                         let item_h = config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT);
                         let mut box_w = 140;
                         for name in autocomplete
@@ -1090,6 +1166,11 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 }
 
                 line_y += advance + config::EDITOR_LINE_SPACING;
+            }
+
+            // Flush any indent-guide runs still open at the end of the content.
+            for r in guide_runs.drain(..) {
+                s.draw_line(r.x, r.y, r.x, r.y + r.h, config::EDITOR_INDENT_GUIDE);
             }
 
             if let Some((x, top, h)) = quote_rail.take() {

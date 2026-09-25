@@ -187,6 +187,27 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         buffer.push(String::new());
     }
 
+    // Printable characters typed this frame, collected ONCE up front: the
+    // autocomplete/slash gates need to know "did the user type just now?",
+    // and a navigation-mode shortcut key (e/g/q) must never print itself into
+    // the buffer. The actual insertion happens later in the text-input path.
+    let typed: Vec<char> = {
+        let mut out = Vec::new();
+        while let Some(ch) = rl.get_char_pressed() {
+            if let Some(c) = char::from_u32(ch as u32) {
+                if !c.is_control() {
+                    out.push(c);
+                }
+            }
+        }
+        out
+    };
+    let typing_this_frame = !typed.is_empty()
+        || rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE)
+        || rl.is_key_pressed_repeat(KeyboardKey::KEY_BACKSPACE)
+        || rl.is_key_pressed(KeyboardKey::KEY_DELETE)
+        || rl.is_key_pressed_repeat(KeyboardKey::KEY_DELETE);
+
     let current_visual = visual_lines.iter().position(|vl| {
         vl.line == *cursor_y as usize
             && *cursor_x as usize >= vl.start
@@ -208,6 +229,93 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         let delta = (wheel * step) as i32;
         if delta != 0 {
             *scroll -= delta;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Navigation mode: the caret is detached from the text (every line
+    // renders as formatted view-source) and the cursor line is only
+    // *selected*, highlighted by a bar. Arrow keys move the selection across
+    // source lines; Enter/e re-enter edit mode on the selected line; g closes
+    // the editor into the graph; q toggles editor maximization; Esc closes
+    // the editor as well. A left-click inside the content selects the clicked
+    // line and drops straight back into editing (the normal mouse block
+    // below places the caret). Everything else is ignored here; the typed
+    // queue was already drained above so a shortcut can never type itself.
+    // ------------------------------------------------------------
+    if crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        if rl.is_key_pressed(KeyboardKey::KEY_ENTER) || rl.is_key_pressed(KeyboardKey::KEY_E) {
+            crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_G) || rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            crate::editor::CLOSE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_Q) {
+            let fs = crate::editor::FULLSCREEN.load(std::sync::atomic::Ordering::Relaxed);
+            crate::editor::FULLSCREEN.store(!fs, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_UP) || rl.is_key_pressed_repeat(KeyboardKey::KEY_UP) {
+            if let Some(current) = current_visual {
+                if current > 0 {
+                    let from = &visual_lines[current];
+                    let to = &visual_lines[current - 1];
+                    let offset = *cursor_x as usize - from.start;
+                    *cursor_y = to.line as i32;
+                    *cursor_x = (to.start + offset).min(to.end) as i32;
+                }
+            }
+            *anchor_x = *cursor_x;
+            *anchor_y = *cursor_y;
+            return;
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_DOWN) || rl.is_key_pressed_repeat(KeyboardKey::KEY_DOWN) {
+            if let Some(current) = current_visual {
+                if current + 1 < visual_lines.len() {
+                    let from = &visual_lines[current];
+                    let to = &visual_lines[current + 1];
+                    let offset = *cursor_x as usize - from.start;
+                    *cursor_y = to.line as i32;
+                    *cursor_x = (to.start + offset).min(to.end) as i32;
+                }
+            }
+            *anchor_x = *cursor_x;
+            *anchor_y = *cursor_y;
+            return;
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_HOME) || rl.is_key_pressed_repeat(KeyboardKey::KEY_HOME) {
+            *cursor_y = 0;
+            *cursor_x = 0;
+            *anchor_x = 0;
+            *anchor_y = 0;
+            return;
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_END) || rl.is_key_pressed_repeat(KeyboardKey::KEY_END) {
+            let last = buffer.len() - 1;
+            *cursor_y = last as i32;
+            *cursor_x = buffer[last].len() as i32;
+            *anchor_x = *cursor_x;
+            *anchor_y = *cursor_y;
+            return;
+        }
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            let m = rl.get_mouse_position();
+let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
+            let content_top = ey + config::EDITOR_HEADER_HEIGHT + crate::editor::tabs::TABS_H;
+            let content_h = eh - config::EDITOR_HEADER_HEIGHT - crate::editor::tabs::TABS_H;
+            if (m.y as i32) >= content_top && (m.y as i32) < content_top + content_h {
+                // Select the clicked line and re-enter edit mode; the normal
+                // mouse block below places the caret this same frame.
+                crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+                hit_test::reset_click_state();
+                // Fall through to caret placement.
+            } else {
+                return;
+            }
+        } else {
+            return;
         }
     }
 
@@ -624,23 +732,29 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // ------------------------------------------------------------
     // Slash-command picker. The "/command" text itself stays in the buffer as
     // ordinary characters; the popup is only *shown* while the caret sits in an
-    // unclosed word-initial "/..." token (detected every frame, like the [[
-    // autocomplete). Enter applies the selected command: the "/..."" text is
-    // removed and the command runs. Up/Down/Tab navigate, Esc dismisses. All
-    // other keys fall through to normal editing -- nothing is ever swallowed.
+    // unclosed word-initial "/..." token. Enter applies the selected command:
+    // the "/..."" text is removed and the command runs. Up/Down/Tab navigate,
+    // Esc dismisses. All other keys fall through to normal editing -- nothing
+    // is ever swallowed. Like the [[ autocomplete, the popup only (re)opens
+    // after the user types; moving the caret into a "/..." region never does.
     // ------------------------------------------------------------
-    {
-        let mut cmd = crate::editor::command::COMMAND_PALETTE.write().unwrap();
-        let filter =
-            crate::editor::command::detect(&buffer[*cursor_y as usize], *cursor_x as usize);
-        if filter.is_some() {
-            // A slash-command region is authoritative over link autocomplete;
-            // stop the [[ popup from also showing this frame.
-            autocomplete::AUTOCOMPLETE.write().unwrap().active = false;
-        }
-        // Mirror the [[ autocomplete refresh logic (esc_consumed reset, match
-        // filtering, sticky suppression until the region content changes).
-        cmd.esc_consumed = false;
+    let palette_was_active = crate::editor::command::COMMAND_PALETTE
+        .read()
+        .unwrap()
+        .active;
+    if typing_this_frame || palette_was_active {
+        {
+            let mut cmd = crate::editor::command::COMMAND_PALETTE.write().unwrap();
+            let filter =
+                crate::editor::command::detect(&buffer[*cursor_y as usize], *cursor_x as usize);
+            if filter.is_some() {
+                // A slash-command region is authoritative over link autocomplete;
+                // stop the [[ popup from also showing this frame.
+                autocomplete::AUTOCOMPLETE.write().unwrap().active = false;
+            }
+            // Mirror the [[ autocomplete refresh logic (esc_consumed reset, match
+            // filtering, sticky suppression until the region content changes).
+            cmd.esc_consumed = false;
         if cmd.suppress && filter.as_deref() == Some(cmd.suppress_filter.as_str()) {
             cmd.active = false;
             cmd.matches.clear();
@@ -763,6 +877,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             drop(cmd);
         }
     }
+    } // gate: typing_this_frame || palette_was_active
 
     // A finished asset import (copied by main.rs into assets/) lands here:
     // insert the link on its own line below the caret, then carry on as an
@@ -781,10 +896,16 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     }
 
     // ------------------------------------------------------------
-    // Autocomplete: detect [[ ... and handle its keys
+    // Autocomplete: detect [[ ... and handle its keys. The popup only (re)opens
+    // after the user types inside the region (or while one is already up and
+    // being filtered); merely arrowing or clicking the caret onto a [[ line
+    // never summons it.
     // ------------------------------------------------------------
 
-    autocomplete::refresh(&buffer, *cursor_y as usize, *cursor_x as usize);
+    let ac_was_active = autocomplete::AUTOCOMPLETE.read().unwrap().active;
+    if typing_this_frame || ac_was_active {
+        autocomplete::refresh(&buffer, *cursor_y as usize, *cursor_x as usize);
+    }
 
     {
         let mut state = autocomplete::AUTOCOMPLETE.write().unwrap();
@@ -900,20 +1021,10 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     }
 
     // ------------------------------------------------------------
-    // Text input
+    // Text input. `typed` was collected up front (above the mouse handling)
+    // so the autocomplete/slash gates could key off it and so a compacted
+    // shortcut key (e/g/q in nav mode) never reaches the buffer.
     // ------------------------------------------------------------
-
-    let typed: Vec<char> = {
-        let mut out = Vec::new();
-        while let Some(ch) = rl.get_char_pressed() {
-            if let Some(c) = char::from_u32(ch as u32) {
-                if !c.is_control() {
-                    out.push(c);
-                }
-            }
-        }
-        out
-    };
 
     if !typed.is_empty() {
         history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::CharInsert, edit_now_ms);
@@ -1384,5 +1495,14 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         }
         *anchor_x = *cursor_x;
         *anchor_y = *cursor_y;
+    }
+
+    // ------------------------------------------------------------
+    // Escape: detach the caret into navigation mode. (If still navigating, Esc
+    // closes the editor -- handled in the nav block above. Escape presses that
+    // belonged to the autocomplete or slash popups returned earlier.)
+    // ------------------------------------------------------------
+    if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+        crate::editor::NAV_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }

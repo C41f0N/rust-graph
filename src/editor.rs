@@ -7,9 +7,17 @@ use crate::config;
 pub static CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 // Fullscreen editor: the panel covers the whole window and its background is
-// solid. Toggled by the heading-bar button; read by main to size the panel and
-// by the renderer to pick the background.
+// solid. Toggled by the heading-bar button (or the `q` key in navigation
+// mode); read by main to size the panel and by the renderer to pick the
+// background.
 pub static FULLSCREEN: AtomicBool = AtomicBool::new(false);
+
+// Navigation mode: the cursor is detached from the text (everything renders
+// as formatted view-mode) and the line under the cursor is only *selected*,
+// highlighted by a bar. Esc enters it, Enter/e re-enter edit mode, g/q/esc
+// navigate away. Reset whenever a file loads so a document always opens in
+// edit mode.
+pub static NAV_MODE: AtomicBool = AtomicBool::new(false);
 
 // Set by the heading-bar sub-graph button (shown when the open note has a
 // companion folder) to navigate the graph into it and close the editor.

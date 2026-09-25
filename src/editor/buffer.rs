@@ -234,8 +234,10 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
         }
         // While a mouse selection is in progress every line is measured in
         // view mode (matching renderer::line_editing), so wrapping can't shift
-        // under the pointer mid-drag.
+        // under the pointer mid-drag. Navigation mode detaches the cursor the
+        // same way: nothing wraps as its own line.
         let editing_line = *cursor_y as usize == line_index
+            && !crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed)
             && !crate::editor::hit_test::MOUSE_DRAGGING.load(std::sync::atomic::Ordering::Relaxed);
         let kind = kinds.get(line_index).copied().unwrap_or(crate::editor::blocks::LineKind::Paragraph);
 
@@ -499,6 +501,9 @@ pub fn load_from_file(path: &Path) {
     *cursor_x = buffer.last().map_or(0, |l| l.len() as i32);
     *anchor_x = *cursor_x;
     *anchor_y = *cursor_y;
+    // A freshly loaded document always opens in edit mode: nav state belongs
+    // to whoever last owned the file, not to the new one.
+    crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
     ensure_trailing_newline_locked(&mut buffer);
     crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     crate::editor::LAST_EDIT_MILLIS.store(0, std::sync::atomic::Ordering::Relaxed);

@@ -368,6 +368,28 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         return;
     }
 
+    // ------------------------------------------------------------
+    // E key = open the hovered (or failing that, the selected) node in the
+    // editor as a tab, like a double-click.
+    // ------------------------------------------------------------
+
+    if !*editor_open && rl.is_key_pressed(KeyboardKey::KEY_E) {
+        let mut target = *hover_node;
+        if target.is_none() {
+            target = *selected_node;
+        }
+        if let Some(i) = target {
+            let (path, name) = {
+                let n = &nodes[i];
+                (n.path.clone(), n.name.clone())
+            };
+            *editor_open = true;
+            crate::editor::tabs::open(&path, &name);
+            *context_node = None;
+        }
+        return;
+    }
+
     // Escape dismisses an open context menu
     if (context_node.is_some() || *context_empty) && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
         *context_node = None;

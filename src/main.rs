@@ -124,16 +124,6 @@ fn main() {
             if editor_open {
                 editor::input_handler::handle_input(&mut rl);
             }
-            if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
-                let esc_consumed = {
-                    let ac = editor::autocomplete::AUTOCOMPLETE.read().unwrap();
-                    ac.esc_consumed
-                        || editor::command::COMMAND_PALETTE.read().unwrap().esc_consumed
-                };
-                if !esc_consumed {
-                    editor_open = false;
-                }
-            }
 
             // Close button in the editor heading bar
             if editor::CLOSE_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
@@ -328,6 +318,12 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
             // editor closing (its state has no node behind it anymore).
             editor::CREATING_NODE.store(false, std::sync::atomic::Ordering::Relaxed);
             *editor::NEW_NODE_NAME.write().unwrap() = String::new();
+        }
+
+        if editor_open && !was_open {
+            // Opening the editor always starts with a live caret (edit mode),
+            // never frozen in the detatched/cursorless navigation state.
+            editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
         }
 
         editor_was_open = editor_open;

@@ -91,6 +91,10 @@ pub const AUTOCOMPLETE_ITEM_HEIGHT: i32 = 18;
 pub const AUTOCOMPLETE_BG: Color = Color::new(20, 20, 20, 235);
 pub const AUTOCOMPLETE_SELECTED_BG: Color = Color::new(76, 128, 204, 160);
 
+// Highlight bar for the selected line while the editor is in navigation mode
+// (cursor detached): a light grey stripe in the left padding gutter.
+pub const EDITOR_LINE_SELECT_BAR: Color = Color::new(190, 200, 215, 170);
+
 // Context menu
 pub const CONTEXT_MENU_W: i32 = 180;
 pub const CONTEXT_MENU_ITEM_H: i32 = 30;

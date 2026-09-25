@@ -141,8 +141,8 @@ fn store_active_globals(tab: &mut Tab) {
 // active document. Caller holds no locks.
 fn load_active_globals(tab: &mut Tab) {
     let path = tab.path.clone();
-    let cursor = std::mem::replace(&mut tab.cursor, (0, 0));
-    let anchor = std::mem::replace(&mut tab.anchor, (0, 0));
+    let cursor = std::mem::replace(&mut tab.cursor, (-1, -1));
+    let anchor = std::mem::replace(&mut tab.anchor, (-1, -1));
     let scroll = std::mem::replace(&mut tab.scroll, 0);
     let dirty = std::mem::replace(&mut tab.dirty, false);
     let last_edit_ms = std::mem::replace(&mut tab.last_edit_ms, 0);
@@ -151,10 +151,15 @@ fn load_active_globals(tab: &mut Tab) {
     let run = tab.run;
 
     buffer::load_from_file(&path);
-    *buffer::CURSOR_X.write().unwrap() = cursor.0;
-    *buffer::CURSOR_Y.write().unwrap() = cursor.1;
-    *buffer::ANCHOR_X.write().unwrap() = anchor.0;
-    *buffer::ANCHOR_Y.write().unwrap() = anchor.1;
+    // A brand-new tab carries the (-1,-1) sentinel: keep the end-of-file
+    // caret that load_from_file just placed instead of overwriting it with
+    // zeroes. Every visited tab restores its stored position verbatim.
+    if cursor != (-1, -1) {
+        *buffer::CURSOR_X.write().unwrap() = cursor.0;
+        *buffer::CURSOR_Y.write().unwrap() = cursor.1;
+        *buffer::ANCHOR_X.write().unwrap() = anchor.0;
+        *buffer::ANCHOR_Y.write().unwrap() = anchor.1;
+    }
     *buffer::SCROLL_Y.write().unwrap() = scroll;
     crate::editor::DIRTY.store(dirty, std::sync::atomic::Ordering::Relaxed);
     crate::editor::LAST_EDIT_MILLIS.store(last_edit_ms, std::sync::atomic::Ordering::Relaxed);
@@ -193,11 +198,14 @@ pub fn open(path: &Path, name: &str) -> usize {
         if let Some(existing) = find_by_path(&tabs, path) {
             existing
         } else {
+            // cursor/anchor (-1,-1) mark "never positioned": load_active_globals
+            // keeps the end-of-file caret placed by load_from_file instead of
+            // clamping a fresh document to (0,0).
             tabs.push(Tab {
                 name: name.to_string(),
                 path: path.to_path_buf(),
-                cursor: (0, 0),
-                anchor: (0, 0),
+                cursor: (-1, -1),
+                anchor: (-1, -1),
                 scroll: 0,
                 dirty: false,
                 last_edit_ms: 0,
