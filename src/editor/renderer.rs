@@ -132,7 +132,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
     let anchor_x = buffer::ANCHOR_X.read().unwrap();
     let anchor_y = buffer::ANCHOR_Y.read().unwrap();
     let font_color = config::EDITOR_FONT_COLOR;
-    let padding = config::scaled_size(config::EDITOR_PADDING);
+    let padding = config::scaled_size(config::editor_padding());
 
     let editor_height = (editor_dimentions.y * config::height() as f32) as i32;
     let editor_width = (editor_dimentions.x * config::width() as f32) as i32;
@@ -462,7 +462,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             let editing = line_editing(vl, fm_range, *cursor_y);
             let (fsz, adv, img) =
                 line_layout(vl, &buf[vl.line], kinds.get(vl.line).copied().unwrap_or(blocks::LineKind::Paragraph), editing, content_x0, padding, max_width);
-            total_h += adv + config::EDITOR_LINE_SPACING;
+            total_h += adv + config::line_spacing();
             layouts.push((fsz, adv, img));
         }
 
@@ -507,7 +507,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         fm_bar: kind == blocks::LineKind::Frontmatter && !editing,
                     });
                 }
-                line_y += adv + config::EDITOR_LINE_SPACING;
+                line_y += adv + config::line_spacing();
             }
             *hit_test::VISUAL_HIT.lock().unwrap() = hits;
         }
@@ -541,7 +541,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     min_line = min_line.min(vl.line);
                     max_line = max_line.max(vl.line);
                 }
-                line_y += advance + config::EDITOR_LINE_SPACING;
+                line_y += advance + config::line_spacing();
             }
             *buffer::DRAW_LINE_RANGE.write().unwrap() =
                 if min_line == usize::MAX { (0, 0) } else { (min_line, max_line) };
@@ -662,7 +662,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         *hit_test::FRONTMATTER_PILL.lock().unwrap() =
                             Some((pill_x, draw_top, pill_w, fm_h));
                     }
-                    line_y += advance + config::EDITOR_LINE_SPACING;
+                    line_y += advance + config::line_spacing();
                     // A collapsed frontmatter bar is a hard break for any
                     // pending indent-guide run.
                     for r in guide_runs.drain(..) {
@@ -722,7 +722,7 @@ let levels = if !is_fence {
     Vec::new()
 };
 let gy = draw_top + padding / 2;
-let seg_h = advance + config::EDITOR_LINE_SPACING;
+let seg_h = advance + config::line_spacing();
 for lvl in &levels {
     let gx = content_x0 + padding + indent_step_px * *lvl as i32 - indent_step_px / 2;
     match guide_runs.iter_mut().find(|r| r.lvl == *lvl) {
@@ -755,7 +755,7 @@ guide_runs.retain(|r| {
                 if first_vl_of_line && folds.iter().any(|&(head, _)| head == line.line) {
                     let cw = 13;
                     let ch = 13;
-                    let cx = content_x - cw - 16;
+                    let cx = (content_x0 + 2).max(content_x0 + 2); // gutter-aligned, left of text area
                     let cy = draw_top + padding / 2 + (line_font_size - ch) / 2;
                     let over = {
                         let m = s.get_mouse_position();
@@ -811,7 +811,7 @@ guide_runs.retain(|r| {
                         y_mid,
                         config::EDITOR_HR_COLOR,
                     );
-                    line_y += advance + config::EDITOR_LINE_SPACING;
+                    line_y += advance + config::line_spacing();
                     // A rule is a hard break for any pending indent-guide run.
                     for r in guide_runs.drain(..) {
                         s.draw_line(r.x, r.y, r.x, r.y + r.h, config::EDITOR_INDENT_GUIDE);
@@ -951,9 +951,9 @@ guide_runs.retain(|r| {
                         let box_h = (count as i32) * item_h;
 
                         let mut pop_x = cursor_x_abs.min(content_x0 + content_w - box_w - padding);
-                        let mut pop_y = cursor_y_abs + line_font_size + config::EDITOR_PADDING;
+                        let mut pop_y = cursor_y_abs + line_font_size + config::editor_padding();
                         if pop_y + box_h > editor_bottom - padding {
-                            pop_y = pop_y - box_h - line_font_size - config::EDITOR_PADDING;
+                            pop_y = pop_y - box_h - line_font_size - config::editor_padding();
                         }
                         pop_x = pop_x.max(content_x0 + padding);
                         // Keep the popup inside the clipped content area.
@@ -1013,9 +1013,9 @@ guide_runs.retain(|r| {
                         let box_h = (count as i32) * item_h;
 
                         let mut pop_x = cursor_x_abs.min(content_x0 + content_w - box_w - padding);
-                        let mut pop_y = cursor_y_abs + line_font_size + config::EDITOR_PADDING;
+                        let mut pop_y = cursor_y_abs + line_font_size + config::editor_padding();
                         if pop_y + box_h > editor_bottom - padding {
-                            pop_y = pop_y - box_h - line_font_size - config::EDITOR_PADDING;
+                            pop_y = pop_y - box_h - line_font_size - config::editor_padding();
                         }
                         pop_x = pop_x.max(content_x0 + padding);
                         pop_y = pop_y.max(content_y);
@@ -1062,7 +1062,7 @@ guide_runs.retain(|r| {
                 if is_quote && !editing_line {
                     let (_, _, h) =
                         quote_rail.get_or_insert((content_x0 + padding, draw_top, 0));
-                    *h += advance + config::EDITOR_LINE_SPACING;
+                    *h += advance + config::line_spacing();
                 } else {
                     if let Some((x, top, h)) = quote_rail.take() {
                         s.draw_rectangle(x, top, 3, h, config::EDITOR_BLOCKQUOTE_BAR);
@@ -1257,7 +1257,7 @@ guide_runs.retain(|r| {
                     }
                 }
 
-                line_y += advance + config::EDITOR_LINE_SPACING;
+                line_y += advance + config::line_spacing();
             }
 
             // Flush any indent-guide runs still open at the end of the content.

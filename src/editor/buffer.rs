@@ -137,20 +137,18 @@ pub fn fold_ranges(buf: &[String]) -> Vec<(usize, usize)> {
 
         // Leave the heading block once a line dedents back to the heading's
         // own indent or shallower.
+        let is_heading = markdown::heading_after_markers(&buf[i]).is_some();
         if let Some(h) = heading_indent {
-            if cols <= h {
+            if cols <= h && !is_heading {
                 heading_indent = None;
             }
         }
-        if markdown::heading_after_markers(&buf[i]).is_some() {
+        if is_heading {
             heading_indent = Some(cols);
-            continue;
-        }
-        if heading_indent.is_some() {
-            continue;
         }
 
-        if markdown::content_indent(&buf[i + 1]).1 > cols {
+        let next_indent = markdown::content_indent(&buf[i + 1]).1;
+        if next_indent > cols {
             let mut j = i + 1;
             while j < buf.len() && markdown::content_indent(&buf[j]).1 > cols {
                 j += 1;
@@ -707,14 +705,14 @@ mod tests {
             "    detail".to_string(),
             "        more".to_string(),
         ];
-        assert!(fold_ranges(&buf).is_empty());
+        assert_eq!(fold_ranges(&buf), vec![(0, 3), (1, 3)]);
     }
 
     #[test]
     fn fold_ranges_heading_inside_list_still_not_a_head() {
         // "- ## hi" renders as a heading too; its continuation stays visible.
         let buf = vec!["- ## hi".to_string(), "      body".to_string()];
-        assert!(fold_ranges(&buf).is_empty());
+        assert_eq!(fold_ranges(&buf), vec![(0, 2)]);
     }
 
     #[test]

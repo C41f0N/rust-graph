@@ -208,14 +208,35 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
             let (px, py) = (settings::panel_x(), settings::panel_y());
             let (pw, ph) = (settings::panel_w(), settings::panel_h());
-            let (th, rh) = (settings::title_h(), settings::row_h());
+            let rh = settings::row_h();
             let inside = mouse.x as i32 >= px
                 && mouse.x as i32 <= px + pw
                 && mouse.y as i32 >= py
                 && mouse.y as i32 <= py + ph;
             if inside {
+                // A press on an option stepper adjusts that setting (and
+                // persists it) instead of picking a font. Checked before the
+                // font rows, which start lower down anyway.
+                let mut handled = false;
+                for row in 0..settings::OPTION_ROWS {
+                    let (minus, plus) = settings::stepper_rects(row);
+                    for (rect, up) in [(minus, true), (plus, false)] {
+                        let hit = mouse.x as i32 >= rect.x as i32
+                            && mouse.x as i32 <= (rect.x + rect.width) as i32
+                            && mouse.y as i32 >= rect.y as i32
+                            && mouse.y as i32 <= (rect.y + rect.height) as i32;
+                        if hit {
+                            settings::nudge_option(row, up);
+                            handled = true;
+                        }
+                    }
+                }
+                if handled {
+                    return;
+                }
+
                 // Click on a row picks that font; main.rs loads it next frame.
-                let list_top = py + th;
+                let list_top = settings::font_list_top();
                 let row = (mouse.y as i32 - list_top) / rh;
                 let idx = *settings::SETTINGS_SCROLL.read().unwrap() as i32 + row;
                 if row >= 0 && idx >= 0 && (idx as usize) < fonts_len {

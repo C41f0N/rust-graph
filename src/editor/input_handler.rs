@@ -363,7 +363,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
         let content_top = ey + header_h + crate::editor::tabs::TABS_H;
         let content_h = eh - header_h - crate::editor::tabs::TABS_H;
         let bar_w = 6;
-        let bar_x = ex + ew - bar_w - config::scaled_size(config::EDITOR_PADDING);
+        let bar_x = ex + ew - bar_w - config::scaled_size(config::editor_padding());
 
         // --- Left press ---
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
@@ -507,7 +507,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
                     }
 
                     if !row.image {
-                        let px = m.x as i32 - (ex + config::scaled_size(config::EDITOR_PADDING));
+                        let px = m.x as i32 - (ex + config::scaled_size(config::editor_padding()));
                         let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s, st| text::measure_styled(&rl, t, s, st));
                         let off = off as i32;
 
@@ -583,7 +583,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
 
                     if let Some(row) = hit_test::row_at_y(&hits, rel_y) {
                         if !row.image && !row.fm_bar {
-                            let px = m.x as i32 - (ex + config::scaled_size(config::EDITOR_PADDING));
+                            let px = m.x as i32 - (ex + config::scaled_size(config::editor_padding()));
                             let off = hit_test::offset_at_px(&buffer[row.line], row, px, |t, s, st| {
                                 text::measure_styled(&rl, t, s, st)
                             });

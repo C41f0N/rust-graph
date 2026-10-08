@@ -478,12 +478,95 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             Color::new(255, 255, 255, 50),
         );
 
+        // --- Editor options section (modifiable layout values) ---
+        let section_font = config::scaled_size(14);
+        let step_font = config::scaled_size(16);
+        text::draw(
+            d,
+            "EDITOR",
+            px + 12,
+            settings::options_top() + (settings::options_label_h() - section_font) / 2,
+            section_font,
+            Color::new(150, 158, 190, 255),
+        );
+        for row in 0..settings::OPTION_ROWS {
+            let row_y = settings::option_row_y(row);
+            let (value, min, max) = settings::option_value(row);
+            text::draw(
+                d,
+                settings::option_label(row),
+                px + 12,
+                row_y + (rh - section_font) / 2,
+                section_font,
+                Color::WHITE,
+            );
+            // Value, right-aligned just left of the steppers, dimmed once the
+            // setting sits at a limit so a dead press reads as dead.
+            let at_limit = (value == min && min != max) || value == max;
+            let vlabel = format!("{value}px");
+            let vw = text::measure(d, &vlabel, section_font);
+            let (minus, plus) = settings::stepper_rects(row);
+            text::draw(
+                d,
+                &vlabel,
+                minus.x as i32 - 10 - vw,
+                row_y + (rh - section_font) / 2,
+                section_font,
+                if at_limit {
+                    Color::new(130, 138, 160, 255)
+                } else {
+                    Color::new(200, 210, 230, 255)
+                },
+            );
+            for (rect, glyph, up) in [(minus, "-", false), (plus, "+", true)] {
+                let hovered = screen_mouse.x as i32 >= rect.x as i32
+                    && screen_mouse.x as i32 <= (rect.x + rect.width) as i32
+                    && screen_mouse.y as i32 >= rect.y as i32
+                    && screen_mouse.y as i32 <= (rect.y + rect.height) as i32;
+                // A press that would not move the value stays dimmed.
+                let live = settings::nudge_preview(row, up);
+                d.draw_rectangle_rounded(
+                    rect,
+                    0.4,
+                    4,
+                    if hovered && live {
+                        Color::new(76, 128, 204, 200)
+                    } else if live {
+                        Color::new(76, 128, 204, 110)
+                    } else {
+                        Color::new(90, 100, 125, 70)
+                    },
+                );
+                let gw = text::measure(d, glyph, step_font);
+                text::draw(
+                    d,
+                    glyph,
+                    rect.x as i32 + ((rect.width as i32) - gw) / 2,
+                    rect.y as i32 + ((rect.height as i32) - step_font) / 2,
+                    step_font,
+                    if live {
+                        Color::WHITE
+                    } else {
+                        Color::new(120, 128, 150, 255)
+                    },
+                );
+            }
+        }
+        // Divider between the options and the font list below.
+        let list_top = settings::font_list_top();
+        d.draw_line(
+            px,
+            list_top - config::scaled_size(4),
+            px + pw,
+            list_top - config::scaled_size(4),
+            Color::new(255, 255, 255, 50),
+        );
+
         let fonts = crate::graph::settings::FONTS.read().unwrap();
         let scroll = *crate::graph::settings::SETTINGS_SCROLL.read().unwrap();
         let selected = *crate::graph::settings::SELECTED_FONT.read().unwrap();
 
-        let list_top = py + th;
-        let list_h = ph - th;
+        let list_h = py + ph - list_top;
 
         let mut sc = d.begin_scissor_mode(px + 1, list_top, pw - 2, list_h - 1);
         for i in 0..settings::SETTINGS_VISIBLE_ROWS {

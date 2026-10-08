@@ -61,8 +61,40 @@ pub fn editor_panel_bounds() -> (i32, i32, i32, i32) {
 
 pub const EDITOR_FONT_SIZE: i32 = 20;
 pub const EDITOR_HEADING_SIZE: [i32; 6] = [70, 52, 42, 33, 25, 21];
-pub const EDITOR_PADDING: i32 = 12;
-pub const EDITOR_LINE_SPACING: i32 = 2;
+// Horizontal padding (either side) between the editor's content edge and its
+// text. Modifiable from the settings dialog, hence the RwLock. Like every other
+// editor pixel it is a base value the text zoom scales.
+pub static EDITOR_PADDING: RwLock<i32> = RwLock::new(EDITOR_PADDING_DEFAULT);
+pub const EDITOR_PADDING_DEFAULT: i32 = 12;
+pub const EDITOR_PADDING_MIN: i32 = 0;
+pub const EDITOR_PADDING_MAX: i32 = 96;
+// Extra vertical gap between consecutive lines. Also modifiable, but unlike the
+// padding it stays unscaled: it is a fixed physical glue between rows, so
+// cranking the zoom does not tear text apart any further.
+pub static EDITOR_LINE_SPACING: RwLock<i32> = RwLock::new(EDITOR_LINE_SPACING_DEFAULT);
+pub const EDITOR_LINE_SPACING_DEFAULT: i32 = 2;
+pub const EDITOR_LINE_SPACING_MIN: i32 = 0;
+pub const EDITOR_LINE_SPACING_MAX: i32 = 48;
+// How much one minus/plus press moves each setting in the settings dialog.
+pub const EDITOR_PADDING_STEP: i32 = 4;
+
+pub fn editor_padding() -> i32 {
+    *EDITOR_PADDING.read().unwrap()
+}
+
+pub fn set_editor_padding(v: i32) {
+    *EDITOR_PADDING.write().unwrap() = v.clamp(EDITOR_PADDING_MIN, EDITOR_PADDING_MAX);
+}
+
+pub fn line_spacing() -> i32 {
+    *EDITOR_LINE_SPACING.read().unwrap()
+}
+
+pub fn set_line_spacing(v: i32) {
+    *EDITOR_LINE_SPACING.write().unwrap() =
+        v.clamp(EDITOR_LINE_SPACING_MIN, EDITOR_LINE_SPACING_MAX);
+}
+
 pub const EDITOR_CURSOR_HEIGHT_RATIO: f32 = 0.8;
 pub const EDITOR_HEADER_HEIGHT: i32 = 40;
 // Maximum height a whole-line image link is scaled down to in the editor.
@@ -133,5 +165,27 @@ mod tests {
         assert!(scaled_size(20) >= 1);
 
         *TEXT_ZOOM.write().unwrap() = 1.0;
+    }
+
+    // Same global-state caveat as the zoom test: run single-threaded.
+    #[test]
+    fn editor_metrics_setters_clamp_to_range() {
+        set_editor_padding(24);
+        assert_eq!(editor_padding(), 24);
+        set_editor_padding(EDITOR_PADDING_MAX + 50);
+        assert_eq!(editor_padding(), EDITOR_PADDING_MAX);
+        set_editor_padding(-3);
+        assert_eq!(editor_padding(), EDITOR_PADDING_MIN);
+
+        set_line_spacing(8);
+        assert_eq!(line_spacing(), 8);
+        set_line_spacing(EDITOR_LINE_SPACING_MAX + 50);
+        assert_eq!(line_spacing(), EDITOR_LINE_SPACING_MAX);
+        set_line_spacing(-1);
+        assert_eq!(line_spacing(), EDITOR_LINE_SPACING_MIN);
+
+        // Leave the process globals on their defaults for the other tests.
+        set_editor_padding(EDITOR_PADDING_DEFAULT);
+        set_line_spacing(EDITOR_LINE_SPACING_DEFAULT);
     }
 }

@@ -24,6 +24,8 @@ pub struct AppConfig {
     pub graph: [f32; 9],
     pub cooling: bool,
     pub panel: bool,
+    pub padding: i32,
+    pub line_spacing: i32,
 }
 
 impl AppConfig {
@@ -39,6 +41,8 @@ impl AppConfig {
             graph: param_values(),
             cooling: *ALPHA_COOLING_ENABLED.read().unwrap(),
             panel: *SHOW_FORCE_PANEL.read().unwrap(),
+            padding: config::editor_padding(),
+            line_spacing: config::line_spacing(),
         }
     }
 
@@ -48,6 +52,10 @@ impl AppConfig {
         *SHOW_FORCE_PANEL.write().unwrap() = self.panel;
         *config::TEXT_ZOOM.write().unwrap() =
             self.zoom.clamp(config::TEXT_ZOOM_MIN, config::TEXT_ZOOM_MAX);
+        // The setters clamp, so a hand-edited file can never push the editor
+        // layout out of range.
+        config::set_editor_padding(self.padding);
+        config::set_line_spacing(self.line_spacing);
         apply_font(self.font_name.clone());
     }
 }
@@ -205,6 +213,8 @@ pub fn serialize(cfg: &AppConfig) -> String {
     out.push_str(&format!("window_height={}\n", cfg.window.1));
     out.push_str(&format!("text_zoom={:.4}\n", cfg.zoom));
     out.push_str(&format!("font_name={}\n", cfg.font_name));
+    out.push_str(&format!("editor_padding={}\n", cfg.padding));
+    out.push_str(&format!("editor_line_spacing={}\n", cfg.line_spacing));
     out
 }
 
@@ -226,6 +236,14 @@ pub fn parse(text: &str, defaults: AppConfig) -> AppConfig {
             cfg.font_name = v.to_string();
         }
     }
+    if let Some(v) = line_value(text, "editor_padding").and_then(|v| v.trim().parse::<i32>().ok()) {
+        cfg.padding = v.clamp(config::EDITOR_PADDING_MIN, config::EDITOR_PADDING_MAX);
+    }
+    if let Some(v) = line_value(text, "editor_line_spacing")
+        .and_then(|v| v.trim().parse::<i32>().ok())
+    {
+        cfg.line_spacing = v.clamp(config::EDITOR_LINE_SPACING_MIN, config::EDITOR_LINE_SPACING_MAX);
+    }
     cfg
 }
 
@@ -241,6 +259,8 @@ mod tests {
             graph: [0.9, 0.95, 0.1, 360.0, 10000.0, 0.0228, 1.0, 0.0, 0.05],
             cooling: true,
             panel: true,
+            padding: 24,
+            line_spacing: 6,
         }
     }
 
@@ -255,6 +275,39 @@ mod tests {
         assert_eq!(got.graph, cfg.graph);
         assert!(got.cooling);
         assert!(got.panel);
+        assert_eq!(got.padding, 24);
+        assert_eq!(got.line_spacing, 6);
+    }
+
+    #[test]
+    fn editor_metrics_round_trip_and_clamp() {
+        // Both editor metrics survive a save/load cycle, and a hand-edited
+        // out-of-range value is clamped instead of applied.
+        let cfg = AppConfig {
+            padding: config::EDITOR_PADDING_MAX,
+            line_spacing: config::EDITOR_LINE_SPACING_MAX,
+            ..base()
+        };
+        let text = serialize(&cfg);
+        let got = parse(&text, AppConfig::from_statics());
+        assert_eq!(got.padding, config::EDITOR_PADDING_MAX);
+        assert_eq!(got.line_spacing, config::EDITOR_LINE_SPACING_MAX);
+
+        let wild = parse(
+            "editor_padding=9999\neditor_line_spacing=-40\n",
+            AppConfig::from_statics(),
+        );
+        assert_eq!(wild.padding, config::EDITOR_PADDING_MAX);
+        assert_eq!(wild.line_spacing, config::EDITOR_LINE_SPACING_MIN);
+    }
+
+    #[test]
+    fn missing_editor_metrics_keep_defaults() {
+        // An older config file without the keys leaves the live values alone.
+        let defaults = base();
+        let got = parse("window_width=1280\n", defaults.clone());
+        assert_eq!(got.padding, defaults.padding);
+        assert_eq!(got.line_spacing, defaults.line_spacing);
     }
 
     #[test]

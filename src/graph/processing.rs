@@ -88,21 +88,21 @@ const RADIUS_VARIATION_DEFAULT: f32 = 0.0;
 // Soft pull between non-linked pairs that share a repulsion grid cell. Done in
 // the same spatial pass as the repulsion (no second O(n^2) scan) and kept
 // weaker than the inverse-square repulsion so clusters stay open but coherent.
-const NONLINK_ATTRACTION_DEFAULT: f32 = 0.05;
+const NONLINK_ATTRACTION_DEFAULT: f32 = 0.01;
 
 // Live-tunable force parameters. The statics below mirror the physical
 // constants above (which stay as defaults/for tests) so a temporary debug
 // panel can tweak them while the graph is running and watch the layout
 // respond immediately.
-pub static PARAM_SPRING_K: RwLock<f32> = RwLock::new(0.40);
+pub static PARAM_SPRING_K: RwLock<f32> = RwLock::new(3.33);
 pub static PARAM_DAMPING: RwLock<f32> = RwLock::new(0.95);
-pub static PARAM_GRAVITY_K: RwLock<f32> = RwLock::new(0.04);
-pub static PARAM_REPULSION_RADIUS: RwLock<f32> = RwLock::new(REPULSION_RADIUS);
-pub static PARAM_REPULSION_K: RwLock<f32> = RwLock::new(REPULSION_K);
-pub static PARAM_ALPHA_DECAY: RwLock<f32> = RwLock::new(ALPHA_DECAY);
-pub static PARAM_RADIUS_SCALE: RwLock<f32> = RwLock::new(RADIUS_SCALE_DEFAULT);
-pub static PARAM_RADIUS_VARIATION: RwLock<f32> = RwLock::new(RADIUS_VARIATION_DEFAULT);
-pub static PARAM_NONLINK_ATTRACTION: RwLock<f32> = RwLock::new(NONLINK_ATTRACTION_DEFAULT);
+pub static PARAM_GRAVITY_K: RwLock<f32> = RwLock::new(0.06);
+pub static PARAM_REPULSION_RADIUS: RwLock<f32> = RwLock::new(700.0);
+pub static PARAM_REPULSION_K: RwLock<f32> = RwLock::new(50000.0);
+pub static PARAM_ALPHA_DECAY: RwLock<f32> = RwLock::new(0.014);
+pub static PARAM_RADIUS_SCALE: RwLock<f32> = RwLock::new(1.0);
+pub static PARAM_RADIUS_VARIATION: RwLock<f32> = RwLock::new(0.0);
+pub static PARAM_NONLINK_ATTRACTION: RwLock<f32> = RwLock::new(0.01);
 
 // Temporary debug panel: a live switch to disable the alpha cooldown (and
 // with it the settle-and-pause behaviour), plus the panel's visibility and
@@ -1605,11 +1605,11 @@ mod tests {
         // The merged spring dial: grows the rest gap as the spring weakens,
         // and never lets discs sit closer than the floor gap.
         let loose = spring_rest_gap(0.05);
-        let default = spring_rest_gap(0.40);
+        let default = spring_rest_gap(3.33);
         let tight = spring_rest_gap(5.0);
         assert!(loose > default, "weak spring must settle far apart");
         assert!(default > tight, "strong spring must settle tight");
-        assert!(default > 100.0, "default keeps a real gap, got {default}");
+        assert!(default > 60.0, "default keeps a real gap, got {default}");
         assert!(tight >= SPRING_GAP_LO, "tight cannot undershoot floor gap");
     }
 }
