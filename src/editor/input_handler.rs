@@ -48,33 +48,55 @@ fn prev_word_boundary(line: &str, x: usize) -> usize {
     i
 }
 
+fn is_word_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' 
+}
+
 fn prev_word_start(line: &str, x: usize) -> usize {
     let bytes = line.as_bytes();
     let mut i = x.min(bytes.len());
-
+    if i == 0 {
+        return 0;
+    }
     while i > 0 && bytes[i - 1].is_ascii_whitespace() {
         i -= 1;
     }
-
-    while i > 0 && !bytes[i - 1].is_ascii_whitespace() {
+    if i == 0 {
+        return 0;
+    }
+    if is_word_char(bytes[i - 1]) {
+        while i > 0 && is_word_char(bytes[i - 1]) {
+            i -= 1;
+        }
+        return i;
+    }
+    while i > 0 && !is_word_char(bytes[i - 1]) && !bytes[i - 1].is_ascii_whitespace() {
         i -= 1;
     }
-
     i
 }
 
 fn next_word_end(line: &str, x: usize) -> usize {
     let bytes = line.as_bytes();
     let mut i = x.min(bytes.len());
-
+    if i >= bytes.len() {
+        return bytes.len();
+    }
     while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
     }
-
-    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+    if i >= bytes.len() {
+        return bytes.len();
+    }
+    if is_word_char(bytes[i]) {
+        while i < bytes.len() && is_word_char(bytes[i]) {
+            i += 1;
+        }
+        return i;
+    }
+    while i < bytes.len() && !is_word_char(bytes[i]) && !bytes[i].is_ascii_whitespace() {
         i += 1;
     }
-
     i
 }
 
