@@ -553,18 +553,57 @@ pub fn refresh_saved_node(path: &Path) {
     };
 
     let mut new_targets: Vec<usize> = Vec::new();
+    let mut ghost_links: Vec<String> = Vec::new();
     for link in filesystem::parse_links(body) {
         let target = link.strip_suffix(".md").unwrap_or(&link);
         if let Some(&j) = name_to_idx.get(target) {
             if idx != j && !new_targets.contains(&j) {
                 new_targets.push(j);
             }
+        } else if is_ghostable_target(target) {
+            ghost_links.push(target.to_string());
         }
     }
-    new_targets.sort();
 
     let mut nodes = NODES.write().unwrap();
     let mut edges = EDGES.write().unwrap();
+
+    // A freshly typed [[link]] to a note that has no file yet becomes a ghost
+    // node right here, mirroring rebuild_edges, so the graph updates live on
+    // autosave/Ctrl+S instead of waiting for the next full scan.
+    if !ghost_links.is_empty() {
+        let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
+        for target in &ghost_links {
+            let j = match name_to_idx.get(target) {
+                Some(&j) => j,
+                None => {
+                    let gi = nodes.len();
+                    let file_name = format!("{target}.md");
+                    nodes.push(Node {
+                        radius: NODE_BASE_RADIUS,
+                        color: Color::WHITE,
+                        position: ghost_position(target, center),
+                        velocity: Vector2::zero(),
+                        name: target.clone(),
+                        file_name: file_name.clone(),
+                        path: path.parent().map_or_else(
+                            || PathBuf::from(&file_name),
+                            |d| d.join(&file_name),
+                        ),
+                        header: None,
+                        has_subgraph: false,
+                    });
+                    name_to_idx.insert(file_name, gi);
+                    name_to_idx.insert(target.clone(), gi);
+                    gi
+                }
+            };
+            if idx != j && !new_targets.contains(&j) {
+                new_targets.push(j);
+            }
+        }
+    }
+    new_targets.sort();
 
     {
         let node = &mut nodes[idx];
@@ -606,11 +645,16 @@ pub fn refresh_saved_node(path: &Path) {
 // A link may name the target with or without the extension: [[x]] and
 // [[x.md]] both resolve to x.md, and any other extension (images, bare
 // names that match no file) never creates an edge.
-// Duplicate and self-links are ignored.
+// A [[target]] that names no file on disk becomes a "ghost" note: a node
+// that is real in the app (visible, openable, editable) even though its
+// .md has not been created yet. Saving it writes the file, after which it
+// is an ordinary note. Duplicate and self-links are ignored.
 pub fn rebuild_edges() {
     let mut nodes = NODES.write().unwrap();
     let mut edges = EDGES.write().unwrap();
     edges.clear();
+
+    let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
 
     // Map from both the exact filename and its bare stem (extension
     // stripped) to node index, so extension-less [[x]] links resolve.
@@ -627,6 +671,7 @@ pub fn rebuild_edges() {
     // Re-parse every node: update header from frontmatter, build edges only
     // from the body (everything after the frontmatter block).
     let mut fm_headers: Vec<Option<String>> = Vec::with_capacity(nodes.len());
+    let mut ghost_links: Vec<(usize, PathBuf, String)> = Vec::new();
     for (i, node) in nodes.iter_mut().enumerate() {
         let content = filesystem::read_file(&node.path);
 
@@ -663,8 +708,54 @@ pub fn rebuild_edges() {
                 if seen.insert((i, j)) {
                     edges.push(Edge { n1: i, n2: j });
                 }
+            } else if is_ghostable_target(target) {
+                // Referenced but missing: defer so the ghost note is created
+                // after the parse loop (the loop holds a mutable borrow of
+                // `nodes`). The ghost lives next to the note that links to it.
+                let referrer_dir = node
+                    .path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                ghost_links.push((i, referrer_dir, target.to_string()));
             }
         }
+    }
+
+    // Materialize any referenced-but-missing notes as ghosts. They persist in
+    // NODES until the next full directory scan; once their file is saved they
+    // are ordinary notes and the next scan normalizes them.
+    let mut created_ghost = false;
+    for (i, referrer_dir, target) in &ghost_links {
+        let j = match name_to_idx.get(target) {
+            Some(&j) => j,
+            None => {
+                let gi = nodes.len();
+                let file_name = format!("{target}.md");
+                nodes.push(Node {
+                    radius: NODE_BASE_RADIUS,
+                    color: Color::WHITE,
+                    position: ghost_position(target, center),
+                    velocity: Vector2::zero(),
+                    name: target.clone(),
+                    file_name: file_name.clone(),
+                    path: referrer_dir.join(&file_name),
+                    header: None,
+                    has_subgraph: false,
+                });
+                name_to_idx.insert(file_name, gi);
+                name_to_idx.insert(target.clone(), gi);
+                created_ghost = true;
+                gi
+            }
+        };
+        if *i != j && seen.insert((*i, j)) {
+            edges.push(Edge { n1: *i, n2: j });
+        }
+    }
+    // A fresh ghost needs a few force frames to leave its neighbours' space.
+    if created_ghost {
+        wake_simulation();
     }
 
     // Size each node by its total connections, treated as bidirectional: every
@@ -709,6 +800,35 @@ fn is_asset_name(target: &str) -> bool {
             | "wav"
             | "pdf"
     )
+}
+
+// A [[link]] target that can be materialized as a real note: same-folder bare
+// names only (no path separators, no leading/trailing whitespace), with either
+// no extension or a trailing .md, and never an image/media asset. Links to
+// folders (`sub/name`) and files like `data.txt` stay unresolved instead.
+fn is_ghostable_target(target: &str) -> bool {
+    if target.is_empty() || target.contains('/') || target.contains('\\') {
+        return false;
+    }
+    match target.rsplit_once('.') {
+        Some((_, ext)) => ext.to_ascii_lowercase() == "md",
+        None => !is_asset_name(target),
+    }
+}
+
+// Deterministic starting position for a ghost note: stable across rebuilds
+// (same target -> same spot, no jitter on every save) and spread around the
+// centre so a scatter of ghosts doesn't pile on one pixel. The force sim does
+// the rest once woken.
+fn ghost_position(target: &str, center: Vector2) -> Vector2 {
+    let mut h: u64 = 14695981039346656037; // FNV-1a offset basis
+    for b in target.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(1099511628211);
+    }
+    let angle = ((h % 6283) as f32) / 1000.0; // 0..2π
+    let radius = (h % 160) as f32; // 0..160 px from centre
+    Vector2::new(center.x + radius * angle.cos(), center.y + radius * angle.sin())
 }
 
 // Resolve a [[target]] written in a note body to the file it points at, for
@@ -1461,6 +1581,88 @@ mod tests {
             let c_rad = nodes.iter().find(|n| n.name == "c").unwrap().radius;
             assert_eq!(b_rad, NODE_BASE_RADIUS);
             assert!(c_rad > b_rad);
+        }
+
+        // A freshly typed link to a missing note materializes on save: the
+        // ghost appears and a's edge set gains it, without any file being
+        // written yet.
+        filesystem::write_file(&a, "# A\n\n[[c]]\n[[draft]]\n");
+        refresh_saved_node(&a);
+        {
+            let nodes = NODES.read().unwrap();
+            let edges = EDGES.read().unwrap();
+            assert_eq!(
+                outgoing(&nodes, &edges, "a"),
+                vec!["c".to_string(), "draft".to_string()]
+            );
+            let draft = nodes.iter().find(|n| n.name == "draft").expect("ghost");
+            assert_eq!(draft.path, dir.join("draft.md"));
+            assert!(!draft.path.exists());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wikilink_ghosts_materialize_missing_notes_in_app_only() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_ghost_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        // `existing` has a real file; `ghost` is referenced but missing;
+        // `pic.png` is an asset link and must NOT become a node.
+        filesystem::write_file(&dir.join("real.md"), "# Real\n\n[[existing]]\n[[ghost]]\n[[pic.png]]\n");
+        filesystem::write_file(&dir.join("existing.md"), "# Existing\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let ghost = {
+            let nodes = NODES.read().unwrap();
+            assert!(
+                !nodes.iter().any(|n| n.name == "pic.png"),
+                "image links must not turn into nodes"
+            );
+            nodes
+                .iter()
+                .find(|n| n.name == "ghost")
+                .expect("missing [[ghost]] must produce a ghost node")
+                .path
+                .clone()
+        };
+        assert_eq!(ghost, dir.join("ghost.md"));
+        assert!(!ghost.exists(), "a ghost note has no file on disk until saved");
+
+        // The referring note has an edge to the ghost.
+        {
+            let nodes = NODES.read().unwrap();
+            let edges = EDGES.read().unwrap();
+            let real = nodes.iter().position(|n| n.name == "real").unwrap();
+            let g = nodes.iter().position(|n| n.name == "ghost").unwrap();
+            assert!(edges.iter().any(|e| e.n1 == real && e.n2 == g));
+        }
+
+        // Opening the ghost resolves to its (not-yet-existing) path, and
+        // saving it materializes the .md so it becomes an ordinary note.
+        let (p, name) = resolve_wikilink("ghost").unwrap();
+        assert_eq!(p, ghost);
+        assert_eq!(name, "ghost");
+        filesystem::write_file(&ghost, "# Ghost\n\n[[real]]\n");
+        assert!(ghost.exists());
+
+        // A full re-scan still knows the note (now as a real file).
+        generate_nodes_from_directory(&dir);
+        {
+            let nodes = NODES.read().unwrap();
+            let g = nodes.iter().find(|n| n.name == "ghost").expect("ghost note");
+            assert_eq!(g.path, ghost);
+            // Both directions are linked now.
+            let edges = EDGES.read().unwrap();
+            let real = nodes.iter().position(|n| n.name == "real").unwrap();
+            let gi = nodes.iter().position(|n| n.name == "ghost").unwrap();
+            assert!(edges.iter().any(|e| e.n1 == real && e.n2 == gi));
+            assert!(edges.iter().any(|e| e.n1 == gi && e.n2 == real));
         }
 
         let _ = std::fs::remove_dir_all(&dir);
