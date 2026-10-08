@@ -49,7 +49,7 @@ fn prev_word_boundary(line: &str, x: usize) -> usize {
 }
 
 fn is_word_char(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || c == b'_' 
+    c.is_ascii_alphanumeric() || c == b'_'
 }
 
 fn prev_word_start(line: &str, x: usize) -> usize {
@@ -1112,16 +1112,60 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
         history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::CharInsert, edit_now_ms);
         for c in typed {
             if let Some((sy, sx, ey, ex)) = sel {
-                let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
-                *cursor_x = nx;
-                *cursor_y = ny;
+                // Wrap selection with the typed character if it's a pair opener
+                let ch_char = c;
+                let wrap_pair = match ch_char {
+                    '(' => Some(')'),
+                    '[' => Some(']'),
+                    '{' => Some('}'),
+                    '<' => Some('>'),
+                    '"' => Some('"'),
+                    '\'' => Some('\''),
+                    '`' => Some('`'),
+                    _ => None,
+                };
+                if let Some(close) = wrap_pair {
+                    // Insert around selection (single or multi-line)
+                    if sy == ey {
+                        let line = buffer[sy].clone();
+                        let left = line[..sx].to_string();
+                        let mid = line[sx..ex].to_string();
+                        let right = line[ex..].to_string();
+                        buffer[sy] = format!("{}{}{}{}{}", left, ch_char, mid, close, right);
+                        *anchor_x = sx as i32;
+                        *anchor_y = sy as i32;
+                        *cursor_x = (sx + mid.len() + 2) as i32;
+                        *cursor_y = sy as i32;
+                    } else {
+                        // Multi-line: wrap first and last
+                        let first = buffer[sy].clone();
+                        let last = buffer[ey].clone();
+                        buffer[sy] = format!("{}{}{}", first[..sx].to_string(), ch_char, first[sx..].to_string());
+                        buffer[ey] = format!("{}{}{}", last[..ex].to_string(), close, last[ex..].to_string());
+                        *anchor_y = sy as i32;
+                        *anchor_x = sx as i32;
+                        *cursor_y = ey as i32;
+                        *cursor_x = (ex + 1) as i32; // position after inserted close on last line
+                    }
+                } else {
+                    let (nx, ny) = buffer::delete_selection(&mut buffer, sy, sx, ey, ex);
+                    *cursor_x = nx;
+                    *cursor_y = ny;
+                    let y2 = *cursor_y as usize;
+                    let x2 = *cursor_x as usize;
+                    buffer[y2].insert(x2, ch_char);
+                    *cursor_x += 1;
+                    *anchor_x = *cursor_x;
+                    *anchor_y = *cursor_y;
+                }
+            } else {
+                let y = *cursor_y as usize;
+                let x = *cursor_x as usize;
+                buffer[y].insert(x, c);
+                *cursor_x += 1;
+                *anchor_x = *cursor_x;
+                *anchor_y = *cursor_y;
             }
-            let y = *cursor_y as usize;
-            let x = *cursor_x as usize;
-            buffer[y].insert(x, c);
-            *cursor_x += 1;
-            *anchor_x = *cursor_x;
-            *anchor_y = *cursor_y;
             buffer::mark_modified();
         }
     }
