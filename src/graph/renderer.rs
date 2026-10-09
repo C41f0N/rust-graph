@@ -660,15 +660,15 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let track_r = px + config::scaled_size(TRACK_RIGHT);
         let track_w = track_r - track_l;
         let labels = [
-            "Spring Tightness",
-            "Damping",
-            "Center Gravity",
-            "Rep Radius",
+            "Link Strength",
+            "Velocity Decay",
+            "Center Pull",
+            "Charge Radius",
             "Rep K",
             "Alpha Decay",
             "Radius Scale",
             "Radius Var.",
-            "Attraction",
+            "Collide Pad",
         ];
         for (idx, label) in labels.iter().enumerate() {
             let row_y = slider_row_y(idx);
@@ -726,7 +726,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     }
 }
 
-// Current value of the slider at `idx` (0=Spring Tightness ... 8=Attraction),
+// Current value of the slider at `idx` (0=Link Strength ... 8=Collide Pad),
 // read from the live PARAM_* statics the debug panel writes.
 fn read_slider_value(idx: usize) -> f32 {
     match idx {
@@ -738,7 +738,7 @@ fn read_slider_value(idx: usize) -> f32 {
         5 => *PARAM_ALPHA_DECAY.read().unwrap(),
         6 => *PARAM_RADIUS_SCALE.read().unwrap(),
         7 => *PARAM_RADIUS_VARIATION.read().unwrap(),
-        8 => *PARAM_NONLINK_ATTRACTION.read().unwrap(),
+        8 => *PARAM_COLLIDE_PAD.read().unwrap(),
         _ => 0.0,
     }
 }

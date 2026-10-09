@@ -344,7 +344,7 @@ mod tests {
         // base (an existing global config's values, say).
         let text = "spring_k=2.25\ndamping=0.91\ncenter_pull=0.3\nrepulsion_radius=400.\n\
                     repulsion_k=12300.\nalpha_decay=0.02\nradius_scale=1.1\nradius_variation=0.2\n\
-                    attraction=0.08\nalpha_cooling=0\nshow_force_panel=1\n";
+                    collide_pad=0.08\nalpha_cooling=0\nshow_force_panel=1\n";
         let got = parse_graph_keys(text, base());
         let expect = [2.25, 0.91, 0.3, 400.0, 12300.0, 0.02, 1.1, 0.2, 0.08];
         assert_eq!(got.graph, expect);

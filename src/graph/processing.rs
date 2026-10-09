@@ -5,28 +5,28 @@ use rand::prelude::*;
 use raylib::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::RwLock;
 
-// Base node disc radius (world units). Large enough that nodes read clearly at
-// the default zoom, yet below the spring rest length so force-laid-out graphs
-// don't overlap.
-pub const NODE_BASE_RADIUS: f32 = 7.0;
-pub const NODE_MAX_RADIUS: f32 = 15.0;
-// Radius growth per connection (edges are treated as bidirectional): BASE +
-// GROWTH*sqrt(degree). Sub-linear on purpose, so node size still signals
-// hub-ness without exploding linearly.
-pub const NODE_RADIUS_GROWTH: f32 = 2.0;
+// Node disc radius: Logseq's exact page-node formula
+// (extensions/graph/pixi/logic.cljs `node-radius`): base 3.8, growth
+// 3.4*sqrt(degree) capped at +12, so hubs read clearly without outgrowing the
+// 82-unit link rest length. forceCollide adds another +10 per node, so the two
+// smallest discs keep 3.8+10+10+3.8 = 27.6 world units apart.
+pub const NODE_BASE_RADIUS: f32 = 3.8;
+pub const NODE_MAX_RADIUS: f32 = 15.8; // 3.8 + Logseq's 12.0 growth cap
+pub const NODE_RADIUS_GROWTH: f32 = 3.4;
+const NODE_RADIUS_GROWTH_CAP: f32 = 12.0;
 
-// Effective disc radius for a node of `degree`: the live radius scale
-// multiplies every size, and radius variation compresses the degree growth
-// toward zero (1.0 = all nodes uniform at the base size, 0.0 = the full
-// base+growth spread). Reads the PARAM_* statics so the panel dials and the
-// persisted app config both flow through here.
+// Effective disc radius for a node of `degree`: Logseq's formula scaled by the
+// live radius-scale dial. "Radius variation" scales the degree growth instead
+// of shrinking toward uniform (1.0 = Logseq's growth, 0.0 = every node at the
+// base radius). Reads the PARAM_* statics so the panel dials and the persisted
+// app config both flow through here.
 fn radius_for(degree: u32) -> f32 {
     let scale = *PARAM_RADIUS_SCALE.read().unwrap();
-    let variation = *PARAM_RADIUS_VARIATION.read().unwrap();
-    let growth = NODE_RADIUS_GROWTH * (1.0 - variation);
-    (NODE_BASE_RADIUS + growth * (degree as f32).sqrt()).min(NODE_MAX_RADIUS) * scale
+    let growth = NODE_RADIUS_GROWTH * *PARAM_RADIUS_VARIATION.read().unwrap();
+    (NODE_BASE_RADIUS + NODE_RADIUS_GROWTH_CAP.min(growth * (degree as f32).sqrt())) * scale
 }
 
 // Re-apply the live radial controls (scale/variation) to `nodes` from the
@@ -56,53 +56,48 @@ pub fn apply_radii(nodes: &mut [Node]) -> bool {
     dirty
 }
 
-// Spring rest gap derived from the spring strength: one dial (Spring
-// Tightness) drives the whole spring. High strength = snug target distance
-// (tight cluster); low strength = far target (loose, widely spread). At the
-// default 0.40 this returns ~181, matching the old fixed 179 gap.
-const SPRING_GAP_LO: f32 = 40.0;
-const SPRING_GAP_RANGE: f32 = 480.0;
-const SPRING_GAP_SHARPNESS: f32 = 6.0;
-fn spring_rest_gap(spring_k: f32) -> f32 {
-    SPRING_GAP_LO + SPRING_GAP_RANGE / (1.0 + SPRING_GAP_SHARPNESS * spring_k)
-}
+// ---- d3-force 3.0.0, Logseq's exact layout algorithm --------------------
+// Logseq lays its global graph out with d3-force@3.0.0
+// (extensions/graph/pixi/logic.cljs): forceLink(82, 0.82) + forceManyBody
+// (strength -140, distanceMax 420) + forceCollide(radius+10, 0.86,
+// iterations 2) + forceCenter(0,0), integrated over a fixed per-size tick
+// budget (160/110/90/70) with d3's velocityVerlet (velocityDecay 0.6). The
+// constants below are that recipe verbatim; the sim is a straight port of
+// d3-force@3.0.0 (simulation/link/manyBody/collide/center) and
+// d3-quadtree@3.0.1.
+pub const D3_LINK_DISTANCE: f32 = 82.0;
+pub const D3_LINK_STRENGTH: f32 = 0.82;
+pub const D3_CHARGE_STRENGTH: f32 = -140.0;
+pub const D3_DISTANCE_MAX: f32 = 420.0;
+pub const D3_COLLIDE_PAD: f32 = 10.0;
+pub const D3_COLLIDE_STRENGTH: f32 = 0.86;
+pub const D3_COLLIDE_ITERATIONS: usize = 2;
+pub const D3_VELOCITY_DECAY: f32 = 0.6;
+/// d3's default alpha decay: alpha += (0 - alpha) * decay each tick, cooling 1
+/// toward the 0.001 floor over ~300 ticks (Math.pow(0.001, 1/300) ≈ 0.0227628).
+pub const D3_ALPHA_DECAY: f32 = 0.0227628;
+/// Barnes-Hut accuracy (theta 0.9 squared).
+pub const D3_THETA2: f32 = 0.81;
+pub const D3_DISTANCE_MIN2: f32 = 1.0;
+/// d3-force runs an lcg() seeded with undefined, which evaluates to a constant
+/// 0, so every jiggle = (0 - 0.5) * 1e-6 = -5e-7.
+pub const D3_JIGGLE: f32 = -5.0e-7;
+/// d3's seed geometry for position-less nodes: radius 10*sqrt(0.5+i) at angle
+/// i * pi(3-sqrt(5)) (the golden angle). pi*(3 - sqrt(5)) pinned as a literal
+/// because sqrt is not const.
+pub const D3_INITIAL_RADIUS: f32 = 10.0;
+pub const D3_INITIAL_ANGLE: f32 = 2.39996323;
 
-// Repulsion interaction radius (world units). Pairs closer than this feel each
-// other's repulsion; beyond it the force is zero, so the spatial grid never
-// checks them. Bigger spreads every cluster out, smaller keeps clusters
-// compact.
-const REPULSION_RADIUS: f32 = 652.0;
-// Soft component (inverse-square of the pair distance): keeps clusters open
-// and gives every node gentle breathing room under the cutoff. The only node
-// separation force - nodes may momentarily squeeze close under spring tension,
-// and that's accepted.
-const REPULSION_K: f32 = 50000.0;
-
-// Radial controls (force panel sliders 7-8). Radius scale multiplies every
-// node disc; radius variation compresses the degree-based growth toward zero,
-// so at 1.0 small and large nodes collapse onto one uniform size, at 0.0 the
-// full base+growth spread returns.
-const RADIUS_SCALE_DEFAULT: f32 = 1.0;
-const RADIUS_VARIATION_DEFAULT: f32 = 0.0;
-
-// Soft pull between non-linked pairs that share a repulsion grid cell. Done in
-// the same spatial pass as the repulsion (no second O(n^2) scan) and kept
-// weaker than the inverse-square repulsion so clusters stay open but coherent.
-const NONLINK_ATTRACTION_DEFAULT: f32 = 0.01;
-
-// Live-tunable force parameters. The statics below mirror the physical
-// constants above (which stay as defaults/for tests) so a temporary debug
-// panel can tweak them while the graph is running and watch the layout
-// respond immediately.
-pub static PARAM_SPRING_K: RwLock<f32> = RwLock::new(3.33);
-pub static PARAM_DAMPING: RwLock<f32> = RwLock::new(0.95);
-pub static PARAM_GRAVITY_K: RwLock<f32> = RwLock::new(0.06);
-pub static PARAM_REPULSION_RADIUS: RwLock<f32> = RwLock::new(700.0);
-pub static PARAM_REPULSION_K: RwLock<f32> = RwLock::new(50000.0);
-pub static PARAM_ALPHA_DECAY: RwLock<f32> = RwLock::new(0.014);
+// Live-tunable force parameters (d3-force terms; defaults = Logseq's recipe).
+pub static PARAM_SPRING_K: RwLock<f32> = RwLock::new(D3_LINK_STRENGTH);   // forceLink strength
+pub static PARAM_DAMPING: RwLock<f32> = RwLock::new(D3_VELOCITY_DECAY);  // velocityDecay
+pub static PARAM_GRAVITY_K: RwLock<f32> = RwLock::new(1.0);              // forceCenter strength
+pub static PARAM_REPULSION_RADIUS: RwLock<f32> = RwLock::new(D3_DISTANCE_MAX); // charge distanceMax
+pub static PARAM_REPULSION_K: RwLock<f32> = RwLock::new(-D3_CHARGE_STRENGTH); // |charge| (Logseq -140)
+pub static PARAM_ALPHA_DECAY: RwLock<f32> = RwLock::new(D3_ALPHA_DECAY);
 pub static PARAM_RADIUS_SCALE: RwLock<f32> = RwLock::new(1.0);
-pub static PARAM_RADIUS_VARIATION: RwLock<f32> = RwLock::new(0.0);
-pub static PARAM_NONLINK_ATTRACTION: RwLock<f32> = RwLock::new(0.01);
+pub static PARAM_RADIUS_VARIATION: RwLock<f32> = RwLock::new(1.0);       // degree-growth multiplier
+pub static PARAM_COLLIDE_PAD: RwLock<f32> = RwLock::new(D3_COLLIDE_PAD); // forceCollide +pad per node
 
 // Temporary debug panel: a live switch to disable the alpha cooldown (and
 // with it the settle-and-pause behaviour), plus the panel's visibility and
@@ -124,18 +119,17 @@ pub const TRACK_RIGHT: i32 = PANEL_W - 10;
 pub const SLIDER_COUNT: usize = 9;
 
 // (min, max) range of each slider, in the same order as the PARAM_* list.
-// Index 0 is the spring (tightness), 1 damping, ... 8 is the non-link
-// attraction.
+// Defaults are Logseq's d3-force values (renderer labels update below).
 pub const SLIDER_RANGES: [(f32, f32); SLIDER_COUNT] = [
-    (0.0, 20.0),
-    (0.5, 1.0),
-    (0.0, 0.5),
-    (50.0, 700.0),
-    (0.0, 50000.0),
-    (0.005, 0.05),
-    (0.5, 2.0),
-    (0.0, 1.0),
-    (0.0, 0.01),
+    (0.0, 2.0),     // 0 Link Strength  (0.82)
+    (0.0, 1.0),     // 1 Velocity Decay (0.60)
+    (0.0, 2.0),     // 2 Center Pull    (1.00)
+    (50.0, 1200.0), // 3 Charge Radius  (420)
+    (0.0, 600.0),   // 4 Rep K          (140)
+    (0.002, 0.1),   // 5 Alpha Decay    (~0.0228)
+    (0.5, 2.0),     // 6 Radius Scale   (1.0)
+    (0.0, 2.0),     // 7 Radius Var.    (1.0)
+    (0.0, 40.0),    // 8 Collide Pad    (10)
 ];
 
 // Return True if the pointer is over the alpha-cooling toggle row (the first
@@ -150,7 +144,7 @@ pub fn hit_test_alpha_toggle(mx: f32, my: f32) -> bool {
 }
 
 // Return the index of the slider whose row the pointer is over, or None.
-// Indexes run top-to-bottom: 0 = Spring Tightness ... 8 = Attraction. The
+// Indexes run top-to-bottom: 0 = Link Strength ... 8 = Collide Pad. The
 // whole row is the hit target (not just the thin track band) so grabbing a
 // slider is forgiving; the renderer draws rows from the same helpers below.
 pub fn hit_test_slider(mx: f32, my: f32) -> Option<usize> {
@@ -221,11 +215,11 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32, nodes: &mut [Node]) {
         1 => (v * 100.0).round() / 100.0,
         2 => (v * 100.0).round() / 100.0,
         3 => v.round(),
-        4 => (v / 100.0).round() * 100.0,
-        5 => (v * 1000.0).round() / 1000.0,
+        4 => v.round(),
+        5 => (v * 10000.0).round() / 10000.0,
         6 => (v * 100.0).round() / 100.0,
         7 => (v * 100.0).round() / 100.0,
-        8 => (v * 100.0).round() / 100.0,
+        8 => (v * 10.0).round() / 10.0,
         _ => v,
     };
     match idx {
@@ -237,7 +231,7 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32, nodes: &mut [Node]) {
         5 => *PARAM_ALPHA_DECAY.write().unwrap() = value,
         6 => *PARAM_RADIUS_SCALE.write().unwrap() = value,
         7 => *PARAM_RADIUS_VARIATION.write().unwrap() = value,
-        8 => *PARAM_NONLINK_ATTRACTION.write().unwrap() = value,
+        8 => *PARAM_COLLIDE_PAD.write().unwrap() = value,
         _ => {}
     }
 
@@ -260,7 +254,7 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32, nodes: &mut [Node]) {
 // graph shares one set and the panel survives a restart. These accessors are
 // the model interface the config module and the debug panel both use.
 
-/// The 9 force values in slider order (spring_tightness ... nonlink_attraction).
+/// The 9 force values in slider order (link_strength ... collide_pad).
 pub fn param_values() -> [f32; 9] {
     [
         *PARAM_SPRING_K.read().unwrap(),
@@ -271,7 +265,7 @@ pub fn param_values() -> [f32; 9] {
         *PARAM_ALPHA_DECAY.read().unwrap(),
         *PARAM_RADIUS_SCALE.read().unwrap(),
         *PARAM_RADIUS_VARIATION.read().unwrap(),
-        *PARAM_NONLINK_ATTRACTION.read().unwrap(),
+        *PARAM_COLLIDE_PAD.read().unwrap(),
     ]
 }
 
@@ -285,7 +279,7 @@ pub fn set_param_values(values: [f32; 9]) {
     *PARAM_ALPHA_DECAY.write().unwrap() = values[5];
     *PARAM_RADIUS_SCALE.write().unwrap() = values[6];
     *PARAM_RADIUS_VARIATION.write().unwrap() = values[7];
-    *PARAM_NONLINK_ATTRACTION.write().unwrap() = values[8];
+    *PARAM_COLLIDE_PAD.write().unwrap() = values[8];
 }
 
 /// Key names (in slider order) used to persist the force values. Exposed so
@@ -299,7 +293,7 @@ pub(crate) const PARAM_KEYS: [&str; 9] = [
     "alpha_decay",
     "radius_scale",
     "radius_variation",
-    "attraction",
+    "collide_pad",
 ];
 
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
@@ -311,20 +305,18 @@ pub static EDGES: RwLock<Vec<Edge>> = RwLock::new(Vec::<Edge>::new());
 // (fully hot) and 0 (frozen) that scales every applied force. Each tick alpha
 // decays toward ALPHA_TARGET, so the graph eases to rest instead of jostling
 // forever as it would at fixed-strength forces - the slower the climbing gets,
-// the weaker the forces pushing it keep going. Once alpha crosses ALPHA_MIN the
-// layout is provably at (near) rest, so update_forces pauses until something
-// perturbs it again.
+// the weaker the forces pushing it keep going. Logseq freezes the layout after
+// a fixed per-size tick budget (see layout_tick_count) rather than on an alpha
+// floor, so update_forces pauses at that budget until something wakes it.
 const ALPHA_START: f32 = 1.0;
 // Floor enforced while a node is being dragged: the layout keeps following the
 // pointer, but stays gentler than a full relayout (d3's default reheat level).
 const ALPHA_REHEAT: f32 = 0.3;
 const ALPHA_TARGET: f32 = 0.0;
-// d3 default comes in at ~300 ticks; 0.005 keeps the layout hot longer so the
-// user's dialed-in forces read fully before the graph eases to rest
-// (~1380 ticks ≈ 23s at 60fps).
-const ALPHA_DECAY: f32 = 0.0050;
-const ALPHA_MIN: f32 = 0.001;
 static SIM_SETTLED: AtomicBool = AtomicBool::new(false);
+// Ticks the current run has executed since the last wake; compared against
+// layout_tick_count to freeze the layout exactly where Logseq would.
+static SIM_TICK: AtomicUsize = AtomicUsize::new(0);
 // Current simulation temperature. Decayed every frame by update_forces; reset
 // to ALPHA_START by wake_simulation whenever the layout is perturbed. Read by
 // the debug panel so it can show alpha live.
@@ -387,37 +379,31 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     wake_simulation();
 
     let files = filesystem::scan_directory(dir);
-    let mut rng = rand::rng();
 
     let mut nodes = NODES.write().unwrap();
     let mut edges = EDGES.write().unwrap();
     nodes.clear();
     edges.clear();
 
-    // Sunflower (phyllotaxis) initial layout: file i sits on a disc at radius
-    // ~ sqrt(index) * scale, spiralled by the golden angle. Uniform density,
-    // sized to the node count, so the layout starts near its natural rest
-    // spacing. A random wobble (±100px around the centre) packs every node into
-    // a fraction of the space they want, so the first force frames violently
-    // scatter the graph and the alpha-cooled sim freezes a bloated mess.
-    let n = files.len().max(1) as f32;
-    let spiral_radius = n.sqrt() * 36.0;
-    let golden_angle = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+    // d3-force's seed (d3-force@3.0.0 `position`): node i starts at radius
+    // initialRadius*sqrt(0.5+i) on the golden angle, exactly the state d3 hands
+    // Logseq before running its forces. No wobble: like d3, the seed is
+    // deterministic and the forces alone shape the layout. Centred on the
+    // screen; the forceCenter pass keeps the centroid there.
     let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
 
     for (i, file) in files.iter().enumerate() {
         let file_name = file.file_name().unwrap().to_string_lossy().to_string();
         let name = file_name.trim_end_matches(".md").to_string();
-        let t = (i as f32 + 0.5) / n;
-        let angle = golden_angle * i as f32;
-        let r = spiral_radius * t.sqrt();
+        let angle = D3_INITIAL_ANGLE * i as f32;
+        let radius = D3_INITIAL_RADIUS * (i as f32 + 0.5).sqrt();
 
         nodes.push(Node {
             radius: NODE_BASE_RADIUS,
             color: Color::WHITE,
             position: Vector2::new(
-                center.x + r * angle.cos() + rng.random_range(-4.0..4.0),
-                center.y + r * angle.sin() + rng.random_range(-4.0..4.0),
+                center.x + radius * angle.cos(),
+                center.y + radius * angle.sin(),
             ),
             velocity: Vector2::new(0.0, 0.0),
             name,
@@ -1019,125 +1005,605 @@ pub fn rename_node(idx: usize, new_name: &str) -> bool {
     true
 }
 
-// Repulsion between every pair closer than the interaction radius, computed
-// with a spatial grid. Cell size equals the interaction radius, so a repelling
-// pair can only occupy the same cell or two adjacent ones: scanning the 3x3
-// cell neighborhood of each node finds every pair within range (and none
-// beyond, where the force would be zero anyway). Returns one accumulated force
-// per node. Pure and unit-testable; callers pass the tuned radii/strengths
-// (the runtime version reads the live PARAM_* statics, tests pass the fixed
-// constants).
-fn repulsion_forces(
-    positions: &[Vector2],
-    repulsion_radius: f32,
-    repulsion_k: f32,
-    linked: &std::collections::HashSet<(usize, usize)>,
-    attraction_k: f32,
-) -> Vec<Vector2> {
-    let mut forces = vec![Vector2::zero(); positions.len()];
+// ---- d3-force 3.0.0 port (Logseq's exact layout) ------------------------
 
-    let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
-        std::collections::HashMap::with_capacity(positions.len());
-    for (i, pos) in positions.iter().enumerate() {
-        let cell = (
-            (pos.x / repulsion_radius).floor() as i32,
-            (pos.y / repulsion_radius).floor() as i32,
-        );
-        grid.entry(cell).or_default().push(i);
+// Per-link constants d3 precomputes once per simulation (forceLink
+// initialize): distance, strength, and the source-target bias.
+struct LinkMeta {
+    bias: Vec<f32>,
+    distance: Vec<f32>,
+    strength: Vec<f32>,
+}
+
+fn build_link_meta(node_count: usize, edges: &[Edge], distance: f32, strength: f32) -> LinkMeta {
+    let mut count = vec![0u32; node_count];
+    for e in edges.iter() {
+        if e.n1 != e.n2 {
+            count[e.n1] += 1;
+            count[e.n2] += 1;
+        }
+    }
+    let mut meta = LinkMeta {
+        bias: Vec::with_capacity(edges.len()),
+        distance: Vec::with_capacity(edges.len()),
+        strength: Vec::with_capacity(edges.len()),
+    };
+    for e in edges.iter() {
+        let sum = (count[e.n1] + count[e.n2]).max(1);
+        meta.bias.push(count[e.n1] as f32 / sum as f32);
+        meta.distance.push(distance);
+        meta.strength.push(strength);
+    }
+    meta
+}
+
+// d3 forceLink's apply: position-Verlet spring on predicted positions.
+fn apply_link(nodes: &mut [Node], edges: &[Edge], meta: &LinkMeta, alpha: f32) {
+    for (k, e) in edges.iter().enumerate() {
+        if e.n1 == e.n2 {
+            continue;
+        }
+        let (s, t) = (e.n1, e.n2);
+        let mut x = nodes[t].position.x + nodes[t].velocity.x
+            - nodes[s].position.x
+            - nodes[s].velocity.x;
+        let mut y = nodes[t].position.y + nodes[t].velocity.y
+            - nodes[s].position.y
+            - nodes[s].velocity.y;
+        if x == 0.0 {
+            x = D3_JIGGLE;
+        }
+        if y == 0.0 {
+            y = D3_JIGGLE;
+        }
+        let mut l = (x * x + y * y).sqrt();
+        l = (l - meta.distance[k]) / l * alpha * meta.strength[k];
+        x *= l;
+        y *= l;
+        let b = meta.bias[k];
+        nodes[t].velocity.x -= x * b;
+        nodes[t].velocity.y -= y * b;
+        nodes[s].velocity.x += x * (1.0 - b);
+        nodes[s].velocity.y += y * (1.0 - b);
+    }
+}
+
+// One cell of a d3-quadtree. Cells store their own bounds (d3 reconstructs
+// them during traversal; storing them is equivalent). Leaves hold a chain of
+// coincident node indices (head first). `value/cx/cy` are the manyBody
+// accumulators, `r` the collide quadrant bound.
+struct Quad {
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    child: [Option<Box<Quad>>; 4],
+    leaf: Vec<usize>,
+    px: f32,
+    py: f32,
+    value: f32,
+    cx: f32,
+    cy: f32,
+    r: f32,
+}
+
+impl Quad {
+    fn internal(x0: f32, y0: f32, x1: f32, y1: f32) -> Quad {
+        Quad {
+            x0,
+            y0,
+            x1,
+            y1,
+            child: [None, None, None, None],
+            leaf: Vec::new(),
+            px: 0.0,
+            py: 0.0,
+            value: 0.0,
+            cx: 0.0,
+            cy: 0.0,
+            r: 0.0,
+        }
     }
 
-    for i in 0..positions.len() {
-        let pi = positions[i];
-        let cx = (pi.x / repulsion_radius).floor() as i32;
-        let cy = (pi.y / repulsion_radius).floor() as i32;
-        for cy2 in cy - 1..=cy + 1 {
-            for cx2 in cx - 1..=cx + 1 {
-                let Some(cell) = grid.get(&(cx2, cy2)) else {
-                    continue;
-                };
-                for &j in cell {
-                    if i == j {
-                        continue;
-                    }
-                    let diff = pi - positions[j];
-                    let dist = diff.length();
-                    if dist >= repulsion_radius {
-                        continue;
-                    }
-                    // Soft term: inverse-square of the pair distance, keeping
-                    // clusters open at any range under the cutoff. Pure springs
-                    // may press discs together at short range; that's allowed
-                    // now that the old hard "never overlap" core is gone.
-                    let soft = if dist > 1e-3 {
-                        repulsion_k / (dist * dist)
-                    } else {
-                        0.0
-                    };
-                    // The fade keeps the force continuous out to the edge of
-                    // the grid cell (no hard pop there).
-                    let mag = soft * (1.0 - dist / repulsion_radius);
-                    forces[i] += diff.scale(mag / dist.max(1e-6));
+    fn make_leaf(x0: f32, y0: f32, x1: f32, y1: f32, idx: usize, x: f32, y: f32) -> Quad {
+        let mut q = Quad::internal(x0, y0, x1, y1);
+        q.leaf = vec![idx];
+        q.px = x;
+        q.py = y;
+        q
+    }
+}
 
-                    // Pairs WITHOUT an edge between them feel a soft pull toward
-                    // each other, computed in this same spatial pass (no second
-                    // O(n^2) scan): it fades to zero at the cell-adjacent
-                    // boundary exactly like the repulsion, and stays weaker so
-                    // clusters cohere without collapsing.
-                    if attraction_k > 0.0 && !linked.contains(&(i.min(j), i.max(j))) {
-                        let mag_attr = attraction_k * dist * (1.0 - dist / repulsion_radius);
-                        forces[i] -= diff.scale(mag_attr / dist.max(1e-6));
-                        forces[j] += diff.scale(mag_attr / dist.max(1e-6));
+// X-extent of the child cell of (x0,y0,x1,y1) at quadrant `q`
+// (bit 0 = right of xm, bit 1 = below ym).
+fn quadrant_bounds(x0: f32, y0: f32, x1: f32, y1: f32, q: usize) -> (f32, f32, f32, f32) {
+    let xm = (x0 + x1) * 0.5;
+    let ym = (y0 + y1) * 0.5;
+    let (nx0, nx1) = if q & 1 == 1 { (xm, x1) } else { (x0, xm) };
+    let (ny0, ny1) = if q & 2 == 2 { (ym, y1) } else { (y0, ym) };
+    (nx0, ny0, nx1, ny1)
+}
+
+// d3-quadtree, built the same way d3's addAll does: extent -> cover(min) ->
+// cover(max) -> add each point. Used by the charge (positions) and collide
+// (positions + velocities) passes.
+struct Quadtree {
+    root: Option<Box<Quad>>,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl Quadtree {
+    // d3 cover(): double the extent away from (x, y) until it is covered. A
+    // leaf root is never wrapped (d3 discards the wrapper); internal roots get
+    // re-rooted under the expanded extent.
+    fn cover(&mut self, x: f32, y: f32) {
+        if x.is_nan() || y.is_nan() {
+            return;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (self.x0, self.y0, self.x1, self.y1);
+        if x0.is_nan() {
+            x0 = x.floor();
+            y0 = y.floor();
+            x1 = x0 + 1.0;
+            y1 = y0 + 1.0;
+        } else {
+            let root_was_internal = self.root.as_ref().is_some_and(|q| q.leaf.is_empty());
+            let mut z = x1 - x0;
+            if z == 0.0 {
+                z = 1.0;
+            }
+            let mut node = if root_was_internal {
+                self.root.take()
+            } else {
+                None
+            };
+            while x0 > x || x >= x1 || y0 > y || y >= y1 {
+                let i = (((y < y0) as usize) << 1) | (x < x0) as usize;
+                let mut parent = Quad::internal(x0, y0, x1, y1);
+                parent.child[i] = node;
+                node = Some(Box::new(parent));
+                z *= 2.0;
+                match i {
+                    0 => {
+                        x1 = x0 + z;
+                        y1 = y0 + z;
                     }
+                    1 => {
+                        x0 = x1 - z;
+                        y1 = y0 + z;
+                    }
+                    2 => {
+                        x1 = x0 + z;
+                        y0 = y1 - z;
+                    }
+                    _ => {
+                        x0 = x1 - z;
+                        y0 = y1 - z;
+                    }
+                }
+            }
+            if root_was_internal {
+                // The top wrapper spans the final expanded extent.
+                if let Some(top) = node.as_mut() {
+                    top.x0 = x0;
+                    top.y0 = y0;
+                    top.x1 = x1;
+                    top.y1 = y1;
+                }
+                self.root = node;
+            }
+        }
+        self.x0 = x0;
+        self.y0 = y0;
+        self.x1 = x1;
+        self.y1 = y1;
+    }
+
+    // d3 add(): coincident chains live in the quadtree itself.
+    fn add(&mut self, x: f32, y: f32, idx: usize) {
+        if x.is_nan() || y.is_nan() {
+            return;
+        }
+        match self.root.as_mut() {
+            Some(root) => insert_into(root, x, y, idx),
+            None => {
+                self.root = Some(Box::new(Quad::make_leaf(self.x0, self.y0, self.x1, self.y1, idx, x, y)));
+            }
+        }
+    }
+}
+
+fn insert_into(node: &mut Quad, x: f32, y: f32, idx: usize) {
+    if node.leaf.is_empty() {
+        // Internal: descend into the quadrant containing (x, y).
+        let xm = (node.x0 + node.x1) * 0.5;
+        let ym = (node.y0 + node.y1) * 0.5;
+        let q = (((y >= ym) as usize) << 1) | (x >= xm) as usize;
+        match node.child[q].as_mut() {
+            Some(child) => insert_into(child, x, y, idx),
+            None => {
+                let (x0, y0, x1, y1) = quadrant_bounds(node.x0, node.y0, node.x1, node.y1, q);
+                node.child[q] = Some(Box::new(Quad::make_leaf(x0, y0, x1, y1, idx, x, y)));
+            }
+        }
+    } else {
+        let (xp, yp) = (node.px, node.py);
+        if x == xp && y == yp {
+            // Exactly coincident: chain it at the head.
+            node.leaf.insert(0, idx);
+            return;
+        }
+        split_leaf(node, x, y, idx, xp, yp);
+    }
+}
+
+// d3 add()'s leaf-split loop: subdivide until the old point (xp,yp) and the
+// new point (x,y) land in different quadrants, then place both.
+fn split_leaf(node: &mut Quad, x: f32, y: f32, idx: usize, xp: f32, yp: f32) {
+    let chain = std::mem::take(&mut node.leaf); // all coincident old members
+    place_chain(node, chain, xp, yp, x, y, idx);
+}
+
+fn place_chain(
+    node: &mut Quad,
+    chain: Vec<usize>,
+    xp: f32,
+    yp: f32,
+    x: f32,
+    y: f32,
+    idx: usize,
+) {
+    let xm = (node.x0 + node.x1) * 0.5;
+    let ym = (node.y0 + node.y1) * 0.5;
+    let qn = (((y >= ym) as usize) << 1) | (x >= xm) as usize;
+    let qo = (((yp >= ym) as usize) << 1) | (xp >= xm) as usize;
+    if qn == qo {
+        let (x0, y0, x1, y1) = quadrant_bounds(node.x0, node.y0, node.x1, node.y1, qn);
+        node.child[qn] = Some(Box::new(Quad::internal(x0, y0, x1, y1)));
+        place_chain(node.child[qn].as_mut().unwrap(), chain, xp, yp, x, y, idx);
+    } else {
+        let (ox0, oy0, ox1, oy1) = quadrant_bounds(node.x0, node.y0, node.x1, node.y1, qo);
+        let mut old = Quad::internal(ox0, oy0, ox1, oy1);
+        old.leaf = chain;
+        old.px = xp;
+        old.py = yp;
+        let (nx0, ny0, nx1, ny1) = quadrant_bounds(node.x0, node.y0, node.x1, node.y1, qn);
+        node.child[qo] = Some(Box::new(old));
+        node.child[qn] = Some(Box::new(Quad::make_leaf(nx0, ny0, nx1, ny1, idx, x, y)));
+    }
+}
+
+// d3-quadtree visit(): pre-order; return true from the callback to prune the
+// subtree. Children are pushed in 3,2,1,0 order so they pop 0,1,2,3 like d3.
+fn visit_quad(node: &Quad, f: &mut dyn FnMut(&Quad) -> bool) {
+    let mut stack: Vec<&Quad> = vec![node];
+    while let Some(q) = stack.pop() {
+        if !f(q) && q.leaf.is_empty() {
+            for k in (0..4).rev() {
+                if let Some(c) = &q.child[k] {
+                    stack.push(c);
                 }
             }
         }
     }
-    forces
+}
+
+// d3-quadtree visitAfter(): children before parents.
+fn visit_after_quad(node: &mut Quad, f: &mut dyn FnMut(&mut Quad)) {
+    if node.leaf.is_empty() {
+        for k in 0..4 {
+            if let Some(c) = &mut node.child[k] {
+                visit_after_quad(c, f);
+            }
+        }
+    }
+    f(node);
+}
+
+fn build_quadtree(xs: &[f32], ys: &[f32]) -> Quadtree {
+    let n = xs.len();
+    let mut t = Quadtree {
+        root: None,
+        x0: f32::NAN,
+        y0: f32::NAN,
+        x1: f32::NAN,
+        y1: f32::NAN,
+    };
+    if n == 0 {
+        return t;
+    }
+    let mut x0 = xs[0];
+    let mut y0 = ys[0];
+    let mut x1 = xs[0];
+    let mut y1 = ys[0];
+    for i in 1..n {
+        x0 = x0.min(xs[i]);
+        y0 = y0.min(ys[i]);
+        x1 = x1.max(xs[i]);
+        y1 = y1.max(ys[i]);
+    }
+    t.cover(x0, y0);
+    t.cover(x1, y1);
+    for i in 0..n {
+        t.add(xs[i], ys[i], i);
+    }
+    t
+}
+
+// d3 forceManyBody: Barnes-Hut charge. `charge_strength` is the signed per-node
+// charge (-140 for every node in Logseq's view).
+#[allow(clippy::needless_borrow)]
+fn apply_charge(nodes: &mut [Node], alpha: f32, distance_max: f32, charge_strength: f32) {
+    let n = nodes.len();
+    if n == 0 {
+        return;
+    }
+    let xs: Vec<f32> = nodes.iter().map(|nd| nd.position.x).collect();
+    let ys: Vec<f32> = nodes.iter().map(|nd| nd.position.y).collect();
+    let tree = build_quadtree(&xs, &ys);
+    let strengths = vec![charge_strength; n];
+    let distance_max2 = distance_max * distance_max;
+
+    let mut root = tree.root;
+    let Some(root) = root.as_mut() else { return };
+
+    // Accumulate per-cell value / centroid (visitAfter).
+    visit_after_quad(root, &mut |q: &mut Quad| {
+        if q.leaf.is_empty() {
+            let mut strength = 0.0f32;
+            let mut weight = 0.0f32;
+            let mut sx = 0.0f32;
+            let mut sy = 0.0f32;
+            for k in 0..4 {
+                if let Some(c) = &q.child[k] {
+                    let m = c.value.abs();
+                    if m > 0.0 {
+                        strength += c.value;
+                        weight += m;
+                        sx += m * c.cx;
+                        sy += m * c.cy;
+                    }
+                }
+            }
+            if weight > 0.0 {
+                q.cx = sx / weight;
+                q.cy = sy / weight;
+            }
+            q.value = strength;
+        } else {
+            q.cx = q.px;
+            q.cy = q.py;
+            let mut strength = 0.0f32;
+            for &j in &q.leaf {
+                strength += strengths[j];
+            }
+            q.value = strength;
+        }
+    });
+
+    for i in 0..n {
+        let node_x = nodes[i].position.x;
+        let node_y = nodes[i].position.y;
+        visit_quad(root, &mut |q: &Quad| -> bool {
+            if q.value == 0.0 {
+                return true;
+            }
+            let mut x = q.cx - node_x;
+            let mut y = q.cy - node_y;
+            let w = q.x1 - q.x0;
+            let mut l = x * x + y * y;
+            if w * w / D3_THETA2 < l {
+                // Barnes-Hut: whole subtree through its centroid.
+                if l < distance_max2 {
+                    if x == 0.0 {
+                        x = D3_JIGGLE;
+                        l += x * x;
+                    }
+                    if y == 0.0 {
+                        y = D3_JIGGLE;
+                        l += y * y;
+                    }
+                    if l < D3_DISTANCE_MIN2 {
+                        l = (D3_DISTANCE_MIN2 * l).sqrt();
+                    }
+                    nodes[i].velocity.x += x * q.value * alpha / l;
+                    nodes[i].velocity.y += y * q.value * alpha / l;
+                }
+                return true;
+            }
+            if !q.leaf.is_empty() || l >= distance_max2 {
+                return false;
+            }
+            // Leaf within reach: apply to the whole coincident chain.
+            if q.leaf.first() != Some(&i) || q.leaf.len() > 1 {
+                if x == 0.0 {
+                    x = D3_JIGGLE;
+                    l += x * x;
+                }
+                if y == 0.0 {
+                    y = D3_JIGGLE;
+                    l += y * y;
+                }
+                if l < D3_DISTANCE_MIN2 {
+                    l = (D3_DISTANCE_MIN2 * l).sqrt();
+                }
+            }
+            for &j in &q.leaf {
+                if j != i {
+                    let w = strengths[j] * alpha / l;
+                    nodes[i].velocity.x += x * w;
+                    nodes[i].velocity.y += y * w;
+                }
+            }
+            false
+        });
+    }
+}
+
+// d3 forceCollide: build a tree over predicted positions (x+vx), then resolve
+// overlapping pairs with the weight split rj^2/(ri^2+rj^2). Runs `iterations`
+// times per tick (Logseq uses 2).
+fn apply_collide(
+    nodes: &mut [Node],
+    radii: &[f32],
+    pad: f32,
+    strength: f32,
+    iterations: usize,
+) {
+    let n = nodes.len();
+    if n == 0 {
+        return;
+    }
+    for _ in 0..iterations {
+        let xs: Vec<f32> = nodes.iter().map(|nd| nd.position.x + nd.velocity.x).collect();
+        let ys: Vec<f32> = nodes.iter().map(|nd| nd.position.y + nd.velocity.y).collect();
+        let mut tree = build_quadtree(&xs, &ys);
+        let Some(root) = tree.root.as_mut() else { return };
+
+        // prepare (visitAfter): quadrant bound r = max radius within the cell.
+        visit_after_quad(root, &mut |q: &mut Quad| {
+            if q.leaf.is_empty() {
+                let mut r = 0.0f32;
+                for k in 0..4 {
+                    if let Some(c) = &q.child[k] {
+                        r = r.max(c.r);
+                    }
+                }
+                q.r = r;
+            } else {
+                q.r = radii[q.leaf[0]] + pad;
+            }
+        });
+
+        for i in 0..n {
+            let ri = radii[i] + pad;
+            let ri2 = ri * ri;
+            let xi = nodes[i].position.x + nodes[i].velocity.x;
+            let yi = nodes[i].position.y + nodes[i].velocity.y;
+            visit_quad(root, &mut |q: &Quad| -> bool {
+                if !q.leaf.is_empty() {
+                    let head = q.leaf[0];
+                    if head > i {
+                        let rj = q.r;
+                        let r = ri + rj;
+                        let mut x = xi - q.px;
+                        let mut y = yi - q.py;
+                        let mut l = x * x + y * y;
+                        if l < r * r {
+                            if x == 0.0 {
+                                x = D3_JIGGLE;
+                                l += x * x;
+                            }
+                            if y == 0.0 {
+                                y = D3_JIGGLE;
+                                l += y * y;
+                            }
+                            let sl = l.sqrt();
+                            l = (r - sl) / sl * strength;
+                            x *= l;
+                            y *= l;
+                            let w = (rj * rj) / (ri2 + rj * rj);
+                            nodes[i].velocity.x += x * w;
+                            nodes[i].velocity.y += y * w;
+                            nodes[head].velocity.x -= x * (1.0 - w);
+                            nodes[head].velocity.y -= y * (1.0 - w);
+                        }
+                    }
+                    true
+                } else {
+                    let rq = q.r;
+                    q.x0 > xi + ri + rq
+                        || q.x1 < xi - ri - rq
+                        || q.y0 > yi + ri + rq
+                        || q.y1 < yi - ri - rq
+                }
+            });
+        }
+    }
+}
+
+// d3 forceCenter: translate every node so the centroid sits exactly on
+// `center` (a pure translation; strength scales the correction per tick).
+fn apply_center(nodes: &mut [Node], center: Vector2, strength: f32) {
+    let n = nodes.len();
+    if n == 0 {
+        return;
+    }
+    let mut sx = 0.0f32;
+    let mut sy = 0.0f32;
+    for nd in nodes.iter() {
+        sx += nd.position.x;
+        sy += nd.position.y;
+    }
+    let dx = (sx / n as f32 - center.x) * strength;
+    let dy = (sy / n as f32 - center.y) * strength;
+    for nd in nodes.iter_mut() {
+        nd.position.x -= dx;
+        nd.position.y -= dy;
+    }
 }
 
 // Kick the force simulation out of its settled (paused) state and reheat it to
-// full strength. Call after any structural change (add/remove/rename/regenerate)
-// or manual nudge so the layout recomputes, then cools back down to sleep.
+// full strength. Call after any structural change (add/remove/rename/regenerate),
+// a slider tweak, or a drag so the layout recomputes, then it runs Logseq's
+// tick budget and cools back down to sleep.
 pub fn wake_simulation() {
     SIM_SETTLED.store(false, std::sync::atomic::Ordering::Relaxed);
     *SIM_ALPHA.write().unwrap() = ALPHA_START;
+    SIM_TICK.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub fn update_forces(rl: &mut RaylibHandle) {
+// Logseq's fixed per-size simulation budget (non-tags/global view): the layout
+// runs exactly this many d3 ticks and then stops.
+pub fn layout_tick_count(node_count: usize) -> usize {
+    if node_count <= 120 {
+        160
+    } else if node_count <= 400 {
+        110
+    } else if node_count <= 900 {
+        90
+    } else {
+        70
+    }
+}
+
+pub fn update_forces(_rl: &mut RaylibHandle) {
     // While the graph is settled the layout is at rest: skip the whole force
-    // pass (position snapshots, grid build, spring/repulsion math) every
-    // frame. Woken by structural changes and drags, and it re-sleeps below.
+    // pass. Woken by structural changes and drags; re-sleeps at the Logseq tick
+    // budget below.
     if SIM_SETTLED.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
 
     let mut nodes = NODES.write().unwrap();
+    let node_count = nodes.len();
+    if node_count == 0 {
+        return;
+    }
     let edges = EDGES.read().unwrap();
+    let dragging = *DRAGGING_NODE.read().unwrap();
+    let is_dragging = dragging.is_some();
 
-    let dragging_node = DRAGGING_NODE.read().unwrap();
-    let delta_time = rl.get_frame_time();
-
-    // Live-tunable forces (debug panel). Falling back to the tuned param
-    // statics keeps a settled graph from re-awakening on slider tweaks; the
-    // slider handlers wake the sim explicitly instead.
-    let repulsion_radius = *PARAM_REPULSION_RADIUS.read().unwrap();
-    let repulsion_k = *PARAM_REPULSION_K.read().unwrap();
-    let spring_k = *PARAM_SPRING_K.read().unwrap();
-    let damping = *PARAM_DAMPING.read().unwrap();
-    let gravity_k = *PARAM_GRAVITY_K.read().unwrap();
-    let edge_rest_gap = spring_rest_gap(spring_k);
+    let distance_max = *PARAM_REPULSION_RADIUS.read().unwrap();
+    let charge = -*PARAM_REPULSION_K.read().unwrap(); // signed charge (Logseq -140)
+    let link_distance = D3_LINK_DISTANCE;
+    let link_strength = *PARAM_SPRING_K.read().unwrap();
+    let velocity_decay = *PARAM_DAMPING.read().unwrap();
+    let center_strength = *PARAM_GRAVITY_K.read().unwrap();
+    let collide_pad = *PARAM_COLLIDE_PAD.read().unwrap();
     let alpha_decay = *PARAM_ALPHA_DECAY.read().unwrap();
     let alpha_cooling_enabled = *ALPHA_COOLING_ENABLED.read().unwrap();
 
-    // Cool the simulation: alpha moves toward ALPHA_TARGET and every force
-    // below is scaled by it. While a node is dragged the alpha is held at
-    // ALPHA_REHEAT so the layout keeps following the pointer; without that
-    // floor the sim would freeze mid-gesture once alpha cooled. With the
-    // cooldown switched off, alpha is pinned hot so the graph churns forever.
+    // d3 alpha model: each tick alpha moves toward ALPHA_TARGET by alphaDecay.
+    // While a node is dragged the alpha is held at ALPHA_REHEAT so the layout
+    // keeps following the pointer. Cooldown off pins alpha hot forever.
     let mut alpha = *SIM_ALPHA.read().unwrap();
     if alpha_cooling_enabled {
         alpha += (ALPHA_TARGET - alpha) * alpha_decay;
-        if dragging_node.is_some() {
+        if is_dragging {
             alpha = alpha.max(ALPHA_REHEAT);
         }
     } else {
@@ -1145,48 +1611,41 @@ pub fn update_forces(rl: &mut RaylibHandle) {
     }
     *SIM_ALPHA.write().unwrap() = alpha;
 
-    let positions: Vec<Vector2> = nodes.iter().map(|n| n.position).collect();
-    let mut linked: std::collections::HashSet<(usize, usize)> =
-        std::collections::HashSet::with_capacity(edges.len());
-    for edge in edges.iter() {
-        linked.insert((edge.n1.min(edge.n2), edge.n1.max(edge.n2)));
-    }
-    let attraction_k = *PARAM_NONLINK_ATTRACTION.read().unwrap();
-    let mut forces = repulsion_forces(&positions, repulsion_radius, repulsion_k, &linked, attraction_k);
-
+    // One d3-force tick, in d3's force order (link, charge, collide, center),
+    // then d3's velocity-Verlet integration.
+    let meta = build_link_meta(node_count, &edges, link_distance, link_strength);
+    apply_link(&mut nodes, &edges, &meta, alpha);
+    apply_charge(&mut nodes, alpha, distance_max, charge);
+    let radii: Vec<f32> = nodes.iter().map(|n| n.radius).collect();
+    apply_collide(
+        &mut nodes,
+        &radii,
+        collide_pad,
+        D3_COLLIDE_STRENGTH,
+        D3_COLLIDE_ITERATIONS,
+    );
     let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
-
-    for i in 0..nodes.len() {
-        let diff = center - nodes[i].position;
-        forces[i] += diff * gravity_k;
-    }
-
-    for edge in edges.iter() {
-        let pi = nodes[edge.n1].position;
-        let pj = nodes[edge.n2].position;
-        let diff = pj - pi;
-        let dist = diff.length();
-        let direction = if dist > 0.001 { diff.scale(1.0 / dist) } else { Vector2::zero() };
-        // Rest length scales with the two disc radii plus a gap, so hubs (which
-        // grow) keep the same clear distance as the smallest nodes.
-        let rest = nodes[edge.n1].radius + nodes[edge.n2].radius + edge_rest_gap;
-        let force = spring_k * (dist - rest);
-        forces[edge.n1] += direction * force;
-        forces[edge.n2] -= direction * force;
-    }
+    apply_center(&mut nodes, center, center_strength);
     for (i, node) in nodes.iter_mut().enumerate() {
-        if Some(i) == *dragging_node {
+        if Some(i) == dragging {
+            node.velocity = Vector2::zero();
             continue;
         }
-        node.velocity = (node.velocity + forces[i] * alpha * delta_time) * damping;
-        node.position += node.velocity * delta_time;
+        node.velocity = node.velocity * velocity_decay;
+        node.position += node.velocity;
     }
+    drop(nodes);
+    drop(edges);
 
-    // The simulation has cooled to the freeze point: exactly ALPHA_DECAY-bound,
-    // regardless of node count, so large graphs can't jostle forever. No speed
-    // threshold to chase - alpha bounds the force, so residual motion at the
-    // freeze point is provably negligible.
-    if alpha_cooling_enabled && alpha < ALPHA_MIN {
+    // Freeze when Logseq's budget is spent (a drag keeps the sim hot and does
+    // not consume budget). With the cooldown switched off the graph churns
+    // forever at full alpha.
+    if !is_dragging {
+        SIM_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if alpha_cooling_enabled
+        && SIM_TICK.load(std::sync::atomic::Ordering::Relaxed) >= layout_tick_count(node_count)
+    {
         SIM_SETTLED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -1199,250 +1658,272 @@ mod tests {
     // cargo's parallel test threads would stomp on each other. Serialize them.
     static TEST_NAV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    #[test]
-    fn repulsion_is_local_to_the_radius() {
-        let cluster = vec![
-            Vector2::new(0.0, 0.0),
-            Vector2::new(5.0, 0.0),
-            Vector2::new(0.0, 5.0),
-            Vector2::new(-3.0, -2.0),
-        ];
-        let _radii = vec![7.0; cluster.len()];
-        let f = repulsion_forces(
-            &cluster,
-            REPULSION_RADIUS,
-            REPULSION_K,
-            &Default::default(),
-            0.0,
-        );
-        for i in 0..cluster.len() {
-            assert!(f[i].length() > 0.0, "cluster members must repel each other");
-        }
-
-        // A pair further apart than the interaction radius feels nothing at
-        // all. Scaled off the constant so it tracks future tuning.
-        let far = vec![
-            Vector2::zero(),
-            Vector2::new(REPULSION_RADIUS * 2.0, REPULSION_RADIUS * 2.0),
-        ];
-        let _far_radii = vec![7.0; 2];
-        let g = repulsion_forces(
-            &far,
-            REPULSION_RADIUS,
-            REPULSION_K,
-            &Default::default(),
-            0.0,
-        );
-        assert_eq!(g[0].length(), 0.0);
-        assert_eq!(g[1].length(), 0.0);
-    }
-
-    #[test]
-    fn non_linked_pairs_attract_through_the_grid() {
-        let left = Vector2::new(0.0, 0.0);
-        let right = Vector2::new(120.0, 0.0);
-        let positions = vec![left, right];
-
-        // No edge: the grid pass applies the soft pull on top of the repulsion, and
-        // at 120px distance (radius 652) the attraction outweighs the soft
-        // term, so the net force points toward the other node.
-        let f = repulsion_forces(
-            &positions,
-            REPULSION_RADIUS,
-            REPULSION_K,
-            &Default::default(),
-            0.05,
-        );
-        let toward = right - left;
-        assert!(f[0].dot(toward) > 0.0, "free pair must pull together");
-        assert!(f[1].dot(toward) < 0.0);
-
-        // Linked (edge present): spring owns that pair, the grid only
-        // repulses, so the forces point apart again.
-        let mut linked = std::collections::HashSet::new();
-        linked.insert((0usize, 1usize));
-        let g = repulsion_forces(
-            &positions,
-            REPULSION_RADIUS,
-            REPULSION_K,
-            &linked,
-            0.05,
-        );
-        assert!(g[0].dot(toward) < 0.0, "linked pair must keep repelling");
-        assert!(g[1].dot(toward) > 0.0);
-    }
-
-    #[test]
-    fn grid_repulsion_matches_brute_force() {
-        let mut rng = rand::rng();
-        let positions: Vec<Vector2> = (0..200)
-            .map(|_| {
-                Vector2::new(
-                    rng.random_range(-400.0..400.0),
-                    rng.random_range(-400.0..400.0),
-                )
+    // Real d3 pipeline replica: the exact force order, alpha model, collide
+    // iterations, velocity integration, and Logseq tick budget that
+    // update_forces runs - with Logseq's constants baked in (this is the
+    // production default, not sliders). Reuses the production apply_*
+    // functions directly. Returns (positions, velocities).
+    fn d3_settle(n: usize, edges: &[(usize, usize)], radii: &[f32]) -> (Vec<Vector2>, Vec<Vector2>) {
+        let edge_structs: Vec<Edge> = edges.iter().map(|&(a, b)| Edge { n1: a, n2: b }).collect();
+        let mut sim: Vec<Node> = (0..n)
+            .map(|i| {
+                let angle = D3_INITIAL_ANGLE * i as f32;
+                let r = D3_INITIAL_RADIUS * (i as f32 + 0.5).sqrt();
+                Node {
+                    radius: radii[i],
+                    color: Color::WHITE,
+                    position: Vector2::new(r * angle.cos(), r * angle.sin()),
+                    velocity: Vector2::zero(),
+                    name: format!("n{i}"),
+                    file_name: format!("n{i}.md"),
+                    path: PathBuf::from(format!("n{i}.md")),
+                    header: None,
+                    has_subgraph: false,
+                }
             })
             .collect();
-        let fast = repulsion_forces(
-            &positions,
-            REPULSION_RADIUS,
-            REPULSION_K,
-            &Default::default(),
-            0.0,
-        );
-
-        let mut brute = vec![Vector2::zero(); positions.len()];
-        for i in 0..positions.len() {
-            for j in 0..positions.len() {
-                if i == j {
-                    continue;
-                }
-                let diff = positions[i] - positions[j];
-                let dist = diff.length();
-                if dist >= REPULSION_RADIUS {
-                    continue;
-                }
-                let soft = if dist > 1e-3 {
-                    REPULSION_K / (dist * dist)
-                } else {
-                    0.0
-                };
-                let mag = soft * (1.0 - dist / REPULSION_RADIUS);
-                brute[i] += diff.scale(mag / dist.max(1e-6));
+        let mut alpha = 1.0_f32;
+        let budget = layout_tick_count(n);
+        for _ in 0..budget {
+            alpha += (ALPHA_TARGET - alpha) * D3_ALPHA_DECAY;
+            let meta = build_link_meta(n, &edge_structs, D3_LINK_DISTANCE, D3_LINK_STRENGTH);
+            apply_link(&mut sim, &edge_structs, &meta, alpha);
+            apply_charge(&mut sim, alpha, D3_DISTANCE_MAX, D3_CHARGE_STRENGTH);
+            let rr: Vec<f32> = sim.iter().map(|nd| nd.radius).collect();
+            apply_collide(
+                &mut sim,
+                &rr,
+                D3_COLLIDE_PAD,
+                D3_COLLIDE_STRENGTH,
+                D3_COLLIDE_ITERATIONS,
+            );
+            let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
+            apply_center(&mut sim, center, 1.0);
+            for nd in sim.iter_mut() {
+                nd.velocity = nd.velocity * D3_VELOCITY_DECAY;
+                nd.position += nd.velocity;
             }
         }
+        (
+            sim.iter().map(|nd| nd.position).collect(),
+            sim.iter().map(|nd| nd.velocity).collect(),
+        )
+    }
 
-        for (a, b) in fast.iter().zip(brute.iter()) {
-            assert!(
-                (a.x - b.x).abs() < 1e-2 && (a.y - b.y).abs() < 1e-2,
-                "grid and brute-force repulsion disagree"
-            );
+    // Minimal node for single-pass force tests (charge/collide impulses).
+    fn test_node(x: f32, y: f32) -> Node {
+        Node {
+            radius: NODE_BASE_RADIUS,
+            color: Color::WHITE,
+            position: Vector2::new(x, y),
+            velocity: Vector2::zero(),
+            name: "n".into(),
+            file_name: "n.md".into(),
+            path: PathBuf::from("n.md"),
+            header: None,
+            has_subgraph: false,
         }
+    }
+
+    fn layout_stats(positions: &[Vector2], radii: &[f32]) -> (usize, f32, f32) {
+        let mut overlaps = 0usize;
+        let mut min_pair = f32::MAX;
+        let (mut lo_x, mut hi_x, mut lo_y, mut hi_y) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for p in positions {
+            lo_x = lo_x.min(p.x); hi_x = hi_x.max(p.x);
+            lo_y = lo_y.min(p.y); hi_y = hi_y.max(p.y);
+        }
+        for a in 0..positions.len() {
+            for b in (a + 1)..positions.len() {
+                let d = (positions[a] - positions[b]).length();
+                min_pair = min_pair.min(d);
+                if d < radii[a] + radii[b] {
+                    overlaps += 1;
+                }
+            }
+        }
+        (overlaps, min_pair, (hi_x - lo_x).max(hi_y - lo_y))
+    }
+
+    fn edge_stats(positions: &[Vector2], edges: &[(usize, usize)]) -> (f32, f32, usize) {
+        let mut sum = 0.0f32;
+        let mut max = 0.0f32;
+        let mut count = 0usize;
+        for &(a, b) in edges {
+            if a == b { continue; }
+            let d = (positions[a] - positions[b]).length();
+            sum += d;
+            max = max.max(d);
+            count += 1;
+        }
+        (sum / count as f32, max, count)
+    }
+
+#[test]
+    fn link_rest_length_matches_logseq_82() {
+        // A lone connected pair must settle near the 82-unit rest length that
+        // Logseq's forceLink uses (charge widens it slightly; collide only
+        // enforces a far-lower floor).
+        let n = 2usize;
+        let radii = vec![NODE_BASE_RADIUS; n];
+        let edges = vec![(0usize, 1usize)];
+        let (positions, _) = d3_settle(n, &edges, &radii);
+        let sep = (positions[1] - positions[0]).length();
+        assert!(
+            (70.0..=115.0).contains(&sep),
+            "two linked discs should rest near Logseq's 82, got {sep:.1}"
+        );
+    }
+
+    #[test]
+    fn charge_repels_within_radius_and_is_silent_beyond() {
+        // Two nodes 100 apart feel the -140 charge as a repulsion; the
+        // closed-form impulse is x * strength * alpha / l = 100 * -140 / 1e4.
+        let mut nodes_ = vec![test_node(0.0, 0.0), test_node(100.0, 0.0)];
+        apply_charge(&mut nodes_, 1.0, D3_DISTANCE_MAX, D3_CHARGE_STRENGTH);
+        assert!(
+            (nodes_[0].velocity.x + 1.4).abs() < 1e-3,
+            "left node pushed left, got {}",
+            nodes_[0].velocity.x
+        );
+        assert!(
+            (nodes_[1].velocity.x - 1.4).abs() < 1e-3,
+            "right node pushed right, got {}",
+            nodes_[1].velocity.x
+        );
+
+        // A pair 1000 apart (beyond distanceMax 420) feels nothing at all.
+        nodes_[1].position = Vector2::new(1000.0, 0.0);
+        nodes_[0].velocity = Vector2::zero();
+        nodes_[1].velocity = Vector2::zero();
+        apply_charge(&mut nodes_, 1.0, D3_DISTANCE_MAX, D3_CHARGE_STRENGTH);
+        assert_eq!(nodes_[0].velocity.length(), 0.0, "no force beyond the cutoff");
+        assert_eq!(nodes_[1].velocity.length(), 0.0);
+    }
+
+    #[test]
+    fn collide_separates_overlapping_discs_per_d3_weights() {
+        // Two equal discs 5 apart: collide radius (3.8+10)*2 = 27.6, strength
+        // 0.86. Each disc takes the weight rj^2/(ri^2+rj^2) = 0.5 of the scaled
+        // overlap (ri == rj), so |impulse| = (27.6-5)*0.86*0.5.
+        let mut nodes_ = vec![test_node(0.0, 0.0), test_node(5.0, 0.0)];
+        let radii = vec![3.8f32, 3.8];
+        apply_collide(&mut nodes_, &radii, 10.0, 0.86, 1);
+        let expected = (27.6 - 5.0) * 0.86 * 0.5;
+        assert!(
+            (nodes_[0].velocity.x + expected).abs() < 1e-3,
+            "query node takes half the impulse, got {} want {}",
+            nodes_[0].velocity.x,
+            -expected
+        );
+        assert!(
+            (nodes_[1].velocity.x - expected).abs() < 1e-3,
+            "head node takes the other half, got {}",
+            nodes_[1].velocity.x
+        );
+        assert!(
+            nodes_[0].velocity.y.abs() < 1e-3 && nodes_[1].velocity.y.abs() < 1e-3,
+            "jiggle keeps the pair perfectly axial, got y {} / {}",
+            nodes_[0].velocity.y,
+            nodes_[1].velocity.y
+        );
+
+        // A clear pair (40 apart > 27.6) feels nothing.
+        nodes_[1].position = Vector2::new(40.0, 0.0);
+        nodes_[0].velocity = Vector2::zero();
+        nodes_[1].velocity = Vector2::zero();
+        apply_collide(&mut nodes_, &radii, 10.0, 0.86, 1);
+        assert_eq!(nodes_[0].velocity.length(), 0.0);
+        assert_eq!(nodes_[1].velocity.length(), 0.0);
+    }
+
+    #[test]
+    fn dense_graph_force_layout_freezes_without_overlapping_discs() {
+        // Regression guard for the "big graphs pile up in the centre" bug, now
+        // against the real d3 pipeline. Collide guarantees every pair sits at
+        // least ri+pad+rj+pad apart after the budget, so no disc can touch.
+        let n = 64usize;
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        for i in 0..n {
+            for &step in &[1usize, 3] {
+                edges.push((i, (i + step) % n));
+            }
+            edges.push((i, (i * 7 + 13) % n));
+            edges.push((i, (i * 5 + 11) % n));
+        }
+        let mut degree = vec![0u32; n];
+        for &(a, b) in &edges {
+            if a != b {
+                degree[a] += 1;
+                degree[b] += 1;
+            }
+        }
+        let radii: Vec<f32> = degree.iter().map(|&d| radius_for(d)).collect();
+        let (positions, _) = d3_settle(n, &edges, &radii);
+        let (overlaps, min_pair, span) = layout_stats(&positions, &radii);
+        assert_eq!(
+            overlaps, 0,
+            "a settled dense graph must have zero overlapping discs (min_pair {min_pair:.1})"
+        );
+        assert!(min_pair > 20.0, "no two discs may touch, got {min_pair:.1}");
+        assert!(span > 250.0, "a 64-node graph should spread out, span {span:.0}");
+    }
+
+    #[test]
+    fn sparse_tree_layout_converges_to_short_edges() {
+        // Trees are the long-link regime (the current bug report): with the
+        // real d3 link impulse each edge must actually reach near its 82-unit
+        // rest, not span hundreds of units.
+        let n = 63usize;
+        let edges: Vec<(usize, usize)> = (1..n).map(|i| ((i - 1) / 3, i)).collect();
+        let mut degree = vec![0u32; n];
+        for &(a, b) in &edges {
+            degree[a] += 1;
+            degree[b] += 1;
+        }
+        let radii: Vec<f32> = degree.iter().map(|&d| radius_for(d)).collect();
+        let (positions, _) = d3_settle(n, &edges, &radii);
+        let (overlaps, _, span) = layout_stats(&positions, &radii);
+        let (mean_edge, max_edge, _) = edge_stats(&positions, &edges);
+        assert_eq!(overlaps, 0, "a settled tree must not overlap either");
+        assert!(
+            mean_edge < 250.0,
+            "tree edges must contract toward 82, got mean {mean_edge:.0}"
+        );
+        assert!(
+            max_edge < 350.0,
+            "no single tree edge may span the graph, got max {max_edge:.0}"
+        );
+        assert!(span < 1000.0, "a converged tree stays compact, span {span:.0}");
     }
 
     #[test]
     fn settled_pairs_stay_clear_regardless_of_size() {
-        // Integrate the same spring + repulsion forces update_forces uses (no
-        // gravity/camera) for a connected pair of very different sizes. The
-        // spring rest length is radii + spring_rest_gap(k) and the soft
-        // repulsion over-pushes, so the settled gap is always clear of the
-        // discs.
-        let r1 = NODE_BASE_RADIUS;
-        let r2 = NODE_MAX_RADIUS;
-        let mut positions = vec![Vector2::new(0.0, 0.0), Vector2::new(3.0, 0.0)];
-        let mut velocities = vec![Vector2::zero(), Vector2::zero()];
-        let spring_k = 0.90_f32;
-        let damping = 0.55_f32;
-        let dt = 0.01_f32;
-        for _ in 0..5000 {
-            let mut forces = repulsion_forces(
-                &positions,
-                REPULSION_RADIUS,
-                REPULSION_K,
-                &Default::default(),
-                0.0,
-            );
-            let diff = positions[1] - positions[0];
-            let dist = diff.length().max(1e-4);
-            let direction = diff.scale(1.0 / dist);
-            let rest = r1 + r2 + spring_rest_gap(spring_k);
-            let force = spring_k * (dist - rest);
-            forces[0] += direction * force;
-            forces[1] -= direction * force;
-            for i in 0..2 {
-                velocities[i] = (velocities[i] + forces[i] * dt) * damping;
-                positions[i] += velocities[i] * dt;
-            }
-        }
+        // A connected leaf+hub pair (d3 radii): the link + collide must leave a
+        // clear gap beyond r1 + r2 + 2*pad = 39.6. A disconnected pair lets
+        // only charge spread them, still collide-separated.
+        let (pos, _) = d3_settle(2, &[(0usize, 1usize)], &[NODE_BASE_RADIUS, NODE_MAX_RADIUS]);
+        let sep = (pos[1] - pos[0]).length();
+        assert!(sep >= 40.0, "connected leaf+hub must sit clearly apart, got {sep:.1}");
 
-        let sep = (positions[1] - positions[0]).length();
-        assert!(sep >= r1 + r2 + 4.0, "connected pair must sit clearly apart, got {sep}");
-
-        // Disconnected pairs only have repulsion; starting overlapped they shove
-        // apart and nothing draws them back together (soft term has zero range
-        // beyond the interaction radius).
-        let mut p2 = vec![Vector2::new(0.0, 0.0), Vector2::new(1.0, 1.0)];
-        let mut v2 = vec![Vector2::zero(), Vector2::zero()];
-        for _ in 0..3000 {
-            let forces = repulsion_forces(
-                &p2,
-                REPULSION_RADIUS,
-                REPULSION_K,
-                &Default::default(),
-                0.0,
-            );
-            for i in 0..2 {
-                v2[i] = (v2[i] + forces[i] * dt) * damping;
-                p2[i] += v2[i] * dt;
-            }
-        }
-        let sep2 = (p2[1] - p2[0]).length();
-        assert!(sep2 >= 2.0 * NODE_BASE_RADIUS, "disconnected pair must spread apart, got {sep2}");
+        let (pos2, _) = d3_settle(2, &[], &[NODE_BASE_RADIUS, NODE_BASE_RADIUS]);
+        let sep2 = (pos2[1] - pos2[0]).length();
+        assert!(sep2 >= 27.0, "disconnected pair must stay collide-separated, got {sep2:.1}");
     }
 
     #[test]
-    fn alpha_cooling_guarantees_rest_for_cramped_graphs() {
-        // A cramped, random tree would jostle forever under fixed-strength
-        // forces. With the alpha model every force is scaled by a temperature
-        // that decays each tick, so the layout eases to rest within ALPHA_DECAY
-        // ticks no matter how tangled the start positions are.
+    fn d3_simulation_rests_within_tick_budget() {
+        // A cramped random tree jostles under full-strength forces; Logseq's
+        // tick budget + velocity decay must leave it (nearly) at rest.
         let mut rng = rand::rng();
-        let n = 40;
-        let mut positions: Vec<Vector2> = (0..n)
-            .map(|_| {
-                Vector2::new(
-                    rng.random_range(-150.0..150.0),
-                    rng.random_range(-150.0..150.0),
-                )
-            })
-            .collect();
-        let mut velocities = vec![Vector2::zero(); n];
-        let radii = vec![NODE_BASE_RADIUS; n];
+        let n = 40usize;
         let edges: Vec<(usize, usize)> = (1..n).map(|i| (i, rng.random_range(0..i))).collect();
-
-        let spring_k = 0.40_f32;
-        let damping = 0.95_f32;
-        let dt = 1.0 / 60.0_f32;
-        let gravity_k = 0.04_f32;
-        let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
-
-        let mut alpha = 1.0_f32;
-        let mut max_speed = f32::MAX;
-        // With the baked-in 0.005 decay alpha needs ~1380 ticks to cross the
-        // freeze point; budget 2000 so the tail definitely ends below it.
-        for _ in 0..2000 {
-            alpha += (ALPHA_TARGET - alpha) * ALPHA_DECAY;
-            let mut forces = repulsion_forces(
-                &positions,
-                REPULSION_RADIUS,
-                REPULSION_K,
-                &Default::default(),
-                0.0,
-            );
-            for i in 0..n {
-                forces[i] += (center - positions[i]) * gravity_k;
-            }
-            for &(a, b) in &edges {
-                let diff = positions[b] - positions[a];
-                let dist = diff.length();
-                let direction = if dist > 0.001 { diff.scale(1.0 / dist) } else { Vector2::zero() };
-                let rest = radii[a] + radii[b] + spring_rest_gap(spring_k);
-                let force = spring_k * (dist - rest);
-                forces[a] += direction * force;
-                forces[b] -= direction * force;
-            }
-            for i in 0..n {
-                velocities[i] = (velocities[i] + forces[i] * alpha * dt) * damping;
-            }
-            for i in 0..n {
-                positions[i] += velocities[i] * dt;
-            }
-            max_speed = velocities.iter().map(|v| v.length()).fold(0.0_f32, f32::max);
-        }
-        assert!(alpha < ALPHA_MIN, "simulation must cool below the freeze point");
+        let radii = vec![NODE_BASE_RADIUS; n];
+        let (_, velocities) = d3_settle(n, &edges, &radii);
+        let max_speed = velocities.iter().map(|v| v.length()).fold(0.0_f32, f32::max);
         assert!(
-            max_speed < 0.1,
-            "residual motion should be negligible, got {max_speed}"
+            max_speed < 3.0,
+            "residual motion after Logseq's budget should be small, got {max_speed:.2}"
         );
     }
 
@@ -1802,16 +2283,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn spring_rest_gap_tracks_tightness() {
-        // The merged spring dial: grows the rest gap as the spring weakens,
-        // and never lets discs sit closer than the floor gap.
-        let loose = spring_rest_gap(0.05);
-        let default = spring_rest_gap(3.33);
-        let tight = spring_rest_gap(5.0);
-        assert!(loose > default, "weak spring must settle far apart");
-        assert!(default > tight, "strong spring must settle tight");
-        assert!(default > 60.0, "default keeps a real gap, got {default}");
-        assert!(tight >= SPRING_GAP_LO, "tight cannot undershoot floor gap");
+#[test]
+    fn logseq_constants_and_radii() {
+        // "Down to the node radius": Logseq's exact page-node formula and force
+        // defaults.
+        assert_eq!(NODE_BASE_RADIUS, 3.8);
+        assert_eq!(NODE_RADIUS_GROWTH, 3.4);
+        assert_eq!(NODE_MAX_RADIUS, 15.8);
+        assert!((radius_for(0) - 3.8).abs() < 1e-4, "leaf at 3.8");
+        assert!((radius_for(1) - 7.2).abs() < 1e-4, "single link at 7.2");
+        assert!((radius_for(100) - 15.8).abs() < 1e-4, "hub capped at 15.8");
+        assert_eq!(D3_LINK_DISTANCE, 82.0);
+        assert!((*PARAM_SPRING_K.read().unwrap() - 0.82).abs() < 1e-3);
+        assert!((*PARAM_DAMPING.read().unwrap() - 0.6).abs() < 1e-3);
+        assert!((*PARAM_REPULSION_K.read().unwrap() - 140.0).abs() < 1e-3);
+        assert!((*PARAM_REPULSION_RADIUS.read().unwrap() - 420.0).abs() < 1e-3);
+        assert!((*PARAM_COLLIDE_PAD.read().unwrap() - 10.0).abs() < 1e-3);
     }
+
 }
