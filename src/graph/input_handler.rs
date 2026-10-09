@@ -9,7 +9,16 @@ use std::cell::Cell;
 thread_local! {
     static LAST_CLICK_TIME: Cell<f64> = Cell::new(0.0);
     static LAST_CLICK_NODE: Cell<Option<usize>> = Cell::new(None);
+    // A press on a node arms a possible drag; it only becomes a real drag once
+    // the pointer moves past DRAG_THRESHOLD screen pixels, so a plain click
+    // (select/double-click-open) never wakes the settled layout.
+    static PRESS_NODE: Cell<Option<usize>> = Cell::new(None);
+    static PRESS_SCREEN_POS: Cell<Vector2> = Cell::new(Vector2::zero());
 }
+
+// Screen-pixel distance the pointer must travel after pressing a node before
+// the press is treated as a drag (and the force sim is reheated).
+const DRAG_THRESHOLD: f32 = 4.0;
 
 pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     let mut nodes = NODES.write().unwrap();
@@ -780,13 +789,14 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 *context_node = None;
                 LAST_CLICK_NODE.set(None);
             } else {
-                // Single click: select + start drag
+                // Single click: select + arm a drag. The drag (and the sim
+                // wake) is held until the pointer actually moves past
+                // DRAG_THRESHOLD, so merely clicking to select or open a note
+                // leaves the settled layout alone instead of relaying it out.
                 *selected_node = Some(i);
                 *delete_pending = false;
-                *dragging_node = Some(i);
-                // Nudging a node must wake a settled layout so its neighbours
-                // respond to the drag.
-                crate::graph::processing::wake_simulation();
+                PRESS_NODE.set(Some(i));
+                PRESS_SCREEN_POS.set(rl.get_mouse_position());
                 LAST_CLICK_TIME.set(current_time);
                 LAST_CLICK_NODE.set(Some(i));
             }
@@ -797,8 +807,23 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         }
     }
 
+    // A press on a node armed a possible drag; promote it (and heat the sim to
+    // the gentle drag level) only once the pointer has really moved. Tracked in
+    // screen pixels, so the threshold behaves the same at every zoom.
+    if rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
+        if let Some(i) = PRESS_NODE.get() {
+            let m = rl.get_mouse_position();
+            if (m - PRESS_SCREEN_POS.get()).length() >= DRAG_THRESHOLD {
+                PRESS_NODE.set(None);
+                *dragging_node = Some(i);
+                crate::graph::processing::reheat_drag();
+            }
+        }
+    }
+
     if rl.is_mouse_button_released(MouseButton::MOUSE_BUTTON_LEFT) {
         *dragging_node = None;
+        PRESS_NODE.set(None);
     }
 
     if let Some(i) = *dragging_node {

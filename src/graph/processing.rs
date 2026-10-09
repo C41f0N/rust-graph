@@ -1605,6 +1605,19 @@ pub fn wake_simulation() {
     SIM_TICK.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+// Start a node drag: d3-drag's start handler does alphaTarget(0.3).restart(),
+// so the layout un-freezes and follows the pointer at the gentle drag heat
+// (ALPHA_REHEAT) rather than a full relayout (wake_simulation -> alpha 1.0).
+// A fresh tick budget lets the neighbours settle back properly once the drag
+// ends. Called from the input handler only after real pointer movement, so a
+// plain click never wakes a settled graph.
+pub fn reheat_drag() {
+    SIM_SETTLED.store(false, std::sync::atomic::Ordering::Relaxed);
+    let alpha = *SIM_ALPHA.read().unwrap();
+    *SIM_ALPHA.write().unwrap() = alpha.max(ALPHA_REHEAT);
+    SIM_TICK.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 // Logseq's fixed per-size simulation budget (non-tags/global view): the layout
 // runs exactly this many d3 ticks and then stops.
 pub fn layout_tick_count(node_count: usize) -> usize {
