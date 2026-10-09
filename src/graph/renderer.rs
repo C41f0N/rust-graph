@@ -2,7 +2,6 @@ use std::sync::RwLock;
 
 use crate::config;
 use crate::editor::text;
-use crate::filesystem;
 use crate::graph::processing::*;
 use crate::graph::settings;
 use raylib::prelude::*;
@@ -163,7 +162,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         // small icon floating in it.
         if let Some(header) = &node.header {
             if crate::editor::images::is_image_target(header) {
-                if let Some(path) = resolve_header_path(header) {
+                if let Some(path) = resolve_header_path(&node.path, header) {
                     if crate::editor::images::has_thumb(&path) {
                         let disc = draw_radius * 1.9;
                         crate::editor::images::draw_thumb(
@@ -263,98 +262,27 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             );
             text::draw(d, "Add Node", mx + 10, my + my_ofs, mf, Color::WHITE);
         } else {
-            // Determine sub-graph availability for this node
-            let node_name = context_node
-            .and_then(|i| nodes.get(i))
-            .map(|n| n.name.clone())
-            .unwrap_or_default();
-        let dir = crate::graph::processing::DIR_PATH.read().unwrap();
-        let subgraph_exists = filesystem::is_dir(&dir.join(&node_name));
-        drop(dir);
+            // Node menu: rows come from context_menu_rows (shared with the
+            // input handler) so drawing and hit-testing can't drift apart.
+            let rows: Vec<ContextRow> = context_menu_rows(context_node, &nodes);
+            let menu_h = rows.len() as i32 * mh;
+            d.draw_rectangle(mx, my, mw, menu_h, Color::new(20, 20, 20, 235));
 
-        let show_create = !subgraph_exists;
-        let show_open = subgraph_exists;
-
-        // Compute menu height: Rename + Delete + Set Header Image always present,
-        // plus one of the sub-graph items when applicable.
-        let mut item_count = 3i32;
-        if show_create { item_count += 1; }
-        if show_open { item_count += 1; }
-        let menu_h = item_count * mh;
-
-        // Background
-        d.draw_rectangle(mx, my, mw, menu_h, Color::new(20, 20, 20, 235));
-
-        // --- Row 0: Rename ---
-        let hover_rename = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + mw
-            && screen_mouse.y as i32 >= my
-            && screen_mouse.y as i32 <= my + mh;
-        d.draw_rectangle(
-            mx, my, mw, mh,
-            if hover_rename { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
-        );
-        text::draw(d, "Rename", mx + 10, my + my_ofs, mf, Color::WHITE);
-
-        let mut y_off = mh;
-        d.draw_line(mx, my + y_off, mx + mw, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
-
-        // --- Row 1: Delete ---
-        let hover_delete = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + mw
-            && screen_mouse.y as i32 >= my + y_off
-            && screen_mouse.y as i32 <= my + y_off + mh;
-        d.draw_rectangle(
-            mx, my + y_off, mw, mh,
-            if hover_delete { Color::new(200, 60, 60, 160) } else { Color::new(0, 0, 0, 0) },
-        );
-        text::draw(d, "Delete", mx + 10, my + y_off + my_ofs, mf, Color::WHITE);
-        y_off += mh;
-
-        // Separator before sub-graph items (only when at least one is shown)
-        if show_create || show_open {
-            d.draw_line(mx, my + y_off, mx + mw, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
-        }
-
-        // --- Row 2 (conditional): Create Sub-Graph ---
-        if show_create {
-            let hover_create = screen_mouse.x as i32 >= mx
-                && screen_mouse.x as i32 <= mx + mw
-                && screen_mouse.y as i32 >= my + y_off
-                && screen_mouse.y as i32 <= my + y_off + mh;
-            d.draw_rectangle(
-                mx, my + y_off, mw, mh,
-                if hover_create { Color::new(76, 180, 120, 160) } else { Color::new(0, 0, 0, 0) },
-            );
-            text::draw(d, "Create Sub-Graph", mx + 10, my + y_off + my_ofs, mf, Color::WHITE);
-            y_off += mh;
-        }
-
-        // --- Row 2/3 (conditional): Open Sub-Graph ---
-        if show_open {
-            let hover_open = screen_mouse.x as i32 >= mx
-                && screen_mouse.x as i32 <= mx + mw
-                && screen_mouse.y as i32 >= my + y_off
-                && screen_mouse.y as i32 <= my + y_off + mh;
-            d.draw_rectangle(
-                mx, my + y_off, mw, mh,
-                if hover_open { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
-            );
-            text::draw(d, "Open Sub-Graph", mx + 10, my + y_off + my_ofs, mf, Color::WHITE);
-            y_off += mh;
-        }
-
-        // --- Row (last): Set Header ---
-        d.draw_line(mx, my + y_off, mx + mw, my + y_off, config::CONTEXT_MENU_SEP_COLOR);
-        let hover_header = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + mw
-            && screen_mouse.y as i32 >= my + y_off
-            && screen_mouse.y as i32 <= my + y_off + mh;
-        d.draw_rectangle(
-            mx, my + y_off, mw, mh,
-            if hover_header { Color::new(76, 128, 204, 160) } else { Color::new(0, 0, 0, 0) },
-        );
-        text::draw(d, "Set Header", mx + 10, my + y_off + my_ofs, mf, Color::WHITE);
+            for (i, row) in rows.iter().copied().enumerate() {
+                let y = my + i as i32 * mh;
+                if i > 0 && row.group() != rows[i - 1].group() {
+                    d.draw_line(mx, y, mx + mw, y, config::CONTEXT_MENU_SEP_COLOR);
+                }
+                let hover = screen_mouse.x as i32 >= mx
+                    && screen_mouse.x as i32 <= mx + mw
+                    && screen_mouse.y as i32 >= y
+                    && screen_mouse.y as i32 <= y + mh;
+                d.draw_rectangle(
+                    mx, y, mw, mh,
+                    if hover { row.hover_color() } else { Color::new(0, 0, 0, 0) },
+                );
+                text::draw(d, row.label(), mx + 10, y + my_ofs, mf, Color::WHITE);
+            }
         }
     }
 

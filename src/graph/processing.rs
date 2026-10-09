@@ -387,6 +387,160 @@ pub static CONTEXT_POS: RwLock<(i32, i32)> = RwLock::new((0, 0));
 pub static RENAMING: RwLock<bool> = RwLock::new(false);
 pub static RENAME_NAME: RwLock<String> = RwLock::new(String::new());
 
+// Node context-menu rows. The renderer draws a menu from this list and the
+// input handler hit-tests and dispatches against the same list, so the two can
+// never drift apart (a click can't target a row that was never drawn, or vice
+// versa).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ContextRow {
+    Rename,
+    Delete,
+    OpenSubGraph,
+    FoldSubGraph,
+    UnwrapSubGraph,
+    SetHeader,
+}
+
+impl ContextRow {
+    pub fn label(self) -> &'static str {
+        match self {
+            ContextRow::Rename => "Rename",
+            ContextRow::Delete => "Delete",
+            ContextRow::OpenSubGraph => "Open Sub-Graph",
+            ContextRow::FoldSubGraph => "Fold Sub-Graph",
+            ContextRow::UnwrapSubGraph => "Unwrap Sub-Graph",
+            ContextRow::SetHeader => "Set Header",
+        }
+    }
+
+    pub fn hover_color(self) -> Color {
+        match self {
+            ContextRow::Rename => Color::new(76, 128, 204, 160),
+            ContextRow::Delete => Color::new(200, 60, 60, 160),
+            ContextRow::OpenSubGraph => Color::new(76, 128, 204, 160),
+            ContextRow::FoldSubGraph => Color::new(76, 180, 120, 160),
+            ContextRow::UnwrapSubGraph => Color::new(76, 180, 120, 160),
+            ContextRow::SetHeader => Color::new(76, 128, 204, 160),
+        }
+    }
+
+    // 0 rename, 1 delete, 2 sub-graph actions, 3 header. Separators are drawn
+    // between groups so the conditional rows read as one block.
+    pub fn group(self) -> u8 {
+        match self {
+            ContextRow::Rename => 0,
+            ContextRow::Delete => 1,
+            ContextRow::OpenSubGraph
+            | ContextRow::FoldSubGraph
+            | ContextRow::UnwrapSubGraph => 2,
+            ContextRow::SetHeader => 3,
+        }
+    }
+}
+
+// The folder that owns a node's sub-graph contents: the companion folder for a
+// plain note (`a.md` -> `a/`), or the note's own parent folder for a
+// folder-backed main note (`a/a.md` -> `a/`). Everything about fold/unwrap is
+// read back from these folders; there is no in-memory fold state.
+fn node_subgraph_folder(node: &Node) -> PathBuf {
+    if node.folder_backed {
+        node.path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default()
+    } else {
+        filesystem::subgraph_dir(&node.path)
+    }
+}
+
+// Bare names of every note that currently lives inside one of this level's
+// sub-graph folders. A stray reference to one of them from another note is
+// sub-graph content reached through its main node, so it must NOT materialize a
+// ghost at this level. The file on disk is the test: a real loose note of the
+// same name is resolved through `name_to_idx` before this ever matters.
+fn collect_folded_names(nodes: &[Node]) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for node in nodes {
+        if let Ok(entries) = std::fs::read_dir(node_subgraph_folder(node)) {
+            for entry in entries.flatten() {
+                if entry.path().is_file() {
+                    if let Some(stem) = entry.path().file_stem() {
+                        names.insert(stem.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+// Fold guards, derived from the live edge set. A fold may not cross the one-way
+// boundary: no packed child may be referenced from outside the fold set, and
+// nothing in the fold set (the main note or a packed child) may link out to a
+// real note that stays behind. Ghost links (no file on disk) never block.
+fn fold_guards_ok(idx: usize, nodes: &[Node]) -> bool {
+    let edges = EDGES.read().unwrap();
+    // The fold set: this node plus every real-file direct child.
+    let mut fold: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    fold.insert(idx);
+    for e in edges.iter().filter(|e| e.n1 == idx) {
+        if nodes.get(e.n2).map_or(false, |c| c.path.is_file()) {
+            fold.insert(e.n2);
+        }
+    }
+    for e in edges.iter() {
+        let a_real = nodes.get(e.n1).map_or(false, |n| n.path.is_file());
+        let b_real = nodes.get(e.n2).map_or(false, |n| n.path.is_file());
+        // Outward: something folded links to a real note staying behind.
+        if fold.contains(&e.n1) && !fold.contains(&e.n2) && b_real {
+            return false;
+        }
+        // Inbound to a packed child from outside the fold set (references to
+        // the main note from outside are allowed).
+        if e.n2 != idx && fold.contains(&e.n2) && !fold.contains(&e.n1) && a_real {
+            return false;
+        }
+    }
+    true
+}
+
+// A node may be folded when it is a plain note at this level (not itself the
+// main md of a folder) and the one-way boundary holds. A childless note folds
+// into an empty nest.
+fn fold_eligible(node: &Node, idx: usize, nodes: &[Node]) -> bool {
+    if node.folder_backed || !node.path.is_file() {
+        return false;
+    }
+    fold_guards_ok(idx, nodes)
+}
+
+// Ordered rows for the node context menu: Rename + Delete, then the sub-graph
+// actions (Fold for a plain note, Open + Unwrap for a folder-backed main note),
+// then Set Header. Fold and "create sub-graph" are the same operation now, so
+// there is no separate create row.
+pub fn context_menu_rows(idx: Option<usize>, nodes: &[Node]) -> Vec<ContextRow> {
+    let mut rows = vec![ContextRow::Rename, ContextRow::Delete];
+    if let Some(i) = idx {
+        if let Some(node) = nodes.get(i) {
+            if node.folder_backed {
+                rows.push(ContextRow::OpenSubGraph);
+                if node.path.is_file() {
+                    rows.push(ContextRow::UnwrapSubGraph);
+                }
+            } else {
+                if fold_eligible(node, i, nodes) {
+                    rows.push(ContextRow::FoldSubGraph);
+                }
+                if node.has_subgraph {
+                    rows.push(ContextRow::OpenSubGraph);
+                }
+            }
+        }
+    }
+    rows.push(ContextRow::SetHeader);
+    rows
+}
+
 // Sub-graph navigation: stack of previous directory paths so the breadcrumb
 // trail can jump back to any ancestor level.
 pub static NAV_STACK: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
@@ -416,6 +570,11 @@ pub struct Node {
     pub path: PathBuf,
     pub header: Option<String>,
     pub has_subgraph: bool,
+    // True when this node is the main note of a folder: its `.md` lives inside
+    // a same-named folder (`<name>/<name>.md`). Such a node is a self-contained
+    // sub-graph at this level: it can be opened and unwrapped, and its own
+    // outgoing links render only while the folder is open.
+    pub folder_backed: bool,
 }
 
 pub struct Edge {
@@ -460,6 +619,53 @@ pub fn generate_nodes_from_directory(dir: &Path) {
             path: file.clone(),
             header: None,
             has_subgraph: filesystem::is_dir(&filesystem::subgraph_dir(file)),
+            folder_backed: false,
+        });
+    }
+
+    // Folder-backed nodes: an immediate sub-folder `X/` that contains `X/X.md`
+    // is a self-contained sub-graph whose main note is the folder's own .md.
+    // It appears at this level as a single node named `X`; the folder's other
+    // notes stay inside until the folder is opened. A same-named loose note at
+    // this level wins (the file scan above already produced it).
+    let mut backed: Vec<(String, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let Some(folder_name) = p.file_name().map(|s| s.to_string_lossy().to_string()) else {
+                continue;
+            };
+            if folder_name == "assets" || folder_name.starts_with('.') {
+                continue;
+            }
+            let main = p.join(format!("{folder_name}.md"));
+            if main.is_file() && !nodes.iter().any(|n| n.name == folder_name) {
+                backed.push((folder_name, main));
+            }
+        }
+    }
+    backed.sort_by(|a, b| a.1.cmp(&b.1));
+    for (name, main) in backed {
+        let i = nodes.len();
+        let angle = D3_INITIAL_ANGLE * i as f32;
+        let radius = D3_INITIAL_RADIUS * (i as f32 + 0.5).sqrt();
+        nodes.push(Node {
+            radius: NODE_BASE_RADIUS,
+            color: Color::WHITE,
+            position: Vector2::new(
+                center.x + radius * angle.cos(),
+                center.y + radius * angle.sin(),
+            ),
+            velocity: Vector2::new(0.0, 0.0),
+            name: name.clone(),
+            file_name: format!("{name}.md"),
+            path: main,
+            header: None,
+            has_subgraph: true,
+            folder_backed: true,
         });
     }
 
@@ -520,12 +726,22 @@ pub fn project_root() -> PathBuf {
         .unwrap_or_else(|| DIR_PATH.read().unwrap().clone())
 }
 
-// Resolve a node header target (stored relative to the project root, e.g.
-// "assets/name.png") to an absolute path on disk.
-pub fn resolve_header_path(header: &str) -> Option<PathBuf> {
+// Resolve a node header target (stored relative to a directory, e.g.
+// "assets/name.png") to an absolute path on disk. The note's own directory is
+// tried first: a fold packs the note's assets into the sub-graph's own
+// `assets/` folder, so the moved note keeps rendering from there. When the
+// local copy is absent (the normal case for root-level notes), the project
+// root is the fallback, matching how assets are copied in today.
+pub fn resolve_header_path(note_path: &Path, header: &str) -> Option<PathBuf> {
     let h = header.trim();
     if h.is_empty() {
         return None;
+    }
+    if let Some(dir) = note_path.parent() {
+        let local = dir.join(h);
+        if local.is_file() {
+            return Some(local);
+        }
     }
     Some(project_root().join(h))
 }
@@ -550,6 +766,286 @@ pub fn attach_header(idx: usize, raw_header: &str) -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// Fold / Unwrap Sub-Graphs
+//
+// "Fold Sub-Graph" turns a note into a folder-backed sub-graph: the note's own
+// `.md` moves inside a same-named folder (`note.md` -> `note/note.md`, the
+// folder's main node) and its real-file direct-link children are packed beside
+// it, each child's referenced assets moving into `<name>/assets/`. Unwrap is
+// the exact reverse (the main note, every packed note, companion folders and
+// assets back out; empty folder removed). Everything is read back from disk, so
+// there is no in-memory fold state and unwrap works after a restart or for a
+// project folder grafted in from outside. Both end in a directory regenerate,
+// so the layout stays an exact d3 port on the (smaller) current node set.
+// ---------------------------------------------------------------------------
+
+// Every file under `assets_dir` that `content` references: the frontmatter
+// header plus every `[[assets/...]]` body link (the canonical form the editor
+// inserts). Deduplicated, and only existing files are returned, so a link
+// typed before its file was copied in is skipped harmlessly.
+fn referenced_assets(content: &str, assets_dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut consider = |target: &str| {
+        let t = target.trim();
+        if !t.starts_with("assets/") {
+            return;
+        }
+        let rel = Path::new(t).strip_prefix("assets").unwrap_or(Path::new(t));
+        let src = assets_dir.join(rel);
+        if src.is_file() && seen.insert(src.clone()) {
+            out.push(src);
+        }
+    };
+    if let Some(fm) = frontmatter::parse(content) {
+        if let Some(h) = fm.header {
+            consider(&h);
+        }
+    }
+    for link in filesystem::parse_links(content) {
+        consider(&link);
+    }
+    out
+}
+
+// Move one asset (plus its `thumbnails/` companion, when present) from the
+// project's `assets/` tree into a sub-graph's own `assets/` tree, preserving
+// the relative path. An existing destination file is left alone: asset names
+// are uid-based, so a same-named file is the same asset already on the way.
+fn move_asset_into(src: &Path, root_assets: &Path, sub_assets: &Path) {
+    let rel = src.strip_prefix(root_assets).unwrap_or(src).to_path_buf();
+    let dst = sub_assets.join(&rel);
+    if !dst.exists() {
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::rename(src, &dst).is_ok() {
+            // Thumbnail companion (next to the asset under `thumbnails/`).
+            let thumb = crate::editor::images::thumb_path(src);
+            if thumb.is_file() {
+                let t_rel = thumb.strip_prefix(root_assets).unwrap_or(&thumb).to_path_buf();
+                let t_dst = sub_assets.join(t_rel);
+                if !t_dst.exists() {
+                    if let Some(parent) = t_dst.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::rename(&thumb, &t_dst);
+                }
+            }
+        }
+    }
+}
+
+// Fold a node into its own sub-graph folder: the note itself moves inside
+// (`<name>.md` -> `<name>/<name>.md`) and its direct link children are packed
+// beside it, together with their companion folders and referenced assets.
+// Returns false when the one-way boundary guards reject the fold or the move
+// fails. A childless note folds into an empty nest.
+pub fn fold_node(dir: &Path, idx: usize) -> bool {
+    let (name, node_path, folder_backed) = {
+        let nodes = NODES.read().unwrap();
+        let Some(node) = nodes.get(idx) else {
+            return false;
+        };
+        (node.name.clone(), node.path.clone(), node.folder_backed)
+    };
+    if folder_backed {
+        return false;
+    }
+    // The main note's destination must be free; if `dir/name/name.md` already
+    // exists the node is already folder-backed (or a name clash), so bail.
+    let subdir = dir.join(&name);
+    if subdir.join(format!("{name}.md")).is_file() {
+        return false;
+    }
+    // One-way boundary guards: no packed child may be referenced from outside
+    // the fold set, and nothing folded may link out to a note staying behind.
+    {
+        let nodes = NODES.read().unwrap();
+        if !fold_guards_ok(idx, &nodes) {
+            return false;
+        }
+    }
+
+    // Children: outgoing edges whose target is a real note file in the current
+    // directory. Ghost targets have no file, so they cannot move; they follow
+    // their referrer implicitly because a ghost is re-created where the note
+    // that links to it lives, i.e. inside the sub-graph once it is scanned.
+    let children: Vec<(PathBuf, String, String)> = {
+        let nodes = NODES.read().unwrap();
+        let edges = EDGES.read().unwrap();
+        let mut out: Vec<(PathBuf, String, String)> = Vec::new();
+        for edge in edges.iter().filter(|e| e.n1 == idx) {
+            let Some(child) = nodes.get(edge.n2) else {
+                continue;
+            };
+            if child.path.is_file()
+                && child.path.parent() == Some(dir)
+                && !out.iter().any(|(p, _, _)| *p == child.path)
+            {
+                let content = filesystem::read_file(&child.path);
+                out.push((child.path.clone(), child.file_name.clone(), content));
+            }
+        }
+        out
+    };
+
+    let parent_content = filesystem::read_file(&node_path);
+
+    filesystem::create_dir(&subdir);
+    let root_assets = dir.join("assets");
+    let sub_assets = subdir.join("assets");
+    let mut moved_assets: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    // The main note moves inside its own folder, becoming `name/name.md`.
+    if filesystem::move_into(&node_path, &subdir).is_none() {
+        eprintln!(
+            "[fold] could not move {} into its sub-graph",
+            node_path.display()
+        );
+        return false;
+    }
+    for src in referenced_assets(&parent_content, &root_assets) {
+        if moved_assets.insert(src.clone()) {
+            move_asset_into(&src, &root_assets, &sub_assets);
+        }
+    }
+
+    // Pack each direct link child (note file + companion folder + assets).
+    for (child_path, file_name, content) in &children {
+        if subdir.join(file_name).exists() {
+            eprintln!("[fold] {file_name} already in the sub-graph; left at the parent level");
+            continue;
+        }
+        // The note file itself.
+        if filesystem::move_into(child_path, &subdir).is_none() {
+            eprintln!(
+                "[fold] could not move {} into the sub-graph; skipping it",
+                child_path.display()
+            );
+            continue;
+        }
+        // Its companion folder (own assets/ or nested sub-graph) moves along.
+        let stem = file_name.trim_end_matches(".md");
+        if stem != "assets" {
+            let companion = dir.join(stem);
+            if companion.is_dir() {
+                let dest = subdir.join(stem);
+                if !dest.exists() {
+                    let _ = std::fs::rename(&companion, &dest);
+                }
+            }
+        }
+        // Referenced assets travel into the sub-graph's own assets/.
+        for src in referenced_assets(content, &root_assets) {
+            if !moved_assets.insert(src.clone()) {
+                continue;
+            }
+            move_asset_into(&src, &root_assets, &sub_assets);
+        }
+    }
+
+    generate_nodes_from_directory(dir);
+    true
+}
+
+// Unwrap a folder-backed sub-graph: every note and companion folder moves back
+// into the parent directory, `<name>/assets/` merges back into the project
+// `assets/`, and the now-empty sub-graph folder is removed. Returns false when
+// the node is not a folder-backed main note. Eligibility is read entirely from
+// disk, so unwrap works after a restart and for a project folder grafted in
+// from outside.
+pub fn unwrap_node(dir: &Path, idx: usize) -> bool {
+    let (name, folder_backed) = {
+        let nodes = NODES.read().unwrap();
+        let Some(node) = nodes.get(idx) else {
+            return false;
+        };
+        (node.name.clone(), node.folder_backed)
+    };
+    if !folder_backed {
+        return false;
+    }
+    let subdir = dir.join(&name);
+    if !subdir.join(format!("{name}.md")).is_file() {
+        return false;
+    }
+
+    // 1) Every file (notes and anything else) back to the parent. A note whose
+    //    name is taken by a file the user created meanwhile is warned about and
+    //    restored as "stem (2).ext" instead of overwriting it.
+    if let Ok(entries) = std::fs::read_dir(&subdir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let Some(name) = p.file_name().map(|s| s.to_string_lossy().to_string()) else {
+                continue;
+            };
+            let dest = dir.join(&name);
+            if dest.exists() {
+                let new_name = filesystem::unique_collision_name(dir, &name);
+                eprintln!(
+                    "[unwrap] {dest:?} already exists; restoring as {new_name:?}"
+                );
+                let _ = std::fs::rename(&p, dir.join(&new_name));
+            } else {
+                let _ = std::fs::rename(&p, dest);
+            }
+        }
+    }
+
+    // 2) Companion folders (a packed child's own sub-graph) return whole.
+    if let Ok(entries) = std::fs::read_dir(&subdir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let Some(name) = p.file_name().map(|s| s.to_string_lossy().to_string()) else {
+                continue;
+            };
+            if name == "assets" {
+                continue; // merged back in step 3
+            }
+            let dest = dir.join(&name);
+            if dest.exists() {
+                let new_name = filesystem::unique_collision_name(dir, &name);
+                eprintln!("[unwrap] {dest:?} already exists; restoring as {new_name:?}");
+                let _ = std::fs::rename(&p, dir.join(&new_name));
+            } else {
+                let _ = std::fs::rename(&p, dest);
+            }
+        }
+    }
+
+    // 3) The sub-graph's assets merge back into the project assets/. Asset
+    //    names are uid-based, so a same-named file at the destination is the
+    //    same asset and is skipped rather than duplicated.
+    let sub_assets = subdir.join("assets");
+    if sub_assets.is_dir() {
+        let (_, skipped) = filesystem::move_tree_merge(&sub_assets, &dir.join("assets"));
+        if skipped > 0 {
+            eprintln!(
+                "[unwrap] {skipped} asset(s) already at the destination; skipped (uid names mean the same file)"
+            );
+        }
+    }
+
+    // 4) Drop the sub-graph folder, but only once it is fully empty (a failed
+    //    move leaves the user's files in place instead of deleting them).
+    if filesystem::remove_empty_tree(&subdir) {
+        // removed
+    } else {
+        eprintln!("[unwrap] {} not empty; left in place", subdir.display());
+    }
+
+    generate_nodes_from_directory(dir);
+    true
+}
+
 // Target the edges of a single just-saved note (autosave / Ctrl+S). This is
 // the hot path on large graphs: instead of re-reading every .md file like
 // rebuild_edges, only the saved file is parsed, its outgoing link set is
@@ -559,13 +1055,15 @@ pub fn attach_header(idx: usize, raw_header: &str) -> bool {
 // when the link set actually changed.
 pub fn refresh_saved_node(path: &Path) {
     let mut name_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let node_idx = {
+    let (node_idx, folder_backed, folded_names) = {
         let nodes = NODES.read().unwrap();
         for (i, node) in nodes.iter().enumerate() {
             name_to_idx.insert(node.file_name.clone(), i);
             name_to_idx.insert(node.file_name.trim_end_matches(".md").to_string(), i);
         }
-        nodes.iter().position(|n| n.path == path)
+        let idx = nodes.iter().position(|n| n.path == path);
+        let backed = idx.map_or(false, |i| nodes[i].folder_backed);
+        (idx, backed, collect_folded_names(&nodes))
     };
     let Some(idx) = node_idx else {
         return;
@@ -577,26 +1075,31 @@ pub fn refresh_saved_node(path: &Path) {
     // links exactly like rebuild_edges does.
     let fm = frontmatter::parse(&content);
     let header = fm.as_ref().and_then(|f| f.header.clone());
-    let body = if let Some(fm) = &fm {
-        if fm.end_byte <= content.len() {
-            &content[fm.end_byte..]
-        } else {
-            &content
-        }
-    } else {
-        &content
-    };
 
     let mut new_targets: Vec<usize> = Vec::new();
     let mut ghost_links: Vec<String> = Vec::new();
-    for link in filesystem::parse_links(body) {
-        let target = link.strip_suffix(".md").unwrap_or(&link);
-        if let Some(&j) = name_to_idx.get(target) {
-            if idx != j && !new_targets.contains(&j) {
-                new_targets.push(j);
+    // The main note of a closed sub-graph renders no outgoing links at this
+    // level (they appear only when the folder is opened), so its body is not
+    // scanned here; incoming references to it still resolve by name.
+    if !folder_backed {
+        let body = if let Some(fm) = &fm {
+            if fm.end_byte <= content.len() {
+                &content[fm.end_byte..]
+            } else {
+                &content
             }
-        } else if is_ghostable_target(target) {
-            ghost_links.push(target.to_string());
+        } else {
+            &content
+        };
+        for link in filesystem::parse_links(body) {
+            let target = link.strip_suffix(".md").unwrap_or(&link);
+            if let Some(&j) = name_to_idx.get(target) {
+                if idx != j && !new_targets.contains(&j) {
+                    new_targets.push(j);
+                }
+            } else if is_ghostable_target(target) && !folded_names.contains(target) {
+                ghost_links.push(target.to_string());
+            }
         }
     }
 
@@ -627,6 +1130,7 @@ pub fn refresh_saved_node(path: &Path) {
                         ),
                         header: None,
                         has_subgraph: false,
+                        folder_backed: false,
                     });
                     name_to_idx.insert(file_name, gi);
                     name_to_idx.insert(target.clone(), gi);
@@ -642,7 +1146,8 @@ pub fn refresh_saved_node(path: &Path) {
 
     {
         let node = &mut nodes[idx];
-        node.has_subgraph = filesystem::is_dir(&filesystem::subgraph_dir(path));
+        node.has_subgraph =
+            node.folder_backed || filesystem::is_dir(&filesystem::subgraph_dir(path));
         node.header = header;
     }
 
@@ -700,6 +1205,11 @@ pub fn rebuild_edges() {
         name_to_idx.insert(stem.to_string(), i);
     }
 
+    // Names of notes living inside this level's sub-graph folders. A stray
+    // reference to one of them from another note is sub-graph content, not a
+    // ghost at this level (the file on disk is the test).
+    let folded_names = collect_folded_names(&nodes);
+
     // Keep a set of existing edges to avoid duplicates
     let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
 
@@ -710,14 +1220,23 @@ pub fn rebuild_edges() {
     for (i, node) in nodes.iter_mut().enumerate() {
         let content = filesystem::read_file(&node.path);
 
-        // Re-check whether a companion sub-graph folder exists (rename/delete
-        // can change it) so the graph always reflects the filesystem.
-        node.has_subgraph = filesystem::is_dir(&filesystem::subgraph_dir(&node.path));
+        // Re-check whether a sub-graph folder exists (rename/delete can change
+        // it) so the graph always reflects the filesystem. A folder-backed main
+        // note always owns its folder, so its flag stays set.
+        node.has_subgraph =
+            node.folder_backed || filesystem::is_dir(&filesystem::subgraph_dir(&node.path));
 
         // Parse frontmatter and cache the header target on the node.
         let fm = frontmatter::parse(&content);
         node.header = fm.as_ref().and_then(|f| f.header.clone());
         fm_headers.push(node.header.clone());
+
+        // The main note of a closed sub-graph renders no outgoing links at this
+        // level: they appear only when the folder is opened. Its header still
+        // shows, and incoming references to it still resolve by name.
+        if node.folder_backed {
+            continue;
+        }
 
         // Slice past frontmatter for content-link extraction.
         let body = if let Some(fm) = &fm {
@@ -747,6 +1266,11 @@ pub fn rebuild_edges() {
                 // Referenced but missing: defer so the ghost note is created
                 // after the parse loop (the loop holds a mutable borrow of
                 // `nodes`). The ghost lives next to the note that links to it.
+                // A target that lives inside one of this level's sub-graph
+                // folders is never ghosted here: it belongs inside the folder.
+                if folded_names.contains(target) {
+                    continue;
+                }
                 let referrer_dir = node
                     .path
                     .parent()
@@ -777,6 +1301,7 @@ pub fn rebuild_edges() {
                     path: referrer_dir.join(&file_name),
                     header: None,
                     has_subgraph: false,
+                    folder_backed: false,
                 });
                 name_to_idx.insert(file_name, gi);
                 name_to_idx.insert(target.clone(), gi);
@@ -958,6 +1483,7 @@ pub fn add_node(dir: &Path, filename: &str) -> usize {
         path: file_path,
         header: None,
         has_subgraph: false,
+        folder_backed: false,
     });
 
     idx
@@ -991,7 +1517,7 @@ pub fn remove_node(idx: usize) {
     }
 }
 
-// Rename a note's .md file (and its companion sub-graph folder, if any),
+// Rename a note's .md file (and the folder that owns its sub-graph, if any),
 // its node label, and every [[wikilink]] that points at it from the .md
 // files in the current directory. Returns false if the new name is empty,
 // the target file exists, or (for notes with a sub-graph) the target
@@ -1014,24 +1540,52 @@ pub fn rename_node(idx: usize, new_name: &str) -> bool {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    let sub_folder = filesystem::subgraph_dir(&old_path);
-    let has_sub = filesystem::is_dir(&sub_folder);
+    let folder_backed = nodes[idx].folder_backed;
 
-    // A note with a sub-graph needs the destination folder free too; bail
-    // before touching the file so the note survives a conflicting name.
-    if has_sub && sub_folder.with_file_name(&new_stem).exists() {
-        return false;
-    }
+    if folder_backed {
+        // The note's own folder carries the name: rename the folder and the
+        // `.md` inside it so the pair stays `new/new.md`.
+        let parent = match old_path.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return false,
+        };
+        if parent.with_file_name(&new_stem).exists() {
+            return false;
+        }
+        if !filesystem::rename_dir(&parent, &new_stem) {
+            return false;
+        }
+        let inner = parent
+            .with_file_name(&new_stem)
+            .join(old_path.file_name().unwrap_or_default());
+        if !filesystem::rename_file(&inner, &new_stem) {
+            // Roll the folder rename back so the note survives intact.
+            let _ = filesystem::rename_dir(&parent.with_file_name(&new_stem), &old_stem);
+            return false;
+        }
+    } else {
+        let sub_folder = filesystem::subgraph_dir(&old_path);
+        let has_sub = filesystem::is_dir(&sub_folder);
 
-    if !filesystem::rename_file(&old_path, &new_stem) {
-        return false;
-    }
+        // A note with a sub-graph needs the destination folder free too; bail
+        // before touching the file so the note survives a conflicting name.
+        if has_sub && sub_folder.with_file_name(&new_stem).exists() {
+            return false;
+        }
 
-    // Rename the companion sub-graph folder. If this somehow fails, roll the
-    // file rename back so the pair stays consistent.
-    if has_sub && !filesystem::rename_dir(&sub_folder, &new_stem) {
-        filesystem::rename_file(&old_path.with_file_name(format!("{}.md", new_stem)), &old_stem);
-        return false;
+        if !filesystem::rename_file(&old_path, &new_stem) {
+            return false;
+        }
+
+        // Rename the companion sub-graph folder. If this somehow fails, roll
+        // the file rename back so the pair stays consistent.
+        if has_sub && !filesystem::rename_dir(&sub_folder, &new_stem) {
+            filesystem::rename_file(
+                &old_path.with_file_name(format!("{}.md", new_stem)),
+                &old_stem,
+            );
+            return false;
+        }
     }
 
     // Rewire [[old_stem]] / [[old_stem.md]] references in every .md file in
@@ -1045,10 +1599,18 @@ pub fn rename_node(idx: usize, new_name: &str) -> bool {
         }
     }
 
-    nodes[idx].file_name = format!("{}.md", new_stem);
+    let new_path = if folder_backed {
+        old_path
+            .parent()
+            .map(|p| p.with_file_name(&new_stem).join(format!("{new_stem}.md")))
+            .unwrap_or_else(|| PathBuf::from(format!("{new_stem}.md")))
+    } else {
+        old_path.with_file_name(format!("{new_stem}.md"))
+    };
+    nodes[idx].file_name = format!("{new_stem}.md");
     nodes[idx].name = new_stem;
-    nodes[idx].path = old_path.with_file_name(nodes[idx].file_name.clone());
-    nodes[idx].has_subgraph = has_sub;
+    nodes[idx].path = new_path;
+    nodes[idx].folder_backed = folder_backed;
     drop(nodes);
     rebuild_edges();
     true
@@ -1712,13 +2274,16 @@ pub fn update_forces(_rl: &mut RaylibHandle) {
     }
 }
 
+// Tests across modules (graph, editor tabs, ...) drive the same process-global
+// NODES/EDGES/DIR_PATH statics, so cargo's parallel test threads would stomp on
+// each other. Serialize every test that touches that state under this one
+// lock; it is shared (pub, cfg(test)) so the editor module's tests use it too.
+#[cfg(test)]
+pub static TEST_NAV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // These tests drive the same process-global NAV_STACK/DIR_PATH statics, so
-    // cargo's parallel test threads would stomp on each other. Serialize them.
-    static TEST_NAV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // Real d3 pipeline replica: the exact force order, alpha model, collide
     // iterations, velocity integration, and Logseq tick budget that
@@ -1741,6 +2306,7 @@ mod tests {
                     path: PathBuf::from(format!("n{i}.md")),
                     header: None,
                     has_subgraph: false,
+                    folder_backed: false,
                 }
             })
             .collect();
@@ -1784,6 +2350,7 @@ mod tests {
             path: PathBuf::from("n.md"),
             header: None,
             has_subgraph: false,
+            folder_backed: false,
         }
     }
 
@@ -2361,6 +2928,676 @@ mod tests {
     }
 
 #[test]
+    fn fold_packs_direct_link_children_only() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        // a -> b, a -> c, b -> c: every edge stays inside the fold set, so the
+        // one-way boundary holds. d is not linked at all and stays behind.
+        filesystem::write_file(&dir.join("a.md"), "# A\n\n[[b]]\n[[c]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n\n[[c]]\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n");
+        filesystem::write_file(&dir.join("d.md"), "# D\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(fold_node(&dir, a_idx));
+
+        // The main note moved inside its own folder, direct children packed.
+        assert!(dir.join("a").join("a.md").exists());
+        assert!(dir.join("a").join("b.md").exists());
+        assert!(dir.join("a").join("c.md").exists());
+        assert!(!dir.join("a.md").exists());
+        assert!(dir.join("d.md").exists());
+
+        // The parent is now the folder-backed main node.
+        {
+            let nodes = NODES.read().unwrap();
+            let a = nodes.iter().find(|n| n.name == "a").unwrap();
+            assert!(a.has_subgraph);
+            assert!(a.folder_backed);
+            // The packed children left the current view entirely.
+            assert!(nodes.iter().all(|n| n.name != "b" && n.name != "c"));
+            assert!(nodes.iter().any(|n| n.name == "d"));
+        }
+
+        // The sub-graph folder holds the main note plus the packed children.
+        let sub_files = filesystem::scan_directory(&dir.join("a"));
+        let names: Vec<String> = sub_files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.md", "b.md", "c.md"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assets_follow_their_notes_into_the_subgraph_and_back() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_assets_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::create_dir(&dir.join("assets"));
+        filesystem::create_dir(&dir.join("assets").join("sub"));
+        filesystem::write_file(&dir.join("assets").join("pic.png"), "png-bytes");
+        filesystem::write_file(&dir.join("assets").join("sub").join("20240513.png"), "nested");
+        filesystem::write_file(&dir.join("a.md"), "# A\n\n[[b]]\n");
+        filesystem::write_file(
+            &dir.join("b.md"),
+            "---\nheader: [[assets/pic.png]]\n---\n# B\n\n[[assets/pic.png]]\n[[assets/sub/20240513.png]]\n",
+        );
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(fold_node(&dir, a_idx));
+
+        // The main note moved inside its folder; the referenced assets moved
+        // into the sub-graph's own assets/ tree (header + inline links, nested
+        // paths preserved, root copy gone).
+        assert!(dir.join("a").join("a.md").is_file());
+        assert!(dir.join("a").join("assets").join("pic.png").is_file());
+        assert!(dir.join("a").join("assets").join("sub").join("20240513.png").is_file());
+        assert!(!dir.join("assets").join("pic.png").exists());
+
+        // Unwrap returns them to the project assets/ tree.
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(unwrap_node(&dir, a_idx));
+        assert!(dir.join("b.md").exists());
+        assert!(dir.join("assets").join("pic.png").is_file());
+        assert!(dir.join("assets").join("sub").join("20240513.png").is_file());
+        assert!(!dir.join("a").exists(), "empty sub-graph folder removed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fold_then_unwrap_restores_the_disk_set() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_roundtrip_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+        // b owns a companion folder (its own assets/sub-graph); it travels
+        // with the note and comes back whole.
+        filesystem::create_dir(&dir.join("b"));
+        filesystem::write_file(&dir.join("b").join("inner.md"), "# Inner\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(fold_node(&dir, a_idx));
+        assert!(dir.join("a").join("a.md").exists());
+        assert!(dir.join("a").join("b.md").exists());
+        assert!(dir.join("a").join("b").join("inner.md").exists());
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(unwrap_node(&dir, a_idx));
+        assert!(dir.join("a.md").exists());
+        assert!(dir.join("b.md").exists());
+        assert!(dir.join("b").join("inner.md").exists());
+        assert!(!dir.join("a").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fold_skips_ghosts_and_unwritten_targets() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_ghost_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n[[draft]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(fold_node(&dir, a_idx));
+
+        // The real child moved; the ghost has no file to move. Once the main
+        // note is folder-backed its own links (including the [[draft]] ghost)
+        // no longer render at the parent level, so no ghost appears there.
+        assert!(dir.join("a").join("b.md").exists());
+        assert!(!dir.join("a").join("draft.md").exists());
+        {
+            let nodes = NODES.read().unwrap();
+            assert!(!nodes.iter().any(|n| n.name == "draft"));
+            assert!(
+                !nodes.iter().any(|n| n.name == "b"),
+                "packed children leave the parent view, no ghosts"
+            );
+            assert!(nodes.iter().any(|n| n.name == "a"));
+        }
+
+        // Opening the folder re-materializes the ghost next to its referrer.
+        NAV_STACK.write().unwrap().clear();
+        *DIR_PATH.write().unwrap() = dir.clone();
+        navigate_into("a");
+        generate_nodes_from_directory(&dir.join("a"));
+        {
+            let nodes = NODES.read().unwrap();
+            let draft = nodes
+                .iter()
+                .find(|n| n.name == "draft")
+                .expect("ghost kept inside the folder");
+            assert_eq!(draft.path, dir.join("a").join("draft.md"));
+        }
+
+        NAV_STACK.write().unwrap().clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_companion_folder_is_foldable_and_migrates() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_legacy_fold_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        // Legacy layout: the note is at the top level and its folder already
+        // exists, but there is no `a/a.md`. Disk says "foldable".
+        filesystem::write_file(&dir.join("a.md"), "# A\n");
+        filesystem::create_dir(&dir.join("a"));
+        filesystem::write_file(&dir.join("a").join("legacy.md"), "# Legacy\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        {
+            let nodes = NODES.read().unwrap();
+            let a = &nodes[a_idx];
+            assert!(!a.folder_backed);
+            assert!(a.has_subgraph, "legacy companion folder");
+            let rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(rows.contains(&ContextRow::FoldSubGraph));
+            assert!(rows.contains(&ContextRow::OpenSubGraph));
+            assert!(!rows.contains(&ContextRow::UnwrapSubGraph));
+        }
+
+        // Re-folding migrates to the folder-backed layout.
+        assert!(fold_node(&dir, a_idx));
+        assert!(dir.join("a").join("a.md").exists());
+        assert!(dir.join("a").join("legacy.md").exists());
+        assert!(!dir.join("a.md").exists());
+
+        let nodes = NODES.read().unwrap();
+        let a_pos = nodes.iter().position(|n| n.name == "a").unwrap();
+        assert!(nodes[a_pos].folder_backed);
+        let rows = context_menu_rows(Some(a_pos), &nodes);
+        assert!(rows.contains(&ContextRow::UnwrapSubGraph));
+        drop(nodes);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_backed_unwrap_needs_no_history() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_backed_unwrap_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::create_dir(&dir.join("a"));
+        filesystem::create_dir(&dir.join("a").join("assets"));
+        filesystem::write_file(&dir.join("a").join("a.md"), "# A\n");
+        filesystem::write_file(&dir.join("a").join("b.md"), "# B\n");
+        filesystem::write_file(&dir.join("a").join("assets").join("x.png"), "x");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        {
+            let nodes = NODES.read().unwrap();
+            let a = &nodes[a_idx];
+            assert!(a.folder_backed);
+            assert!(a.has_subgraph);
+            let rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(rows.contains(&ContextRow::OpenSubGraph));
+            assert!(rows.contains(&ContextRow::UnwrapSubGraph));
+            assert!(!rows.contains(&ContextRow::FoldSubGraph));
+        }
+
+        // Disk-only eligibility: unwrap flattens even with no fold history.
+        assert!(unwrap_node(&dir, a_idx));
+        assert!(dir.join("a.md").exists());
+        assert!(dir.join("b.md").exists());
+        assert!(dir.join("assets").join("x.png").is_file());
+        assert!(!dir.join("a").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fold_guards_block_boundary_crossings() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_guard_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+
+        // Outward: a packed child links to a real note staying behind.
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n[[c]]\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+        let a_idx = NODES.read().unwrap().iter().position(|n| n.name == "a").unwrap();
+        {
+            let nodes = NODES.read().unwrap();
+            let rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(!rows.contains(&ContextRow::FoldSubGraph), "outward link blocks");
+        }
+        assert!(!fold_node(&dir, a_idx), "outward link blocks");
+        assert!(dir.join("a.md").exists() && dir.join("b.md").exists());
+
+        // Inbound: a note outside the fold set links to a to-be-packed child.
+        filesystem::write_file(&dir.join("b.md"), "# B\n"); // drop the outward link
+        filesystem::write_file(&dir.join("d.md"), "# D\n[[b]]\n");
+        generate_nodes_from_directory(&dir);
+        let a_idx = NODES.read().unwrap().iter().position(|n| n.name == "a").unwrap();
+        {
+            let nodes = NODES.read().unwrap();
+            let rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(!rows.contains(&ContextRow::FoldSubGraph), "external inbound blocks");
+        }
+        assert!(!fold_node(&dir, a_idx), "external inbound blocks");
+        assert!(dir.join("b.md").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_backed_links_render_only_when_open() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_backed_render_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::create_dir(&dir.join("a"));
+        filesystem::write_file(&dir.join("a").join("a.md"), "# A\n[[outside]]\n");
+        filesystem::write_file(&dir.join("a").join("b.md"), "# B\n");
+        filesystem::write_file(&dir.join("outside.md"), "# Outside\n");
+        // d references the packed child b (sub-graph content -> no ghost) and
+        // the main node a (referenceable -> real edge).
+        filesystem::write_file(&dir.join("d.md"), "# D\n[[b]]\n[[a]]\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+        {
+            let nodes = NODES.read().unwrap();
+            let edges = EDGES.read().unwrap();
+            let d = nodes.iter().position(|n| n.name == "d").unwrap();
+            let a = nodes.iter().position(|n| n.name == "a").unwrap();
+            // The main node's own link to `outside` is not rendered while closed.
+            assert!(!edges.iter().any(|e| e.n1 == a));
+            // External references to the main node resolve normally.
+            assert!(edges.iter().any(|e| e.n1 == d && e.n2 == a));
+            // References to packed content do not materialize a ghost.
+            assert!(nodes.iter().all(|n| n.name != "b"));
+        }
+
+        // Opening the folder renders the main note's links again.
+        NAV_STACK.write().unwrap().clear();
+        *DIR_PATH.write().unwrap() = dir.clone();
+        navigate_into("a");
+        generate_nodes_from_directory(&dir.join("a"));
+        {
+            let nodes = NODES.read().unwrap();
+            let a = nodes.iter().position(|n| n.name == "a").unwrap();
+            // `outside` has no file inside a/, so it appears as a ghost here.
+            let outside = nodes
+                .iter()
+                .find(|n| n.name == "outside")
+                .expect("ghost when open");
+            assert_eq!(outside.path, dir.join("a").join("outside.md"));
+            let o = nodes.iter().position(|n| n.name == "outside").unwrap();
+            let edges = EDGES.read().unwrap();
+            assert!(edges.iter().any(|e| e.n1 == a && e.n2 == o));
+        }
+
+        NAV_STACK.write().unwrap().clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn childless_node_folds_to_an_empty_nest() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_empty_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("solo.md"), "# Solo\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+        let idx = NODES.read().unwrap().iter().position(|n| n.name == "solo").unwrap();
+        assert!(fold_node(&dir, idx));
+        assert!(dir.join("solo").join("solo.md").exists());
+        assert!(!dir.join("solo.md").exists());
+        let nodes = NODES.read().unwrap();
+        assert!(nodes.iter().find(|n| n.name == "solo").unwrap().folder_backed);
+        drop(nodes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_folder_backed_node_renames_the_folder() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_rename_backed_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::create_dir(&dir.join("a"));
+        filesystem::write_file(&dir.join("a").join("a.md"), "# A\n");
+        filesystem::write_file(&dir.join("a").join("b.md"), "# B\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+        let idx = NODES.read().unwrap().iter().position(|n| n.name == "a").unwrap();
+        assert!(rename_node(idx, "z"));
+
+        // The folder and its main note are renamed together: z/z.md.
+        assert!(dir.join("z").join("z.md").exists());
+        assert!(dir.join("z").join("b.md").exists());
+        assert!(!dir.join("a").exists());
+        assert!(!dir.join("z.md").exists());
+        let nodes = NODES.read().unwrap();
+        assert!(nodes.iter().find(|n| n.name == "z").unwrap().folder_backed);
+        assert!(nodes.iter().all(|n| n.name != "b"), "b stays packed");
+        drop(nodes);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn context_menu_offers_fold_then_unwrap() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_menu_rows_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        {
+            let nodes = NODES.read().unwrap();
+            let a_idx = nodes.iter().position(|n| n.name == "a").unwrap();
+            let rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(rows.contains(&ContextRow::FoldSubGraph));
+            assert!(!rows.contains(&ContextRow::UnwrapSubGraph));
+            // A childless note folds into an empty nest now that Fold and
+            // "create sub-graph" are one action.
+            let c_idx = nodes.iter().position(|n| n.name == "c").unwrap();
+            let c_rows = context_menu_rows(Some(c_idx), &nodes);
+            assert!(c_rows.contains(&ContextRow::FoldSubGraph));
+        }
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(fold_node(&dir, a_idx));
+
+        {
+            let nodes = NODES.read().unwrap();
+            let a_idx = nodes.iter().position(|n| n.name == "a").unwrap();
+            assert!(nodes[a_idx].folder_backed);
+            let rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(rows.contains(&ContextRow::OpenSubGraph));
+            assert!(rows.contains(&ContextRow::UnwrapSubGraph));
+            assert!(!rows.contains(&ContextRow::FoldSubGraph));
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unwrap_renames_colliding_notes_instead_of_overwriting() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_unwrap_collide_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(fold_node(&dir, a_idx));
+
+        // The user recreates b at the parent level while it is packed.
+        filesystem::write_file(&dir.join("b.md"), "# NEW B\n");
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(unwrap_node(&dir, a_idx));
+
+        // Neither note is lost: the user's b.md stays, the unwrapped one comes
+        // back renamed next to it.
+        assert_eq!(filesystem::read_file(&dir.join("b.md")), "# NEW B\n");
+        assert!(dir.join("b (2).md").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_header_path_prefers_the_notes_own_directory() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_header_relative_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::create_dir(&dir.join("a"));
+        filesystem::create_dir(&dir.join("a").join("assets"));
+        filesystem::create_dir(&dir.join("assets"));
+        filesystem::write_file(&dir.join("assets").join("old.png"), "root");
+        filesystem::write_file(&dir.join("a").join("assets").join("new.png"), "local");
+
+        // A packed note (moved into a/) resolves its assets locally first.
+        let packed = dir.join("a").join("b.md");
+        assert_eq!(
+            resolve_header_path(&packed, "assets/new.png"),
+            Some(dir.join("a").join("assets").join("new.png"))
+        );
+        // The local copy takes precedence over a root copy with the same name.
+        filesystem::write_file(&dir.join("assets").join("new.png"), "root-dup");
+        assert_eq!(
+            resolve_header_path(&packed, "assets/new.png"),
+            Some(dir.join("a").join("assets").join("new.png"))
+        );
+        // A root note still resolves from the project root.
+        let root_note = dir.join("a.md");
+        assert_eq!(
+            resolve_header_path(&root_note, "assets/old.png"),
+            Some(dir.join("assets").join("old.png"))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unwrap_skips_same_named_uid_assets() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_unwrap_asset_collide_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::create_dir(&dir.join("assets"));
+        filesystem::write_file(&dir.join("assets").join("pic.png"), "png-bytes");
+        filesystem::write_file(&dir.join("assets").join("u.png"), "uid-bytes");
+        filesystem::write_file(&dir.join("a.md"), "# A\n\n[[b]]\n");
+        filesystem::write_file(
+            &dir.join("b.md"),
+            "---\nheader: [[assets/pic.png]]\n---\n# B\n\n[[assets/pic.png]]\n[[assets/u.png]]\n",
+        );
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(fold_node(&dir, a_idx));
+        // Both referenced assets moved into the sub-graph's own assets/.
+        assert!(dir.join("a").join("assets").join("pic.png").is_file());
+        assert!(dir.join("a").join("assets").join("u.png").is_file());
+        assert!(!dir.join("assets").join("pic.png").exists());
+
+        // While packed, the same uid-named file reappears at the project level
+        // (another note restored it). Unwrap must not clobber the user's
+        // copy: uid names mean the same file, so the destination wins and the
+        // packed duplicate is dropped, leaving the folder empty to remove.
+        filesystem::write_file(&dir.join("assets").join("pic.png"), "png-bytes");
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(unwrap_node(&dir, a_idx));
+        assert_eq!(
+            filesystem::read_file(&dir.join("assets").join("pic.png")),
+            "png-bytes",
+            "user's copy survives unwrap"
+        );
+        assert!(dir.join("assets").join("u.png").is_file(), "other asset returned");
+        assert!(dir.join("b.md").exists());
+        assert!(!dir.join("a").exists(), "empty sub-graph folder removed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folded_folder_is_navigable_and_shows_packed_children() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_navigate_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        // A -> B -> D, where D is an unwritten ghost: folding A packs B, and
+        // B's link re-materializes D inside the folder. A real D staying behind
+        // would block the fold (see fold_guards_block_boundary_crossings).
+        filesystem::write_file(&dir.join("a.md"), "# A\n\n[[b]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n\n[[d]]\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(fold_node(&dir, a_idx));
+        assert!(dir.join("a").join("a.md").exists());
+        assert!(dir.join("a").join("b.md").exists());
+        assert!(!dir.join("a").join("d.md").exists());
+
+        // Navigate into the folded folder: the main note and the packed child
+        // become nodes there and B's outgoing link re-materializes. D's file is
+        // outside this scan, so D appears as an in-app ghost beside B.
+        NAV_STACK.write().unwrap().clear();
+        *DIR_PATH.write().unwrap() = dir.clone();
+        navigate_into("a");
+        generate_nodes_from_directory(&dir.join("a"));
+
+        {
+            let nodes = NODES.read().unwrap();
+            assert!(nodes.iter().any(|n| n.name == "a"));
+            assert!(nodes.iter().any(|n| n.name == "b"));
+            let d = nodes
+                .iter()
+                .find(|n| n.name == "d")
+                .expect("grandchild ghost next to its referrer");
+            assert_eq!(d.path, dir.join("a").join("d.md"));
+            let edges = EDGES.read().unwrap();
+            let b = nodes.iter().position(|n| n.name == "b").unwrap();
+            let d_idx = nodes.iter().position(|n| n.name == "d").unwrap();
+            assert!(edges.iter().any(|e| e.n1 == b && e.n2 == d_idx));
+        }
+
+        NAV_STACK.write().unwrap().clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn logseq_constants_and_radii() {
         // "Down to the node radius": Logseq's exact page-node formula and force
         // defaults.

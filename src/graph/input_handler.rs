@@ -1,5 +1,4 @@
 use crate::config;
-use crate::filesystem;
 use crate::graph::processing::*;
 use crate::graph::renderer::*;
 use crate::graph::settings;
@@ -584,143 +583,137 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             return;
         }
 
-        // Compute which items are visible (mirrors the renderer logic)
-        let node_name = context_node
-            .and_then(|i| nodes.get(i))
-            .map(|n| n.name.clone())
-            .unwrap_or_default();
-        let subgraph_exists = filesystem::is_dir(&dir_path.join(&node_name));
-        let show_create = !subgraph_exists;
-        let show_open = subgraph_exists;
+        // Hit-test against the same row list the renderer draws, so a click
+        // always targets the exact row under the cursor.
+        let rows: Vec<ContextRow> = context_menu_rows(*context_node, &nodes);
+        let mut clicked_row: Option<ContextRow> = None;
+        for (i, row) in rows.iter().copied().enumerate() {
+            let y = my + i as i32 * mh;
+            if screen_mouse.x as i32 >= mx
+                && screen_mouse.x as i32 <= mx + mw
+                && screen_mouse.y as i32 >= y
+                && screen_mouse.y as i32 <= y + mh
+            {
+                clicked_row = Some(row);
+                break;
+            }
+        }
 
-        // Row 0: Rename (always present)
-        let clicked_rename = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + mw
-            && screen_mouse.y as i32 >= my
-            && screen_mouse.y as i32 <= my + mh;
-
-        // Row 1: Delete (always present)
-        let y_delete = my + mh;
-        let clicked_delete = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + mw
-            && screen_mouse.y as i32 >= y_delete
-            && screen_mouse.y as i32 <= y_delete + mh;
-
-        // Row 2 (conditional): Create Sub-Graph
-        let y_subgraph = y_delete + mh;
-        let clicked_create = show_create
-            && screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + mw
-            && screen_mouse.y as i32 >= y_subgraph
-            && screen_mouse.y as i32 <= y_subgraph + mh;
-
-        // Row 2/3 (conditional): Open Sub-Graph
-        let y_open = if show_create { y_subgraph + mh } else { y_subgraph };
-        let clicked_open = show_open
-            && screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + mw
-            && screen_mouse.y as i32 >= y_open
-            && screen_mouse.y as i32 <= y_open + mh;
-
-        // Row (last): Set Header (always at 3*ITEM_H; exactly one of the
-        // create/open sub-graph rows is shown, so the layout is fixed).
-        let y_header = my + 3 * mh;
-        let clicked_header = screen_mouse.x as i32 >= mx
-            && screen_mouse.x as i32 <= mx + mw
-            && screen_mouse.y as i32 >= y_header
-            && screen_mouse.y as i32 <= y_header + mh;
-
-        if clicked_rename {
-            let idx = *context_node;
-            if let Some(idx) = idx {
-                if let Some(node) = nodes.get(idx) {
-                    *rename_name = node.name.clone();
+        match clicked_row {
+            Some(ContextRow::Rename) => {
+                let idx = *context_node;
+                if let Some(idx) = idx {
+                    if let Some(node) = nodes.get(idx) {
+                        *rename_name = node.name.clone();
+                    }
                 }
+                *renaming = true;
+                return;
             }
-            *renaming = true;
-            return;
-        } else if clicked_delete {
-            if let Some(idx) = *context_node {
-                *selected_node = Some(idx);
-                *delete_pending = true;
+            Some(ContextRow::Delete) => {
+                if let Some(idx) = *context_node {
+                    *selected_node = Some(idx);
+                    *delete_pending = true;
+                }
+                *context_node = None;
+                return;
             }
-            *context_node = None;
-            return;
-        } else if clicked_create {
-            // Create the sub-graph folder, then navigate into it immediately.
-            let idx = *context_node;
-            *context_node = None;
-            if let Some(idx) = idx {
-                let name = nodes.get(idx).map(|n| n.name.clone()).unwrap_or_default();
-                drop(nodes);
-                drop(dragging_node);
-                drop(hover_node);
-                drop(selected_node);
-                drop(delete_pending);
-                drop(editing_node);
-                drop(adding_note);
-                drop(adding_name);
-                drop(context_node);
-                drop(context_pos);
-                drop(renaming);
-                drop(rename_name);
-                drop(dir_path);
-                drop(context_empty);
-                if !name.is_empty() {
+            Some(ContextRow::OpenSubGraph) => {
+                // Navigate into the sub-graph folder immediately.
+                let idx = *context_node;
+                *context_node = None;
+                if let Some(idx) = idx {
+                    let name = nodes.get(idx).map(|n| n.name.clone()).unwrap_or_default();
+                    drop(nodes);
+                    drop(dragging_node);
+                    drop(hover_node);
+                    drop(selected_node);
+                    drop(delete_pending);
+                    drop(editing_node);
+                    drop(adding_note);
+                    drop(adding_name);
+                    drop(context_node);
+                    drop(context_pos);
+                    drop(renaming);
+                    drop(rename_name);
+                    drop(dir_path);
+                    drop(context_empty);
+                    if !name.is_empty() {
+                        navigate_into(&name);
+                        // Regenerate nodes/edges (also resets camera + zoom).
+                        generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+                    }
+                }
+                return;
+            }
+            Some(ContextRow::FoldSubGraph) => {
+                // Pack the node's outgoing-link children into its companion
+                // folder (see processing::fold_node); the directory rescan the
+                // fold performs refreshes this view.
+                let idx = *context_node;
+                *context_node = None;
+                if let Some(idx) = idx {
+                    drop(nodes);
+                    drop(dragging_node);
+                    drop(hover_node);
+                    drop(selected_node);
+                    drop(delete_pending);
+                    drop(editing_node);
+                    drop(adding_note);
+                    drop(adding_name);
+                    drop(context_node);
+                    drop(context_pos);
+                    drop(renaming);
+                    drop(rename_name);
+                    drop(dir_path);
+                    drop(context_empty);
                     let dir = DIR_PATH.read().unwrap().clone();
-                    filesystem::create_dir(&dir.join(&name));
-                    drop(dir);
-                    navigate_into(&name);
-                    // Regenerate nodes/edges (also resets camera + zoom).
-                    generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+                    fold_node(&dir, idx);
                 }
                 return;
             }
-            return;
-        } else if clicked_open {
-            // Navigate into the sub-graph folder immediately.
-            let idx = *context_node;
-            *context_node = None;
-            if let Some(idx) = idx {
-                let name = nodes.get(idx).map(|n| n.name.clone()).unwrap_or_default();
-                drop(nodes);
-                drop(dragging_node);
-                drop(hover_node);
-                drop(selected_node);
-                drop(delete_pending);
-                drop(editing_node);
-                drop(adding_note);
-                drop(adding_name);
-                drop(context_node);
-                drop(context_pos);
-                drop(renaming);
-                drop(rename_name);
-                drop(dir_path);
-                drop(context_empty);
-                if !name.is_empty() {
-                    navigate_into(&name);
-                    // Regenerate nodes/edges (also resets camera + zoom).
-                    generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+            Some(ContextRow::UnwrapSubGraph) => {
+                // Expand a fold-created sub-graph back into this directory.
+                let idx = *context_node;
+                *context_node = None;
+                if let Some(idx) = idx {
+                    drop(nodes);
+                    drop(dragging_node);
+                    drop(hover_node);
+                    drop(selected_node);
+                    drop(delete_pending);
+                    drop(editing_node);
+                    drop(adding_note);
+                    drop(adding_name);
+                    drop(context_node);
+                    drop(context_pos);
+                    drop(renaming);
+                    drop(rename_name);
+                    drop(dir_path);
+                    drop(context_empty);
+                    let dir = DIR_PATH.read().unwrap().clone();
+                    unwrap_node(&dir, idx);
                 }
                 return;
             }
-            return;
-        } else if clicked_header {
-            // Defer to main.rs: it spawns the native file dialog on a worker
-            // thread, then copies the pick into assets/ and attaches it as
-            // the note header. Skip if a dialog is already in flight.
-            if let Some(idx) = *context_node {
-                *selected_node = Some(idx);
-                if !HEADER_PICK_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
-                    *HEADER_PICK_REQUEST.write().unwrap() = Some(idx);
+            Some(ContextRow::SetHeader) => {
+                // Defer to main.rs: it spawns the native file dialog on a worker
+                // thread, then copies the pick into assets/ and attaches it as
+                // the note header. Skip if a dialog is already in flight.
+                if let Some(idx) = *context_node {
+                    *selected_node = Some(idx);
+                    if !HEADER_PICK_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+                        *HEADER_PICK_REQUEST.write().unwrap() = Some(idx);
+                    }
                 }
+                *context_node = None;
+                return;
             }
-            *context_node = None;
-            return;
-        } else {
-            // Click anywhere else dismisses the menu.
-            *context_node = None;
-            return;
+            None => {
+                // Click anywhere else dismisses the menu.
+                *context_node = None;
+                return;
+            }
         }
     }
 

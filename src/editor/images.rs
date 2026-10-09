@@ -184,10 +184,24 @@ pub fn is_image_target(target: &str) -> bool {
     }
 }
 
-// Resolve a wikilink target relative to the notes directory.
+// Resolve a wikilink target to an absolute path. The active note's own
+// directory is tried first: a note folded into a sub-graph keeps its
+// `assets/x` targets verbatim and its assets live in that sub-graph's own
+// `assets/` folder, which is under the note's directory. When the local file
+// is absent (the normal case for root-level notes), the graph's current
+// directory is used, matching historical behaviour.
 pub fn resolve_path(target: &str) -> Option<PathBuf> {
+    let target = target.trim();
+    if let Some(note) = crate::editor::tabs::active_path() {
+        if let Some(dir) = note.parent() {
+            let local = dir.join(target);
+            if local.is_file() {
+                return Some(local);
+            }
+        }
+    }
     let dir = crate::graph::processing::DIR_PATH.read().unwrap();
-    let p = dir.join(target.trim());
+    let p = dir.join(target);
     drop(dir);
     Some(p)
 }

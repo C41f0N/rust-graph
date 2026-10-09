@@ -1,5 +1,5 @@
 use raylib::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod app_config;
 mod config;
@@ -218,17 +218,24 @@ fn main() {
             }
         }
 
-        // A finished header-picker dialog (background thread) left a result: copy
-// the chosen file into the project's assets/ folder and write it into the
-// note's frontmatter header. Runs here, on the main thread, because both the
-// file ops and the GL texture load must not race the render loop.
+        // A finished header-picker dialog (background thread) left a result: copy the
+// chosen file into the note's own assets/ folder and write it into the note's
+// frontmatter header. Runs here, on the main thread, because both the file
+// ops and the GL texture load must not race the render loop. The target is the
+// *note's* directory (stored relative to it): for a root-level note that is
+// the project root (unchanged behaviour), while a note folded into a
+// sub-graph folder keeps its header image inside `<name>/assets/` where it
+// travels with the fold. resolve_header_path is note-relative-first, so the
+// stored `assets/...` target resolves either way.
 if let Some((idx, src)) = HEADER_PICK_RESULT.write().unwrap().take() {
-    let root = project_root();
-    if let Some(dst) = filesystem::copy_file_unique(&src, &root.join("assets")) {
-        if let Ok(rel) = dst.strip_prefix(&root) {
-            let header_rel = rel.to_string_lossy().to_string();
-            if attach_header(idx, &format!("[[{}]]", header_rel)) {
-                editor::images::request_full(&dst);
+    let note_dir = NODES.read().unwrap().get(idx).map(|n| n.path.parent().unwrap_or(Path::new("")).to_path_buf());
+    if let Some(note_dir) = note_dir {
+        if let Some(dst) = filesystem::copy_file_unique(&src, &note_dir.join("assets")) {
+            if let Ok(rel) = dst.strip_prefix(&note_dir) {
+                let header_rel = rel.to_string_lossy().to_string();
+                if attach_header(idx, &format!("[[{}]]", header_rel)) {
+                    editor::images::request_full(&dst);
+                }
             }
         }
     }
@@ -254,12 +261,16 @@ if let Some(idx) = HEADER_PICK_REQUEST.write().unwrap().take() {
 }
 
         // A finished asset-import dialog (background thread) left a result: copy the
-// chosen file into the project's assets/ folder and hand the relative target
-// to the editor, which inserts `[[assets/...]]` as a new line below the caret.
+// chosen file into the active note's own assets/ folder and hand the relative
+// target to the editor, which inserts `[[assets/...]]` as a new line below the
+// caret. Root-level notes land in the project assets/ as before; a note
+// packed into a sub-graph folder keeps its new assets inside `<name>/assets/`.
 if let Some(src) = editor::command::ASSET_PICK_RESULT.write().unwrap().take() {
-    let root = project_root();
-    if let Some(dst) = filesystem::copy_file_unique(&src, &root.join("assets")) {
-        if let Ok(rel) = dst.strip_prefix(&root) {
+    let note_dir = editor::tabs::active_path()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(project_root);
+    if let Some(dst) = filesystem::copy_file_unique(&src, &note_dir.join("assets")) {
+        if let Ok(rel) = dst.strip_prefix(&note_dir) {
             *editor::command::ASSET_INSERT.write().unwrap() =
                 Some(rel.to_string_lossy().to_string());
         }
@@ -404,7 +415,7 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
                 }
                 if let Some(header) = &node.header {
                     if editor::images::is_image_target(header) {
-                        if let Some(path) = resolve_header_path(header) {
+                        if let Some(path) = resolve_header_path(&node.path, header) {
                             editor::images::request_thumb(&path);
                         }
                     }

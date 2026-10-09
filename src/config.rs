@@ -78,6 +78,13 @@ pub const EDITOR_LINE_SPACING_MAX: i32 = 48;
 // How much one minus/plus press moves each setting in the settings dialog.
 pub const EDITOR_PADDING_STEP: i32 = 4;
 
+// Tests across modules (config itself and app_config's apply()) mutate the
+// process-wide EDITOR_PADDING/EDITOR_LINE_SPACING globals and snapshot values
+// from them, so cargo's parallel test threads would stomp on each other.
+// Serialize every test that writes or asserts on those globals.
+#[cfg(test)]
+pub static CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn editor_padding() -> i32 {
     *EDITOR_PADDING.read().unwrap()
 }
@@ -148,6 +155,7 @@ mod tests {
     // thread to avoid racing the shared value.
     #[test]
     fn scaled_size_follows_zoom() {
+        let _guard = CONFIG_TEST_LOCK.lock().unwrap();
         *TEXT_ZOOM.write().unwrap() = 1.0;
         assert_eq!(scaled_size(20), 20);
         assert_eq!(scaled_size(70), 70);
@@ -170,6 +178,7 @@ mod tests {
     // Same global-state caveat as the zoom test: run single-threaded.
     #[test]
     fn editor_metrics_setters_clamp_to_range() {
+        let _guard = CONFIG_TEST_LOCK.lock().unwrap();
         set_editor_padding(24);
         assert_eq!(editor_padding(), 24);
         set_editor_padding(EDITOR_PADDING_MAX + 50);

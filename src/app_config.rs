@@ -382,6 +382,7 @@ mod tests {
     #[test]
     fn selected_font_persists_through_snapshot_and_apply() {
         use crate::graph::settings::{REQUEST_LOAD_FONT, SELECTED_FONT};
+        let _guard = config::CONFIG_TEST_LOCK.lock().unwrap();
         seed_fonts(&["Adwaita Sans", "Fira Code"]);
 
         *SELECTED_FONT.write().unwrap() = Some(1);
@@ -398,6 +399,7 @@ mod tests {
     #[test]
     fn apply_falls_back_to_default_for_missing_or_empty_font() {
         use crate::graph::settings::{REQUEST_LOAD_FONT, SELECTED_FONT};
+        let _guard = config::CONFIG_TEST_LOCK.lock().unwrap();
         seed_fonts(&["Adwaita Sans", "Fira Code"]);
 
         // Family gone from the catalog: picker and load request revert to 0.

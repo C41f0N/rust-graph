@@ -578,6 +578,7 @@ mod tests {
 
     #[test]
     fn open_dedupes_by_path() {
+        let _guard = crate::graph::processing::TEST_NAV_LOCK.lock().unwrap();
         reset();
         let a = open(Path::new("/x/a.md"), "a");
         let b = open(Path::new("/x/b.md"), "b");
@@ -590,6 +591,7 @@ mod tests {
 
     #[test]
     fn close_shifts_active_index_down() {
+        let _guard = crate::graph::processing::TEST_NAV_LOCK.lock().unwrap();
         reset();
         *ACTIVE.write().unwrap() = Some(2);
         *TABS.write().unwrap() = vec![tab("/a"), tab("/b"), tab("/c"), tab("/d")];
@@ -604,6 +606,7 @@ mod tests {
 
     #[test]
     fn close_last_tab_reports_empty() {
+        let _guard = crate::graph::processing::TEST_NAV_LOCK.lock().unwrap();
         reset();
         *ACTIVE.write().unwrap() = Some(0);
         *TABS.write().unwrap() = vec![tab("/a")];
@@ -614,6 +617,7 @@ mod tests {
 
     #[test]
     fn rename_active_updates_tab_node_and_file() {
+        let _guard = crate::graph::processing::TEST_NAV_LOCK.lock().unwrap();
         reset();
         let root = std::env::temp_dir().join("rg_tab_rename_test");
         let _ = std::fs::remove_dir_all(&root);

@@ -156,6 +156,122 @@ pub fn unique_filename(dir: &Path, stem: &str) -> String {
     unreachable!()
 }
 
+// Move `src` (a file or a same-filesystem directory) into `dst_dir` (created
+// if missing), keeping its name. Files fall back to copy + delete across
+// mounts; directories rename only. Returns the destination path or None when
+// the move failed.
+pub fn move_into(src: &Path, dst_dir: &Path) -> Option<PathBuf> {
+    create_dir(dst_dir);
+    let name = src.file_name()?.to_string_lossy().to_string();
+    let dst = dst_dir.join(&name);
+    if fs::rename(src, &dst).is_ok() {
+        return Some(dst);
+    }
+    if src.is_file() && fs::copy(src, &dst).is_ok() {
+        let _ = fs::remove_file(src);
+        return Some(dst);
+    }
+    None
+}
+
+// A name in `dir` that does not collide with `name`, appending " (2)", " (3)",
+// ... before the extension. Used when restoring packed notes that would
+// otherwise overwrite a file the user created in the meantime.
+pub fn unique_collision_name(dir: &Path, name: &str) -> String {
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) => (name[..i].to_string(), name[i..].to_string()),
+        None => (name.to_string(), String::new()),
+    };
+    let mut n = 2;
+    loop {
+        let candidate = format!("{stem} ({n}){ext}");
+        if !dir.join(&candidate).exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+fn move_tree_recursive(src: &Path, dst: &Path, moved: &mut usize, skipped: &mut usize) {
+    if src.is_file() {
+        if dst.exists() {
+            // Collision: uid asset names mean a same-named file is the same
+            // asset, so the existing copy is kept. When the packed copy is
+            // byte-identical it is a pure duplicate and is dropped so the
+            // sub-graph folder can be emptied on unwrap; differing contents
+            // are kept in place rather than risking data loss.
+            *skipped += 1;
+            let same = match (std::fs::read(src), std::fs::read(dst)) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => false,
+            };
+            if same {
+                let _ = std::fs::remove_file(src);
+            }
+            return;
+        }
+        if let Some(parent) = dst.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if fs::rename(src, dst).is_ok() {
+            *moved += 1;
+        } else if fs::copy(src, dst).is_ok() {
+            let _ = fs::remove_file(src);
+            *moved += 1;
+        } else {
+            *skipped += 1;
+        }
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(src) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            move_tree_recursive(&entry.path(), &dst.join(&name), moved, skipped);
+        }
+    }
+}
+
+// Move every file under `src_dir` into `dst_dir`, mirroring each file's
+// relative path below the source (parent directories are created). Files that
+// already exist at the destination are skipped. Returns (moved, skipped).
+pub fn move_tree_merge(src_dir: &Path, dst_dir: &Path) -> (usize, usize) {
+    let mut moved = 0;
+    let mut skipped = 0;
+    move_tree_recursive(src_dir, dst_dir, &mut moved, &mut skipped);
+    (moved, skipped)
+}
+
+// Remove `dir` together with any subdirectories that are empty after the move
+// (bottom-up). Never removes anything that still contains a file. Returns
+// whether `dir` itself was removed.
+fn remove_empty_children(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if !remove_empty_dir(&p) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+fn remove_empty_dir(dir: &Path) -> bool {
+    if !remove_empty_children(dir) {
+        return false;
+    }
+    fs::remove_dir(dir).is_ok()
+}
+
+pub fn remove_empty_tree(dir: &Path) -> bool {
+    remove_empty_dir(dir)
+}
+
 // Rewrite every [[wikilink]] whose (trimmed) target is old_stem -- with or
 // without a ".md" extension -- to new_stem. Other links and unclosed
 // brackets pass through unchanged.
