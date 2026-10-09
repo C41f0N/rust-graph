@@ -21,7 +21,7 @@ pub struct AppConfig {
     pub window: (i32, i32),
     pub zoom: f32,
     pub font_name: String,
-    pub graph: [f32; 9],
+    pub graph: [f32; 10],
     pub cooling: bool,
     pub panel: bool,
     pub padding: i32,
@@ -256,7 +256,7 @@ mod tests {
             window: (1920, 1080),
             zoom: 1.0,
             font_name: "Fira Code".to_string(),
-            graph: [0.9, 0.95, 0.1, 360.0, 10000.0, 0.0228, 1.0, 0.0, 0.05],
+            graph: [0.9, 0.95, 0.1, 360.0, 10000.0, 0.0228, 1.0, 0.0, 0.05, 0.5],
             cooling: true,
             panel: true,
             padding: 24,
@@ -346,7 +346,9 @@ mod tests {
                     repulsion_k=12300.\nalpha_decay=0.02\nradius_scale=1.1\nradius_variation=0.2\n\
                     collide_pad=0.08\nalpha_cooling=0\nshow_force_panel=1\n";
         let got = parse_graph_keys(text, base());
-        let expect = [2.25, 0.91, 0.3, 400.0, 12300.0, 0.02, 1.1, 0.2, 0.08];
+        // label_fade is absent from the legacy file, so it keeps the base
+        // default (0.5) rather than zero.
+        let expect = [2.25, 0.91, 0.3, 400.0, 12300.0, 0.02, 1.1, 0.2, 0.08, 0.5];
         assert_eq!(got.graph, expect);
         assert!(!got.cooling);
         assert!(got.panel);

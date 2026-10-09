@@ -20,6 +20,19 @@ pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
     zoom: 1.0,
 });
 
+// Base on-screen size of a node label in pixels (before the global Ctrl +/- text
+// zoom). Graph labels keep this constant screen size at ANY graph zoom: the
+// world-unit font is label_px / camera.zoom, so the words read the same at the
+// default overview (zoom 0.3, discs 3.8 units) and zoomed in.
+const GRAPH_LABEL_SIZE: i32 = 10;
+
+// How many zoom steps before the "Label Fade" slider point labels start to
+// appear. The slider sets the zoom at which labels reach full opacity (default
+// 0.5); the fade band is [limit - WINDOW, limit]. The wheel steps 0.1/notch,
+// so at the default overview (2.2/sqrt(n), floor 0.3) a couple of notches
+// cases bring labels to full opacity.
+const LABEL_FADE_WINDOW: f32 = 0.25;
+
 // How far (screen pixels) beyond each viewport edge content is preloaded.
 // Large enough that panning/zooming smoothly reveal already-decoded textures,
 // small enough that offscreen notes two screens away stay unloaded.
@@ -68,7 +81,10 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     // Margin covers the endpoint dot plus the label reach below the disc, so
     // an edge whose endpoint sits just outside the viewport still draws. An
     // edge is only skipped when BOTH endpoints are fully outside the cull rect.
-    const NODE_CULL_MARGIN: f32 = NODE_MAX_RADIUS + 26.0;
+    // The label reach is the constant on-screen label size in world units at the
+    // most zoomed-out camera, so the margin is generous to keep labels from
+    // popping at the viewport edges.
+    const NODE_CULL_MARGIN: f32 = NODE_MAX_RADIUS + 140.0;
     for edge in edges.iter() {
         let n1 = &nodes[edge.n1];
         let n2 = &nodes[edge.n2];
@@ -95,6 +111,18 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             mode.draw_circle_v(dot_center, 3.0, edge_color);
         }
     }
+
+    // Label fade comes from the panel's "Label Fade" slider (idx 9): the zoom
+    // at which labels reach full opacity, fading in over LABEL_FADE_WINDOW
+    // below it. Constant per frame, so hoisted out of the node loop.
+    let label_fade_limit = read_slider_value(9);
+    let label_alpha =
+        ((camera.zoom - (label_fade_limit - LABEL_FADE_WINDOW)) / LABEL_FADE_WINDOW)
+            .clamp(0.0, 1.0);
+    // World font that keeps labels a constant on-screen size at any zoom (see
+    // the comment inside the loop).
+    let label_px = config::scaled_size(GRAPH_LABEL_SIZE);
+    let label_font = 5_i32.max((label_px as f32 / camera.zoom) as i32);
 
     for (i, node) in nodes.iter().enumerate() {
         // Cull nodes whose disc and label are fully outside the view.
@@ -150,15 +178,22 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             }
         }
 
-        let text_w = text::measure_f(&mode, &node.name, 5);
+        // Node labels are world-anchored but never shrink below a readable
+        // on-screen size: the world font is label_px / camera.zoom, so the
+        // words stay label_px screen pixels at every zoom (also scaled by the
+        // global Ctrl +/- text zoom). Only once the camera is close enough
+        // that the base 5-unit world font already measures that large do
+        // labels grow with the graph again. Opacity is the per-frame
+        // label_alpha above, driven by the "Label Fade" slider.
+        let text_w = text::measure_f(&mode, &node.name, label_font);
 
         text::draw_f(
             &mut mode,
             &node.name,
             node.position.x - text_w / 2.0,
             node.position.y + node.radius + 6.0,
-            5,
-            Color::WHITE.alpha(((camera.zoom - 2.0) / 0.5).clamp(0.0, 1.0)),
+            label_font,
+            Color::WHITE.alpha(label_alpha),
         );
     }
 
@@ -669,6 +704,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             "Radius Scale",
             "Radius Var.",
             "Collide Pad",
+            "Label Fade",
         ];
         for (idx, label) in labels.iter().enumerate() {
             let row_y = slider_row_y(idx);
@@ -696,29 +732,50 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             text::draw(d, &val, track_r + 8, row_y + (rh - vf) / 2, vf, Color::SKYBLUE);
         }
 
-        // Respawn button at the bottom of the panel.
+        // Bottom row: Reset Tweaks (left) and Respawn (right), split at the
+        // panel midpoint. Both are hit-tested from the same geometry in
+        // processing (hit_test_reset_button / hit_test_respawn_button).
         let btn_y = respawn_button_y();
-        let btn_hover = m.x as i32 >= px
-            && m.x as i32 <= px + pw
+        let mid = px + pw / 2;
+        let reset_hover = m.x as i32 >= px + 8
+            && m.x as i32 <= mid - 4
             && m.y as i32 >= btn_y
             && m.y as i32 <= btn_y + rh;
-        d.draw_rectangle(
-            px + 8,
-            btn_y + 3,
-            pw - 16,
-            rh - 6,
-            if btn_hover {
+        let respawn_hover = m.x as i32 >= mid + 4
+            && m.x as i32 <= px + pw - 8
+            && m.y as i32 >= btn_y
+            && m.y as i32 <= btn_y + rh;
+        let btn_color = |hover: bool| {
+            if hover {
                 Color::new(76, 128, 204, 170)
             } else {
                 Color::new(76, 128, 204, 80)
-            },
-        );
-        let btn_label = "Respawn Graph";
-        let label_w = text::measure(d, btn_label, rf);
+            }
+        };
+        d.draw_rectangle(px + 8, btn_y + 3, mid - px - 12, rh - 6, btn_color(reset_hover));
+        let reset_label = "Reset Tweaks";
+        let reset_w = text::measure(d, reset_label, rf);
         text::draw(
             d,
-            btn_label,
-            px + (pw - label_w) / 2,
+            reset_label,
+            px + 8 + (mid - px - 12 - reset_w) / 2,
+            btn_y + (rh - rf) / 2,
+            rf,
+            Color::WHITE,
+        );
+        d.draw_rectangle(
+            mid + 4,
+            btn_y + 3,
+            px + pw - 8 - mid - 4,
+            rh - 6,
+            btn_color(respawn_hover),
+        );
+        let respawn_label = "Respawn";
+        let respawn_w = text::measure(d, respawn_label, rf);
+        text::draw(
+            d,
+            respawn_label,
+            mid + 4 + (px + pw - 8 - mid - 4 - respawn_w) / 2,
             btn_y + (rh - rf) / 2,
             rf,
             Color::WHITE,
@@ -726,7 +783,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     }
 }
 
-// Current value of the slider at `idx` (0=Link Strength ... 8=Collide Pad),
+// Current value of the slider at `idx` (0=Link Strength ... 9=Label Fade),
 // read from the live PARAM_* statics the debug panel writes.
 fn read_slider_value(idx: usize) -> f32 {
     match idx {
@@ -739,6 +796,7 @@ fn read_slider_value(idx: usize) -> f32 {
         6 => *PARAM_RADIUS_SCALE.read().unwrap(),
         7 => *PARAM_RADIUS_VARIATION.read().unwrap(),
         8 => *PARAM_COLLIDE_PAD.read().unwrap(),
+        9 => *PARAM_LABEL_FADE.read().unwrap(),
         _ => 0.0,
     }
 }

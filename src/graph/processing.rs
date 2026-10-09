@@ -98,6 +98,9 @@ pub static PARAM_ALPHA_DECAY: RwLock<f32> = RwLock::new(D3_ALPHA_DECAY);
 pub static PARAM_RADIUS_SCALE: RwLock<f32> = RwLock::new(1.0);
 pub static PARAM_RADIUS_VARIATION: RwLock<f32> = RwLock::new(1.0);       // degree-growth multiplier
 pub static PARAM_COLLIDE_PAD: RwLock<f32> = RwLock::new(D3_COLLIDE_PAD); // forceCollide +pad per node
+/// Presentation, not a d3 force: the camera zoom at which node labels reach
+/// full opacity (the renderer fades them in over LABEL_FADE_WINDOW below it).
+pub static PARAM_LABEL_FADE: RwLock<f32> = RwLock::new(0.5);
 
 // Temporary debug panel: a live switch to disable the alpha cooldown (and
 // with it the settle-and-pause behaviour), plus the panel's visibility and
@@ -116,10 +119,11 @@ pub const PANEL_TITLE_H: i32 = 32;
 pub const PANEL_ROW_H: i32 = 28;
 pub const TRACK_LEFT: i32 = 100;
 pub const TRACK_RIGHT: i32 = PANEL_W - 10;
-pub const SLIDER_COUNT: usize = 9;
+pub const SLIDER_COUNT: usize = 10;
 
 // (min, max) range of each slider, in the same order as the PARAM_* list.
-// Defaults are Logseq's d3-force values (renderer labels update below).
+// Ranges are Logseq's d3-force recipes where they exist; 9 (Label Fade) is a
+// presentation lever - the zoom at which labels turn fully opaque.
 pub const SLIDER_RANGES: [(f32, f32); SLIDER_COUNT] = [
     (0.0, 2.0),     // 0 Link Strength  (0.82)
     (0.0, 1.0),     // 1 Velocity Decay (0.60)
@@ -130,6 +134,7 @@ pub const SLIDER_RANGES: [(f32, f32); SLIDER_COUNT] = [
     (0.5, 2.0),     // 6 Radius Scale   (1.0)
     (0.0, 2.0),     // 7 Radius Var.    (1.0)
     (0.0, 40.0),    // 8 Collide Pad    (10)
+    (0.1, 3.0),     // 9 Label Fade     (0.5)
 ];
 
 // Return True if the pointer is over the alpha-cooling toggle row (the first
@@ -174,21 +179,38 @@ pub fn slider_row_y(idx: usize) -> i32 {
     PANEL_Y + config::scaled_size(PANEL_TITLE_H) + config::scaled_size(PANEL_ROW_H) * (1 + idx as i32)
 }
 
-// Screen-space y of the "Respawn" button row (below the last slider).
+// Screen-space y of the bottom button row (below the last slider), which holds
+// "Reset Tweaks" (left half) and "Respawn" (right half).
 pub fn respawn_button_y() -> i32 {
     PANEL_Y
         + config::scaled_size(PANEL_TITLE_H)
         + config::scaled_size(PANEL_ROW_H) * (1 + SLIDER_COUNT as i32)
 }
 
-// Return True if the pointer is over the Respawn button row.
+// Return True if the pointer is over the Reset Tweaks button (left half of the
+// bottom row). Mirrors the renderer's split at the panel midpoint.
+pub fn hit_test_reset_button(mx: f32, my: f32) -> bool {
+    let px = PANEL_X as f32;
+    let pw = config::scaled_size(PANEL_W) as f32;
+    let row_h = config::scaled_size(PANEL_ROW_H) as f32;
+    let y = respawn_button_y() as f32;
+    mx >= px + 8.0
+        && mx <= px + pw / 2.0 - 4.0
+        && my >= y
+        && my <= y + row_h
+}
+
+// Return True if the pointer is over the Respawn button (right half of the
+// bottom row).
 pub fn hit_test_respawn_button(mx: f32, my: f32) -> bool {
     let px = PANEL_X as f32;
+    let pw = config::scaled_size(PANEL_W) as f32;
     let row_h = config::scaled_size(PANEL_ROW_H) as f32;
-    mx >= px
-        && mx <= px + config::scaled_size(PANEL_W) as f32
-        && my >= respawn_button_y() as f32
-        && my <= respawn_button_y() as f32 + row_h
+    let y = respawn_button_y() as f32;
+    mx >= px + pw / 2.0 + 4.0
+        && mx <= px + pw - 8.0
+        && my >= y
+        && my <= y + row_h
 }
 
 // Re-initialize the current directory's graph from scratch: fresh phyllotaxis
@@ -196,6 +218,28 @@ pub fn hit_test_respawn_button(mx: f32, my: f32) -> bool {
 pub fn respawn_graph() {
     let dir = DIR_PATH.read().unwrap().clone();
     generate_nodes_from_directory(&dir);
+}
+
+// Reset every force-panel tweak to the compiled d3 defaults (Logseq's exact
+// recipe): the 9 force values, alpha cooldown back ON, and disc radii
+// recomputed from the live degrees. `nodes` must be the live NODES write guard
+// (see apply_radii). Reheats the sim so the graph visibly settles to defaults.
+pub fn reset_graph_tweaks(nodes: &mut [Node]) {
+    set_param_values([
+        D3_LINK_STRENGTH,    // 0 Link Strength
+        D3_VELOCITY_DECAY,   // 1 Velocity Decay
+        1.0,                 // 2 Center Pull
+        D3_DISTANCE_MAX,     // 3 Charge Radius
+        -D3_CHARGE_STRENGTH, // 4 Rep K
+        D3_ALPHA_DECAY,      // 5 Alpha Decay
+        1.0,                 // 6 Radius Scale
+        1.0,                 // 7 Radius Var.
+        D3_COLLIDE_PAD,      // 8 Collide Pad
+        0.5,                 // 9 Label Fade
+    ]);
+    *ALPHA_COOLING_ENABLED.write().unwrap() = true;
+    let _ = apply_radii(nodes);
+    wake_simulation();
 }
 
 // Map the pointer's x onto the slider at `idx`, store the resulting value, and
@@ -220,6 +264,7 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32, nodes: &mut [Node]) {
         6 => (v * 100.0).round() / 100.0,
         7 => (v * 100.0).round() / 100.0,
         8 => (v * 10.0).round() / 10.0,
+        9 => (v * 100.0).round() / 100.0,
         _ => v,
     };
     match idx {
@@ -232,6 +277,7 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32, nodes: &mut [Node]) {
         6 => *PARAM_RADIUS_SCALE.write().unwrap() = value,
         7 => *PARAM_RADIUS_VARIATION.write().unwrap() = value,
         8 => *PARAM_COLLIDE_PAD.write().unwrap() = value,
+        9 => *PARAM_LABEL_FADE.write().unwrap() = value,
         _ => {}
     }
 
@@ -254,8 +300,8 @@ pub fn update_slider_from_mouse(idx: usize, mx: f32, nodes: &mut [Node]) {
 // graph shares one set and the panel survives a restart. These accessors are
 // the model interface the config module and the debug panel both use.
 
-/// The 9 force values in slider order (link_strength ... collide_pad).
-pub fn param_values() -> [f32; 9] {
+/// The 10 force values in slider order (link_strength ... label_fade).
+pub fn param_values() -> [f32; 10] {
     [
         *PARAM_SPRING_K.read().unwrap(),
         *PARAM_DAMPING.read().unwrap(),
@@ -266,11 +312,12 @@ pub fn param_values() -> [f32; 9] {
         *PARAM_RADIUS_SCALE.read().unwrap(),
         *PARAM_RADIUS_VARIATION.read().unwrap(),
         *PARAM_COLLIDE_PAD.read().unwrap(),
+        *PARAM_LABEL_FADE.read().unwrap(),
     ]
 }
 
 /// Overwrite every force value from `values` (slider order).
-pub fn set_param_values(values: [f32; 9]) {
+pub fn set_param_values(values: [f32; 10]) {
     *PARAM_SPRING_K.write().unwrap() = values[0];
     *PARAM_DAMPING.write().unwrap() = values[1];
     *PARAM_GRAVITY_K.write().unwrap() = values[2];
@@ -280,11 +327,12 @@ pub fn set_param_values(values: [f32; 9]) {
     *PARAM_RADIUS_SCALE.write().unwrap() = values[6];
     *PARAM_RADIUS_VARIATION.write().unwrap() = values[7];
     *PARAM_COLLIDE_PAD.write().unwrap() = values[8];
+    *PARAM_LABEL_FADE.write().unwrap() = values[9];
 }
 
 /// Key names (in slider order) used to persist the force values. Exposed so
 /// crate::app_config can (de)serialize the same letters in the global config.
-pub(crate) const PARAM_KEYS: [&str; 9] = [
+pub(crate) const PARAM_KEYS: [&str; 10] = [
     "spring_k",
     "damping",
     "center_pull",
@@ -294,6 +342,7 @@ pub(crate) const PARAM_KEYS: [&str; 9] = [
     "radius_scale",
     "radius_variation",
     "collide_pad",
+    "label_fade",
 ];
 
 pub static DRAGGING_NODE: RwLock<Option<usize>> = RwLock::new(None);
@@ -1954,16 +2003,31 @@ mod tests {
             "toggle row must not hit a slider"
         );
 
-        // The Respawn button sits below the last slider and must also not
-        // resolve to any slider.
-        let respawn_y = respawn_button_y() as f32;
+        // The bottom row below the last slider holds Reset Tweaks (left half)
+        // and Respawn (right half); neither must resolve to any slider.
+        let row_y = respawn_button_y() as f32;
+        let px = PANEL_X as f32;
+        let pw = config::scaled_size(PANEL_W) as f32;
+        let reset_probe = px + pw / 2.0 - 8.0;
+        let respawn_probe = px + pw / 2.0 + 8.0;
+        for (probe, reset, respawn) in [
+            (reset_probe, true, false),
+            (respawn_probe, false, true),
+        ] {
+            assert_eq!(
+                hit_test_reset_button(probe, row_y + row_h / 2.0),
+                reset,
+                "bottom row split wrong for x={probe}"
+            );
+            assert_eq!(
+                hit_test_respawn_button(probe, row_y + row_h / 2.0),
+                respawn,
+                "bottom row split wrong for x={probe}"
+            );
+        }
         assert!(
-            hit_test_respawn_button(PANEL_X as f32 + 50.0, respawn_y + row_h / 2.0),
-            "respawn row must hit the respawn button"
-        );
-        assert!(
-            hit_test_slider(PANEL_X as f32 + 50.0, respawn_y + row_h / 2.0).is_none(),
-            "respawn row must not hit a slider"
+            hit_test_slider(px + 50.0, row_y + row_h / 2.0).is_none(),
+            "bottom row must not hit a slider"
         );
     }
 

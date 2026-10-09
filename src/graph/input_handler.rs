@@ -309,6 +309,14 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 // at full steam) picks up the new setting immediately.
                 wake_simulation();
                 return;
+            } else if hit_test_reset_button(mx, my) {
+                // Restore the d3 defaults in place (no respawn): force values,
+                // cooldown switch and disc radii change, sim reheats. Needs no
+                // guard drops - it only writes the param statics plus the
+                // already-locked node slice.
+                reset_graph_tweaks(&mut nodes);
+                *ACTIVE_SLIDER.write().unwrap() = None;
+                return;
             } else if hit_test_respawn_button(mx, my) {
                 // Regenerate lays nodes out from scratch and re-locks every
                 // graph static, so release the guards held at the top of this
