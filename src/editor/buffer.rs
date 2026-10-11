@@ -531,7 +531,16 @@ pub fn load_from_file(path: &Path) {
 pub fn save_to_file(path: &Path) {
     let buffer = BUFFER.read().unwrap();
     let content = buffer.join("\n");
+    let has_content = buffer.iter().any(|l| !l.is_empty());
     drop(buffer);
+    // A pending journal note (a date-named path with no file on disk) is born
+    // only on a save that actually has content: pressing J and writing nothing
+    // must leave no empty entry behind. For everything else (existing files,
+    // non-journal paths) saves proceed as always.
+    if !crate::journal::materialize_if_pending(path, has_content) {
+        crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
     filesystem::write_file(path, &content);
     crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
 }

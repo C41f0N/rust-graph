@@ -486,13 +486,16 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
                 s.draw_rectangle(x, y + h - 2, w - 1, 2, Color::new(255, 255, 255, 215));
             }
 
-            // Name, pushed left by the close button room.
-            let tw = text::measure(&s, &t.name, 14);
+            // Name, pushed left by the close button room. A dated journal tab's
+            // title renders as "19th Aug 2025"; the stored name stays the file
+            // stem so activation/saving keeps working on the raw path.
+            let display = crate::journal::pretty_name(&t.name);
+            let tw = text::measure(&s, &display, 14);
             let name_x = x + TAB_NAME_LEFT_PAD + if t.dirty { 10 } else { 0 };
             let max_name = (w - CLOSE_W - CLOSE_RIGHT_PAD - TAB_NAME_LEFT_PAD * 2).max(8);
             let shown = if tw > max_name {
                 // Truncate with a trailing ellipsis.
-                let mut cut = t.name.clone();
+                let mut cut = display.clone();
                 loop {
                     cut.pop();
                     if text::measure(&s, &format!("{}\u{2026}", cut), 14) <= max_name || cut.is_empty() {
@@ -501,7 +504,7 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
                 }
                 format!("{}\u{2026}", cut)
             } else {
-                t.name.clone()
+                display
             };
             let color = if is_active {
                 Color::WHITE

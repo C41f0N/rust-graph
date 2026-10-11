@@ -26,6 +26,12 @@ pub static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 // edit mode.
 pub static NAV_MODE: AtomicBool = AtomicBool::new(false);
 
+// A deferred journal open (through OPEN_NOTE_REQUESTED) that found no file
+// yet sets this so main drops the freshly loaded tab straight into edit mode
+// instead of the usual read-only nav mode: a brand-new entry is a writing
+// intent, not a read.
+pub static NAV_EDIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 // Set by the heading-bar sub-graph button (shown when the open note has a
 // companion folder) to navigate the graph into it and close the editor.
 // Consumed once by main.

@@ -1808,6 +1808,47 @@ pub fn add_node(dir: &Path, filename: &str) -> usize {
     idx
 }
 
+// Ensure a node exists for a deterministically named note (a journal date:
+// the file name *is* the identity, so unique_filename must not mangle it).
+// Creates the empty file when missing, then appends a Node when this path is
+// not already tracked, mirroring add_node. Returns the node's index.
+pub fn ensure_node_path(dir: &Path, filename: &str) -> usize {
+    // A new node perturbs the layout; let it push its neighbours around.
+    wake_simulation();
+
+    let file_path = dir.join(filename);
+    if !file_path.is_file() {
+        filesystem::create_file(&file_path, "");
+    }
+
+    let mut nodes = NODES.write().unwrap();
+    if let Some(idx) = nodes.iter().position(|n| n.path == file_path) {
+        return idx;
+    }
+
+    let stem = filename.trim_end_matches(".md");
+    let stem = if stem.is_empty() { "untitled" } else { stem };
+    let mut rng = rand::rng();
+    let idx = nodes.len();
+    nodes.push(Node {
+        radius: NODE_BASE_RADIUS,
+        color: Color::WHITE,
+        position: Vector2::new(
+            rng.random_range((config::width() as f32 / 2. - 50.)..(config::width() as f32 / 2. + 50.)),
+            rng.random_range((config::height() as f32 / 2. - 50.)..(config::height() as f32 / 2. + 50.)),
+        ),
+        velocity: Vector2::new(0.0, 0.0),
+        name: stem.to_string(),
+        file_name: filename.to_string(),
+        path: file_path,
+        header: None,
+        has_subgraph: false,
+        folder_backed: false,
+    });
+
+    idx
+}
+
 pub fn remove_node(idx: usize) {
     // Removing a node/edges changes every spring in the layout.
     wake_simulation();

@@ -10,6 +10,7 @@ mod frontmatter;
 mod global_palette;
 mod graph;
 mod helpbar;
+mod journal;
 mod sidebar;
 mod startup;
 
@@ -233,6 +234,13 @@ fn main() {
             // opens here, once the lock is released.
             if let Some((path, name)) = editor::OPEN_NOTE_REQUESTED.write().unwrap().take() {
                 editor::tabs::open(&path, &name);
+            }
+
+            // A deferred journal open that found no file asked to start a
+            // fresh entry: the open above loaded it in nav mode, so drop
+            // straight into edit mode for a brand-new date.
+            if editor::NAV_EDIT_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
             }
 
             // Close button in the editor heading bar

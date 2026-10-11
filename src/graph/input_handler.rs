@@ -427,6 +427,38 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         return;
     }
 
+    // ------------------------------------------------------------
+    // J key = open (or create) today's journal note. The journal flow writes
+    // NODES (ensure_node_path) and swaps the editor's buffer on the returned
+    // frame, so every guard held here must go first.
+    // ------------------------------------------------------------
+
+    if !*editor_open && rl.is_key_pressed(KeyboardKey::KEY_J) {
+        drop(nodes);
+        drop(dragging_node);
+        drop(hover_node);
+        drop(selected_node);
+        drop(delete_pending);
+        drop(editing_node);
+        drop(adding_note);
+        drop(adding_name);
+        drop(context_node);
+        drop(context_pos);
+        drop(renaming);
+        drop(rename_name);
+        drop(dir_path);
+        drop(context_empty);
+        let pending = crate::journal::open_today();
+        // A brand-new day has no file yet: leave the read/nav default and
+        // start typing at once, like creating a note.
+        if pending {
+            crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        *editor_open = true;
+        *crate::graph::processing::CONTEXT_NODE.write().unwrap() = None;
+        return;
+    }
+
     // Escape dismisses an open context menu
     if (context_node.is_some() || *context_empty) && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
         *context_node = None;

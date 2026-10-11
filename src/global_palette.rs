@@ -49,6 +49,10 @@ pub struct PaletteState {
     // Whether the trailing `+ Create 'filter'` row is offered: the filter is
     // non-empty and no index note has that exact name.
     pub show_create: bool,
+    // Whether the leading `Open journal <date>` row is offered: the filter
+    // is exactly a calendar date (in either separator), even when no such
+    // note exists yet. Journal rows precede the note matches.
+    pub show_journal: bool,
 }
 
 pub static STATE: RwLock<PaletteState> = RwLock::new(PaletteState {
@@ -58,6 +62,7 @@ pub static STATE: RwLock<PaletteState> = RwLock::new(PaletteState {
     index: Vec::new(),
     matches: Vec::new(),
     show_create: false,
+    show_journal: false,
 });
 
 fn stem(path: &Path) -> String {
@@ -158,7 +163,14 @@ fn recompute(st: &mut PaletteState) {
             .iter()
             .any(|e| e.name.to_lowercase() == exact);
 
-    let total = st.matches.len() + st.show_create as usize;
+    // A filter that is exactly a date offers the journal row ahead of the
+    // note matches. Opening a day with no file yet is lazy: the date note
+    // materializes only on a save that has content, so this row stays
+    // visible whether or not that day's note already exists and doubles as
+    // a calendar confirm.
+    st.show_journal = crate::journal::parse_date_filter(&st.filter).is_some();
+
+    let total = st.matches.len() + st.show_create as usize + st.show_journal as usize;
     st.selected = if total == 0 { 0 } else { st.selected.min(total - 1) };
 }
 
@@ -184,6 +196,7 @@ fn is_open() -> bool {
 enum Action {
     Open(PathBuf, String),
     Create(String),
+    Journal(crate::journal::Date),
 }
 
 // Returns true when the frame was consumed by the palette (Ctrl+K toggle, or
@@ -221,7 +234,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
 
     if rl.is_key_pressed(KeyboardKey::KEY_DOWN) || rl.is_key_pressed(KeyboardKey::KEY_TAB) {
         let mut st = STATE.write().unwrap();
-        let total = st.matches.len() + st.show_create as usize;
+        let total = st.matches.len() + st.show_create as usize + st.show_journal as usize;
         if total > 0 {
             st.selected = (st.selected + 1) % total;
         }
@@ -230,7 +243,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
 
     if rl.is_key_pressed(KeyboardKey::KEY_UP) {
         let mut st = STATE.write().unwrap();
-        let total = st.matches.len() + st.show_create as usize;
+        let total = st.matches.len() + st.show_create as usize + st.show_journal as usize;
         if total > 0 {
             st.selected = (st.selected + total - 1) % total;
         }
@@ -249,23 +262,28 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
     if rl.is_key_pressed(KeyboardKey::KEY_ENTER) || rl.is_key_pressed(KeyboardKey::KEY_KP_ENTER) {
         let action = {
             let st = STATE.read().unwrap();
-            let total = st.matches.len() + st.show_create as usize;
+            let total = st.matches.len() + st.show_create as usize + st.show_journal as usize;
             if total == 0 {
                 None
-            } else if st.selected < st.matches.len() {
-                let idx = st.matches[st.selected];
-                st.index
-                    .get(idx)
-                    .map(|e| Action::Open(e.path.clone(), e.name.clone()))
-            } else if st.show_create {
-                let name = st.filter.trim().to_string();
-                if name.is_empty() {
-                    None
-                } else {
-                    Some(Action::Create(name))
-                }
+            } else if st.show_journal && st.selected == 0 {
+                crate::journal::parse_date_filter(&st.filter).map(Action::Journal)
             } else {
-                None
+                let m = st.selected - st.show_journal as usize;
+                if m < st.matches.len() {
+                    let idx = st.matches[m];
+                    st.index
+                        .get(idx)
+                        .map(|e| Action::Open(e.path.clone(), e.name.clone()))
+                } else if st.show_create {
+                    let name = st.filter.trim().to_string();
+                    if name.is_empty() {
+                        None
+                    } else {
+                        Some(Action::Create(name))
+                    }
+                } else {
+                    None
+                }
             }
         };
         let acted = action.is_some();
@@ -276,6 +294,11 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
             Some(Action::Create(name)) => {
                 let dir = crate::graph::processing::DIR_PATH.read().unwrap().clone();
                 crate::editor::tabs::create_and_open(&dir, &name);
+            }
+            Some(Action::Journal(d)) => {
+                if crate::journal::open_date(d) {
+                    crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
             }
             None => {}
         }
@@ -304,30 +327,39 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     let font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
     let item_h = config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT).max(2);
     let cap = config::AUTOCOMPLETE_MAX_VISIBLE;
-    let mcap = cap.saturating_sub(st.show_create as usize);
+    let jrow = st.show_journal as usize;
+    let mcap = cap.saturating_sub(st.show_create as usize).saturating_sub(jrow);
 
     // Keep the selected row in a scrolling window the size of one box-worth;
-    // the create row is pinned to the bottom and never displaced.
-    let total = st.matches.len() + st.show_create as usize;
+    // the journal row pins to the top and the create row to the bottom, and
+    // only the note matches between them scroll.
+    let total = st.matches.len() + st.show_create as usize + jrow;
     let sel = if total == 0 {
         0
     } else {
         st.selected.min(total - 1)
     };
-    let off = if mcap == 0 {
-        0
-    } else if sel < mcap {
-        0
-    } else {
-        (sel - mcap + 1).min(st.matches.len().saturating_sub(mcap))
+    // The selected row translated into the matches window (None = the pinned
+    // journal or create row).
+    let match_sel = match (jrow, sel) {
+        (1, 0) => None,
+        (1, s) if s <= st.matches.len() => Some(s - 1),
+        (0, s) if s < st.matches.len() => Some(s),
+        _ => None,
     };
-    // The highlighted visual row: for a match that is `off` shifted in the
-    // window, for the create row the last row.
-    let shown = st.matches.len().saturating_sub(off).min(mcap) + st.show_create as usize;
-    let hl = if sel < st.matches.len() {
-        sel.saturating_sub(off)
-    } else {
-        shown.saturating_sub(1)
+    let off = match (mcap, match_sel) {
+        (0, _) => 0,
+        (_, Some(m)) if m < mcap => 0,
+        (_, Some(m)) => (m - mcap + 1).min(st.matches.len().saturating_sub(mcap)),
+        (_, None) => 0,
+    };
+    // The highlighted visual row: the journal row sits at 0, a match is
+    // shifted below it by the journal offset, and the create row is last.
+    let shown = st.matches.len().saturating_sub(off).min(mcap) + jrow + st.show_create as usize;
+    let hl = match match_sel {
+        Some(m) => m.saturating_sub(off) + jrow,
+        None if jrow == 1 && sel == 0 => 0,
+        None => shown.saturating_sub(1),
     };
 
     let pad_x = 18;
@@ -374,7 +406,10 @@ pub fn draw(d: &mut RaylibDrawHandle) {
 
     for r in 0..shown {
         let row_y = cy + 8 + input_h + r as i32 * item_h;
-        let create_row = r >= shown - st.show_create as usize && st.show_create;
+        // Row order: pinned journal row at the top, the match window next,
+        // the pinned create row at the bottom.
+        let journal_row = jrow == 1 && r == 0;
+        let create_row = !journal_row && r >= shown - st.show_create as usize && st.show_create;
         if r == hl {
             d.draw_rectangle(
                 cx + 2,
@@ -383,6 +418,19 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                 item_h - 2,
                 config::AUTOCOMPLETE_SELECTED_BG,
             );
+        }
+        if journal_row {
+            if let Some(date) = crate::journal::parse_date_filter(&st.filter) {
+                text::draw(
+                    d,
+                    &format!("Open journal {}", crate::journal::pretty_date(date)),
+                    cx + pad_x,
+                    row_y + (item_h - font_size) / 2,
+                    font_size,
+                    Color::new(160, 200, 255, 255),
+                );
+            }
+            continue;
         }
         if create_row {
             text::draw(
@@ -395,11 +443,12 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             );
             continue;
         }
-        let idx = st.matches[off + r];
+        let idx = st.matches[off + (r - jrow)];
         let e = &st.index[idx];
+        let label = crate::journal::pretty_name(&e.display);
         text::draw(
             d,
-            &e.display,
+            &label,
             cx + pad_x,
             row_y + (item_h - font_size) / 2,
             font_size,
@@ -409,7 +458,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         // relative location) instead of a badge, so the eye distinguishes
         // "lives in a nested graph" from "plain note" without reading every row.
         if e.nested {
-            let name_w = text::measure(d, &e.display, font_size);
+            let name_w = text::measure(d, &label, font_size);
             let sub = format!("{}/", e.path_rel);
             text::draw(
                 d,
@@ -446,6 +495,7 @@ mod tests {
             index,
             matches: Vec::new(),
             show_create: false,
+            show_journal: false,
         };
         recompute(&mut st);
         st
@@ -480,6 +530,34 @@ mod tests {
         let st = state("beta.md", &["beta"]);
         assert!(!st.show_create);
         assert_eq!(st.matches, vec![0]);
+    }
+
+    #[test]
+    fn date_filter_offers_journal_row() {
+        // Dashes in the filter never collide with the underscore file stems:
+        // the row stands alone with the create row behind it.
+        let st = state("2026-10-11", &["2026_10_11", "coffee"]);
+        assert!(st.show_journal, "a dashed date is a journal filter");
+        assert_eq!(
+            st.matches.len() + st.show_create as usize + st.show_journal as usize,
+            2,
+            "journal + create rows only"
+        );
+
+        // Typed with the file's own underscore separator, the existing note
+        // also matches on top of the journal row.
+        let st = state("2026_10_11", &["2026_10_11"]);
+        assert!(st.show_journal);
+        assert_eq!(st.matches, vec![0]);
+
+        let st = state("coffee", &["2026_10_11", "coffee"]);
+        assert!(!st.show_journal, "a note name is not a date");
+
+        let st = state("2026-02-31", &[]);
+        assert!(!st.show_journal, "impossible dates never offer a row");
+
+        let st = state("2026_10_11.md", &[]);
+        assert!(st.show_journal, "trailing .md still parses");
     }
 
     #[test]

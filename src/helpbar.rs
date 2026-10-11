@@ -149,6 +149,7 @@ const GRAPH_BASE: &[Chip] = &[
     ("E", "open"),
     ("N", "new"),
     ("Del", "delete"),
+    ("J", "journal"),
     ("F", "forces"),
     ("Ctrl+K", "open note"),
 ];
@@ -157,9 +158,21 @@ const GRAPH_BASE_FULL: &[Chip] = &[
     ("E", "open"),
     ("N", "new"),
     ("Del", "delete"),
+    ("J", "journal"),
     ("F", "forces"),
     ("Alt+Left", "up level"),
     ("Ctrl+K", "open note"),
+];
+
+// Nav mode with a dated journal note open: the day-step keys only exist
+// there, so they appear only then (swap-in replaces the plain EditorNav bar).
+const EDITOR_NAV_JOURNAL: &[Chip] = &[
+    ("Enter/E", "edit"),
+    ("G", "to graph"),
+    ("Q", "fullscreen"),
+    ("J", "today"),
+    ("[ / ]", "prev/next"),
+    ("Up/Down/Home/End", "move"),
 ];
 
 // The keycap/action rows for each state. Keys are ASCII: the SDF fonts the UI
@@ -202,6 +215,7 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
             ("Enter/E", "edit"),
             ("G", "to graph"),
             ("Q", "fullscreen"),
+            ("J", "journal"),
             ("Up/Down/Home/End", "move"),
         ],
         HelpContext::CommandPalette => &[
@@ -229,6 +243,13 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
     if ctx == HelpContext::GraphBase && !crate::graph::processing::NAV_STACK.read().unwrap().is_empty()
     {
         chip_list = GRAPH_BASE_FULL;
+    }
+    if ctx == HelpContext::EditorNav
+        && crate::editor::tabs::active_path()
+            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+            .is_some_and(|n| crate::journal::is_journal_file_name(&n))
+    {
+        chip_list = EDITOR_NAV_JOURNAL;
     }
     draw_chips(d, chip_list);
 }

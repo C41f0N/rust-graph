@@ -237,10 +237,12 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // hints at the affordance.
         let renaming = editor::TITLE_RENAME_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
         let note_name = crate::editor::tabs::active_name().unwrap_or_default();
+        // A dated journal note reads as "19th Aug 2025"; the rename draft is
+        // user text and never reformatted.
         let shown_name = if renaming {
             editor::TITLE_RENAME_DRAFT.read().unwrap().clone()
         } else {
-            note_name.clone()
+            crate::journal::pretty_name(&note_name)
         };
         let name_y = editor_y + (header_h - config::EDITOR_FONT_SIZE) / 2;
         let name_color = if renaming {

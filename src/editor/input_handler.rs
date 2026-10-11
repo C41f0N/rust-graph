@@ -313,10 +313,12 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // *selected*, highlighted by a bar. Arrow keys move the selection across
     // source lines; Enter/e re-enter edit mode on the selected line; g closes
     // the editor into the graph; q toggles editor maximization; Esc closes
-    // the editor as well. A left-click inside the content selects the clicked
-    // line and drops straight back into editing (the normal mouse block
-    // below places the caret). Everything else is ignored here; the typed
-    // queue was already drained above so a shortcut can never type itself.
+    // the editor as well. J opens today's journal note and, when the open
+    // note is a dated journal entry, [ / ] step a day backward/forward. A
+    // left-click inside the content selects the clicked line and drops
+    // straight back into editing (the normal mouse block below places the
+    // caret). Everything else is ignored here; the typed queue was already
+    // drained above so a shortcut can never type itself.
     // ------------------------------------------------------------
     if crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed) {
         if rl.is_key_pressed(KeyboardKey::KEY_ENTER) || rl.is_key_pressed(KeyboardKey::KEY_E) {
@@ -373,6 +375,25 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             *cursor_x = buffer[last].len() as i32;
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
+            return;
+        }
+        // Journal shortcuts, only meaningful in nav mode where every other
+        // key is inert: J opens today's note, [ / ] step a day back/forward
+        // from whichever dated journal note is open. The tab switch is
+        // deferred through OPEN_NOTE_REQUESTED because BUFFER's write lock
+        // is held for this whole run; only the file/node ensure happens here.
+        if rl.is_key_pressed(KeyboardKey::KEY_J) {
+            crate::journal::open_today_requested();
+            return;
+        }
+        let prev = rl.is_key_pressed(KeyboardKey::KEY_LEFT_BRACKET)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_LEFT_BRACKET);
+        let next = rl.is_key_pressed(KeyboardKey::KEY_RIGHT_BRACKET)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_RIGHT_BRACKET);
+        if prev || next {
+            // A non-journal tab makes the step a no-op; either way the key
+            // is consumed so it never reaches the caret below.
+            crate::journal::open_adjacent_requested(if prev { -1 } else { 1 });
             return;
         }
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {

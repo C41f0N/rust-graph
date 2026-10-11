@@ -184,11 +184,14 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         // that the base 5-unit world font already measures that large do
         // labels grow with the graph again. Opacity is the per-frame
         // label_alpha above, driven by the "Label Fade" slider.
-        let text_w = text::measure_f(&mode, &node.name, label_font);
+        // A dated journal note's label reads as "19th Aug 2025"; the node's real
+        // name stays the file stem so rename and save never see the pretty form.
+        let label = crate::journal::pretty_name(&node.name);
+        let text_w = text::measure_f(&mode, &label, label_font);
 
         text::draw_f(
             &mut mode,
-            &node.name,
+            &label,
             node.position.x - text_w / 2.0,
             node.position.y + node.radius + 6.0,
             label_font,
