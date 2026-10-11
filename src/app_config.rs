@@ -20,6 +20,7 @@ const CONFIG_FILE: &str = "config";
 pub struct AppConfig {
     pub window: (i32, i32),
     pub zoom: f32,
+    pub editor_zoom: f32,
     pub font_name: String,
     pub graph: [f32; 10],
     pub cooling: bool,
@@ -37,6 +38,7 @@ impl AppConfig {
         AppConfig {
             window: (w, h),
             zoom: config::zoom(),
+            editor_zoom: config::editor_zoom(),
             font_name: current_font_name(),
             graph: param_values(),
             cooling: *ALPHA_COOLING_ENABLED.read().unwrap(),
@@ -52,6 +54,8 @@ impl AppConfig {
         *SHOW_FORCE_PANEL.write().unwrap() = self.panel;
         *config::TEXT_ZOOM.write().unwrap() =
             self.zoom.clamp(config::TEXT_ZOOM_MIN, config::TEXT_ZOOM_MAX);
+        *config::EDITOR_ZOOM.write().unwrap() =
+            self.editor_zoom.clamp(config::TEXT_ZOOM_MIN, config::TEXT_ZOOM_MAX);
         // The setters clamp, so a hand-edited file can never push the editor
         // layout out of range.
         config::set_editor_padding(self.padding);
@@ -212,6 +216,7 @@ pub fn serialize(cfg: &AppConfig) -> String {
     out.push_str(&format!("window_width={}\n", cfg.window.0));
     out.push_str(&format!("window_height={}\n", cfg.window.1));
     out.push_str(&format!("text_zoom={:.4}\n", cfg.zoom));
+    out.push_str(&format!("editor_zoom={:.4}\n", cfg.editor_zoom));
     out.push_str(&format!("font_name={}\n", cfg.font_name));
     out.push_str(&format!("editor_padding={}\n", cfg.padding));
     out.push_str(&format!("editor_line_spacing={}\n", cfg.line_spacing));
@@ -230,6 +235,9 @@ pub fn parse(text: &str, defaults: AppConfig) -> AppConfig {
     }
     if let Some(v) = line_value(text, "text_zoom").and_then(|v| v.trim().parse::<f32>().ok()) {
         cfg.zoom = v.clamp(config::TEXT_ZOOM_MIN, config::TEXT_ZOOM_MAX);
+    }
+    if let Some(v) = line_value(text, "editor_zoom").and_then(|v| v.trim().parse::<f32>().ok()) {
+        cfg.editor_zoom = v.clamp(config::TEXT_ZOOM_MIN, config::TEXT_ZOOM_MAX);
     }
     if let Some(v) = line_value(text, "font_name") {
         if !v.is_empty() {
@@ -255,6 +263,7 @@ mod tests {
         AppConfig {
             window: (1920, 1080),
             zoom: 1.0,
+            editor_zoom: 1.0,
             font_name: "Fira Code".to_string(),
             graph: [0.9, 0.95, 0.1, 360.0, 10000.0, 0.0228, 1.0, 0.0, 0.05, 0.5],
             cooling: true,
@@ -271,6 +280,7 @@ mod tests {
         let got = parse(&text, AppConfig::from_statics());
         assert_eq!(got.window, cfg.window);
         assert_eq!(got.zoom, 1.0);
+        assert_eq!(got.editor_zoom, 1.0);
         assert_eq!(got.font_name, "Fira Code");
         assert_eq!(got.graph, cfg.graph);
         assert!(got.cooling);

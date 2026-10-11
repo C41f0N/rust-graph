@@ -1,3 +1,4 @@
+use crate::config;
 use crate::editor::markdown::{Segment, SegmentStyle};
 use raylib::core::drawing::RaylibShaderModeExt;
 use raylib::core::shaders::Shader;
@@ -562,8 +563,31 @@ fn draw_f_styled(
     let tint = color.into();
     ACTIVE_FONT.with(|active| {
         let set = active.borrow();
-        if let Some(font) = sdf_font(&set, style) {
+        // The family's exact cut for this style, when it ships one.
+        let cut = match style {
+            SegmentStyle::Bold => set.bold.as_ref(),
+            SegmentStyle::Italic => set.italic.as_ref(),
+            _ => set.regular.as_ref(),
+        };
+        if let Some(font) = cut {
             draw_sdf_all(d, font, text, x, y, font_size, tint);
+        } else if let Some(regular) = set.regular.as_ref() {
+            // The family ships no cut for this style (Adwaita Sans has no bold,
+            // Fira Code no italic): synthesize one so emphasis never collapses
+            // onto plain text. Measurement deliberately stays on the upright
+            // font — real cuts advance nearly the same and only overhang.
+            match style {
+                SegmentStyle::Bold => {
+                    draw_sdf_all(d, regular, text, x, y, font_size, tint);
+                    let t =
+                        (font_size as f32 / config::EDITOR_FAUX_BOLD_OFFSET_DIV).max(1.0);
+                    draw_sdf_all(d, regular, text, x + t, y, font_size, tint);
+                }
+                SegmentStyle::Italic => {
+                    draw_sdf_sheared(d, regular, text, x, y, font_size, tint);
+                }
+                _ => draw_sdf_all(d, regular, text, x, y, font_size, tint),
+            }
         } else {
             // No custom font: draw with the captured built-in font at subpixel
             // positions rather than raylib's integer draw_text, which would snap
@@ -584,6 +608,35 @@ fn draw_f_styled(
             });
         }
     });
+}
+
+// Synthesize an oblique cut (for a family with no italic): draw the run through
+// a shear matrix about the text baseline so glyph tops lean right. The advance
+// is intentionally left alone — measure stays on the upright font, matching how
+// a real italic overhangs its advance without widening it.
+fn draw_sdf_sheared(
+    d: &mut impl RaylibDraw,
+    font: &SdfFont,
+    text: &str,
+    x: f32,
+    y: f32,
+    font_size: i32,
+    tint: raylib::ffi::Color,
+) {
+    use raylib::rlgl::RaylibRlgl;
+    // Approximate baseline as the bottom of the em box; shear about it so the
+    // word stays horizontally anchored where the upright run sat.
+    let base_y = y + font_size as f32 * 0.8;
+    let mut guard = d.rl_push_matrix();
+    // Translate the baseline to the origin, apply the shear, translate back:
+    // p -> (x - s*(y - base_y), y). Tops (y < base_y) shift right.
+    guard.rl_translatef(-x, -base_y, 0.0);
+    let mut shear = Matrix::identity();
+    shear.m4 = -config::EDITOR_FAUX_ITALIC_SLANT;
+    guard.rl_mult_matrixf(shear);
+    guard.rl_translatef(x, base_y, 0.0);
+    draw_sdf_all(&mut *guard, font, text, x, y, font_size, tint);
+    // guard drops here, popping the matrix.
 }
 
 // Draw text at subpixel positions without snapping. Used for node labels so

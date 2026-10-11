@@ -16,6 +16,23 @@ pub struct Segment {
     pub target: Option<String>,
 }
 
+// Visual width of a tab, in columns (one space's width each). Every `\t` is
+// displayed as this many spaces — for drawing, measuring, wrapping, indentation
+// columns, list depth and the indent guides — so a tab is one fat step that
+// never collapses to a missing glyph or four narrow spaces.
+pub const TAB_WIDTH: u32 = 8;
+
+// The text `s` renders as: every tab becomes TAB_WIDTH spaces. Applied inside
+// render_line so the draw, cursor, selection, wrap and hit-test passes all
+// agree on one expanded form (the .md file itself keeps the real tab bytes).
+pub fn expand_tabs(s: &str) -> String {
+    if s.contains('\t') {
+        s.replace('\t', &" ".repeat(TAB_WIDTH as usize))
+    } else {
+        s.to_string()
+    }
+}
+
 // Split a line into styled segments. Markers: [[wikilink]] (Link) and
 // `inline code` (Code) keep their markers; emphasis (*bold*, **bold**,
 // __bold__, _italic_) drops its markers into Bold/Italic segments so the
@@ -147,11 +164,13 @@ pub fn raw_segments(line: &str) -> Vec<Segment> {
 
 // The segments to draw for `line`. `format` selects markdown rendering
 // (cursor off the line); false shows the raw source (cursor on the line).
+// Tabs are expanded to TAB_WIDTH spaces before parsing, so every consumer
+// that measures through this function agrees with what the draw loop paints.
 pub fn render_line(line: &str, format: bool) -> Vec<Segment> {
     if format {
-        line_segments(line)
+        line_segments(&expand_tabs(line))
     } else {
-        raw_segments(line)
+        raw_segments(&expand_tabs(line))
     }
 }
 
@@ -359,7 +378,7 @@ pub(crate) fn parse_prefix(line: &str) -> LinePrefix {
                 indent_len += 1;
             }
             b'\t' => {
-                indent_cols += 4;
+                indent_cols += TAB_WIDTH;
                 indent_len += 1;
             }
             _ => break,
@@ -414,8 +433,8 @@ pub(crate) fn parse_prefix(line: &str) -> LinePrefix {
     }
 
     // An ATX heading after the markers, or as the first marker when the
-    // leading indentation is at most 3 columns (tabs count 4, so a single
-    // `\t## x` is body text but `   ## x` still is a heading).
+    // leading indentation is at most 3 columns (tabs count TAB_WIDTH, so a
+    // single `\t## x` is body text but `   ## x` still is a heading).
     if let Some((level, hlen)) = heading_at(bytes, q) {
         if !units.is_empty() || indent_cols <= 3 {
             if units.is_empty() && indent_len > 0 {
@@ -549,9 +568,9 @@ pub fn list_info(line: &str) -> Option<usize> {
 }
 
 // Leading source indentation of a line: the byte length (what a caller slices
-// off to reach the content) and its column width (spaces=1, tabs=4, matching
-// list_depth). A prose line uses this as its wrap indent so continuations
-// hang at the same left edge as the first line.
+// off to reach the content) and its column width (spaces=1, tabs=TAB_WIDTH,
+// matching list_depth). A prose line uses this as its wrap indent so
+// continuations hang at the same left edge as the first line.
 pub fn content_indent(line: &str) -> (usize, u32) {
     let mut bytes = 0;
     let mut cols = 0u32;
@@ -563,7 +582,7 @@ pub fn content_indent(line: &str) -> (usize, u32) {
             }
             '\t' => {
                 bytes += 1;
-                cols += 4;
+                cols += TAB_WIDTH;
             }
             _ => break,
         }
@@ -572,9 +591,9 @@ pub fn content_indent(line: &str) -> (usize, u32) {
 }
 
 // Indent-guide levels for a line with `cols` indentation columns: one level
-// per `step` columns (step = 4, a tab width, matching list depth). A line
-// indented 4 cols yields level 1 (one guide), 8 cols yields 1 and 2, and so
-// on; 0-3 cols yield none. Consecutive lines sharing a level draw one
+// per `step` columns (step = TAB_WIDTH, a tab width, matching list depth). A
+// line indented 8 cols yields level 1 (one guide), 16 cols yields 1 and 2, and
+// so on; 0-7 cols yield none. Consecutive lines sharing a level draw one
 // continuous vertical guide.
 pub fn indent_guide_levels(cols: u32, step: u32) -> Vec<u32> {
     if step == 0 {
@@ -583,19 +602,55 @@ pub fn indent_guide_levels(cols: u32, step: u32) -> Vec<u32> {
     (1..=cols / step).collect()
 }
 
-// The on-screen text for a list marker: "- "/"+ " become "* " (indentation
-// preserved), "N. " stays as-is. Returns (display_text, raw_marker_len).
-// The display text always measures identical to the raw marker, so cursor
-// and selection positions derived from raw offsets stay aligned.
-pub fn list_marker_display(line: &str) -> Option<(String, usize)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListMarker {
+    // Raw byte length of the whole leading region (indentation + marker),
+    // i.e. what list_info returns for the line.
+    pub raw_len: usize,
+    // Leading whitespace with tabs expanded, drawn before the marker.
+    pub indent: String,
+    // The marker itself with tabs expanded ("- ", "1. "). The renderer
+    // advances past its measured width so content starts exactly where the raw
+    // marker did — the caret never shifts.
+    pub marker: String,
+    // What to draw at the marker's left edge: a bullet glyph for unordered
+    // items, otherwise the ordered marker text itself.
+    pub draw: String,
+}
+
+// The on-screen form of a list marker: the leading indentation (tabs expanded)
+// followed by a real bullet glyph for unordered items (`-`, `*`, `+`) or the
+// ordered marker ("N. ") as text. The drawn advance stays the raw marker's
+// expanded width so the content column—and therefore the caret—never moves.
+pub fn list_marker_display(line: &str) -> Option<ListMarker> {
     let skip = parse_prefix(line).list_skip()?;
-    let marker = &line[..skip];
-    // "- "+"+ " become "* " (indentation preserved); ordered "N. " stays.
-    let disp: String = marker
-        .chars()
-        .map(|c| if c == '-' || c == '+' { '*' } else { c })
-        .collect();
-    Some((disp, skip))
+    let raw = &line[..skip];
+    // Split the leading whitespace (whose width the marker display owns) from
+    // the marker characters themselves.
+    let indent_bytes = raw.bytes().take_while(|b| *b == b' ' || *b == b'\t').count();
+    let (indent_raw, marker_raw) = raw.split_at(indent_bytes);
+    let indent = expand_tabs(indent_raw);
+    let marker = expand_tabs(marker_raw);
+    let first = marker_raw.as_bytes().first().copied()?;
+    let draw = if matches!(first, b'-' | b'+' | b'*') {
+        "\u{2022}".to_string() // • real bullet glyph
+    } else {
+        marker.clone()
+    };
+    Some(ListMarker {
+        raw_len: skip,
+        indent,
+        marker,
+        draw,
+    })
+}
+
+// The blockquote rail prefix (leading indentation plus each `>` and its
+// optional space) with tabs expanded, for stripping from the expanded
+// rendering when the rail replaces it.
+pub fn blockquote_marker_expanded(line: &str) -> Option<String> {
+    let skip = parse_prefix(line).blockquote_skip()?;
+    Some(expand_tabs(&line[..skip]))
 }
 
 // If `line` consists of exactly one image wikilink (optionally with leading
@@ -851,16 +906,40 @@ mod tests {
 
     #[test]
     fn list_marker_displays() {
-        assert_eq!(list_marker_display("- item"), Some(("* ".to_string(), 2)));
-        assert_eq!(list_marker_display("+ item"), Some(("* ".to_string(), 2)));
-        assert_eq!(list_marker_display("* item"), Some(("* ".to_string(), 2)));
+        // Unordered markers draw a real bullet glyph; the advance stays the
+        // raw marker's expanded width ("- " is 2 columns) so the content
+        // column and caret never move.
+        let expect = |raw_len, indent: &str, marker: &str, draw: &str| Some(ListMarker {
+            raw_len,
+            indent: indent.to_string(),
+            marker: marker.to_string(),
+            draw: draw.to_string(),
+        });
         assert_eq!(
-            list_marker_display("  - indented"),
-            Some(("  * ".to_string(), 4))
+            list_marker_display("- item"),
+            expect(2, "", "- ", "\u{2022}")
         );
         assert_eq!(
+            list_marker_display("+ item"),
+            expect(2, "", "+ ", "\u{2022}")
+        );
+        assert_eq!(
+            list_marker_display("* item"),
+            expect(2, "", "* ", "\u{2022}")
+        );
+        assert_eq!(
+            list_marker_display("  - indented"),
+            expect(4, "  ", "- ", "\u{2022}")
+        );
+        // A tab in the indentation expands to a full tab width of spaces.
+        assert_eq!(
+            list_marker_display("\t- indented"),
+            expect(3, "        ", "- ", "\u{2022}")
+        );
+        // Ordered markers keep their text, drawn as-is.
+        assert_eq!(
             list_marker_display("1. ordered"),
-            Some(("1. ".to_string(), 3))
+            expect(3, "", "1. ", "1. ")
         );
         assert_eq!(list_marker_display("plain"), None);
     }
@@ -870,8 +949,8 @@ mod tests {
         assert_eq!(content_indent("plain"), (0, 0));
         assert_eq!(content_indent(""), (0, 0));
         assert_eq!(content_indent("  two spaces"), (2, 2));
-        // A tab is one byte but four columns, matching list depth.
-        assert_eq!(content_indent("\tone tab"), (1, 4));
+        // A tab is one byte but TAB_WIDTH columns, matching list depth.
+        assert_eq!(content_indent("\tone tab"), (1, 8));
         assert_eq!(content_indent("    four and trailing"), (4, 4));
         // Indentation stops at the first content character.
         assert_eq!(content_indent("  - list marker"), (2, 2));
@@ -879,14 +958,14 @@ mod tests {
 
     #[test]
     fn indent_guide_levels_follow_tab_width() {
-        assert_eq!(indent_guide_levels(0, 4), vec![]);
-        assert_eq!(indent_guide_levels(1, 4), vec![]);
-        assert_eq!(indent_guide_levels(3, 4), vec![]);
-        assert_eq!(indent_guide_levels(4, 4), vec![1]);
-        assert_eq!(indent_guide_levels(8, 4), vec![1, 2]);
-        // 11 columns: levels 1 and 2 only (multiple of 4, no rounding).
-        assert_eq!(indent_guide_levels(11, 4), vec![1, 2]);
-        assert_eq!(indent_guide_levels(16, 4), vec![1, 2, 3, 4]);
+        assert_eq!(indent_guide_levels(0, 8), vec![]);
+        assert_eq!(indent_guide_levels(1, 8), vec![]);
+        assert_eq!(indent_guide_levels(7, 8), vec![]);
+        assert_eq!(indent_guide_levels(8, 8), vec![1]);
+        assert_eq!(indent_guide_levels(16, 8), vec![1, 2]);
+        // 11 columns: level 1 only (no rounding, just integer division).
+        assert_eq!(indent_guide_levels(11, 8), vec![1]);
+        assert_eq!(indent_guide_levels(24, 8), vec![1, 2, 3]);
         // Custom step, and a step of zero can never divide.
         assert_eq!(indent_guide_levels(6, 3), vec![1, 2]);
         assert_eq!(indent_guide_levels(8, 0), vec![]);

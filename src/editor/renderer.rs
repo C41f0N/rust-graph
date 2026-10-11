@@ -35,7 +35,7 @@ fn line_layout(
     padding: i32,
     max_width: i32,
 ) -> (i32, i32, Option<(PathBuf, i32, i32)>) {
-    let mut line_font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
+    let mut line_font_size = config::editor_scaled_size(config::EDITOR_FONT_SIZE);
     let is_fence = matches!(
         kind,
         blocks::LineKind::FencedCode | blocks::LineKind::FenceDelimiter
@@ -45,12 +45,19 @@ fn line_layout(
         && kind != blocks::LineKind::Frontmatter
     {
         if let Some(level) = markdown::parse_prefix(line_text).heading_level() {
-            line_font_size = config::scaled_size(config::EDITOR_HEADING_SIZE[(level - 1) as usize]);
+            line_font_size = config::editor_scaled_size(config::EDITOR_HEADING_SIZE[(level - 1) as usize]);
         }
     }
 
     let mut advance = line_font_size;
     let mut image = None;
+
+    // A fence delimiter row in view mode collapses to a sliver: the ``` markers
+    // are hidden and the code panel drawn around the block supplies the visual
+    // padding, so a full blank row at each end would read as a hole.
+    if kind == blocks::LineKind::FenceDelimiter && !editing_line {
+        advance = config::scaled_size(config::EDITOR_CODE_FENCE_PAD);
+    }
 
     // A frontmatter block the cursor is NOT editing collapses to one bar for
     // its whole extent: the opening delimiter line carries the bar height,
@@ -119,6 +126,47 @@ fn line_editing(
 mod debug {
     use std::sync::Mutex;
     pub(super) static DEBUG_FOLD_LINE: Mutex<String> = Mutex::new(String::new());
+}
+
+// Extra space inserted above a visual line, on top of the uniform line
+// spacing, so block kinds separate themselves and the page reads as a
+// hierarchy. It depends on the previous source line's kind and the current
+// one; wrapped continuation rows pass 0 (the caller only asks on a source
+// line's first visual line). Magnitudes scale with the text zoom.
+fn block_gap(prev: Option<blocks::LineKind>, cur: blocks::LineKind) -> i32 {
+    use blocks::LineKind::*;
+    let s = config::editor_scaled_size;
+    // A fenced block is buffered above (entering) and below (leaving).
+    let prev_code = matches!(prev, Some(FencedCode | FenceDelimiter));
+    let cur_code = matches!(cur, FencedCode | FenceDelimiter);
+    if cur_code && !prev_code {
+        return s(config::EDITOR_CODE_SPACE);
+    }
+    if !cur_code && prev_code {
+        return s(config::EDITOR_CODE_SPACE);
+    }
+    // A blockquote gets air where it starts and where it ends.
+    let prev_q = matches!(prev, Some(Blockquote));
+    let cur_q = matches!(cur, Blockquote);
+    if cur_q && !prev_q {
+        return s(config::EDITOR_QUOTE_SPACE);
+    }
+    if !cur_q && prev_q {
+        return s(config::EDITOR_QUOTE_SPACE);
+    }
+    if matches!(cur, Heading { .. }) {
+        return s(config::EDITOR_HEADING_SPACE_BEFORE);
+    }
+    if matches!(prev, Some(Heading { .. })) {
+        return s(config::EDITOR_HEADING_SPACE_AFTER);
+    }
+    if matches!(cur, HorizontalRule) {
+        return s(config::EDITOR_HR_SPACE);
+    }
+    if matches!(prev, Some(HorizontalRule)) {
+        return s(config::EDITOR_HR_SPACE);
+    }
+    0
 }
 
 pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vector2) {
@@ -455,15 +503,76 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // of truth for the draw loop, the content height (which bounds the
         // scroll offset) and cursor-follow.
         let vlines = buffer::VISUAL_LINES.lock().unwrap();
-        let mut layouts: Vec<(i32, i32, Option<(PathBuf, i32, i32)>)> =
+        // (font size, advance, gap-above, image) per visual line. `gap` is the
+        // extra rhythm space above the line (non-zero only on a source line's
+        // first visual line); every consumer adds it in the same place so the
+        // draw, scrollbar, viewport and hit-test can never disagree.
+        let mut layouts: Vec<(i32, i32, i32, Option<(PathBuf, i32, i32)>)> =
             Vec::with_capacity(vlines.len());
         let mut total_h: i32 = 0;
-        for vl in vlines.iter() {
-            let editing = line_editing(vl, fm_range, *cursor_y);
-            let (fsz, adv, img) =
-                line_layout(vl, &buf[vl.line], kinds.get(vl.line).copied().unwrap_or(blocks::LineKind::Paragraph), editing, content_x0, padding, max_width);
-            total_h += adv + config::line_spacing();
-            layouts.push((fsz, adv, img));
+        // Per source line: pixel top of its first visual line and pixel bottom
+        // (advance end) of its last, so a fenced block spanning several source
+        // lines can be bracketed by one panel.
+        let mut line_top: std::collections::HashMap<usize, i32> = std::collections::HashMap::new();
+        let mut line_bottom: std::collections::HashMap<usize, i32> = std::collections::HashMap::new();
+        {
+            let mut prev_src: Option<usize> = None;
+            let mut y: i32 = 0;
+            for vl in vlines.iter() {
+                let editing = line_editing(vl, fm_range, *cursor_y);
+                let kind = kinds
+                    .get(vl.line)
+                    .copied()
+                    .unwrap_or(blocks::LineKind::Paragraph);
+                let (fsz, adv, img) =
+                    line_layout(vl, &buf[vl.line], kind, editing, content_x0, padding, max_width);
+                let first_of_line = prev_src != Some(vl.line);
+                let gap = if first_of_line {
+                    let prev_kind = if vl.line == 0 {
+                        None
+                    } else {
+                        kinds.get(vl.line - 1).copied()
+                    };
+                    block_gap(prev_kind, kind)
+                } else {
+                    0
+                };
+                y += gap;
+                line_top.entry(vl.line).or_insert(y);
+                y += adv + config::line_spacing();
+                line_bottom.insert(vl.line, y - config::line_spacing());
+                total_h += gap + adv + config::line_spacing();
+                layouts.push((fsz, adv, gap, img));
+                prev_src = Some(vl.line);
+            }
+        }
+
+        // One panel per fenced block, keyed by the source line it starts on and
+        // carrying its pixel extents across every visual line of the block.
+        let mut code_blocks: std::collections::HashMap<usize, (i32, i32)> =
+            std::collections::HashMap::new();
+        {
+            let is_code = |i: usize| {
+                matches!(
+                    kinds.get(i).copied().unwrap_or(blocks::LineKind::Paragraph),
+                    blocks::LineKind::FencedCode | blocks::LineKind::FenceDelimiter
+                )
+            };
+            let mut i = 0;
+            while i < buf.len() {
+                if !is_code(i) {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < buf.len() && is_code(i) {
+                    i += 1;
+                }
+                let end = i - 1;
+                let top = *line_top.get(&start).unwrap_or(&0);
+                let bottom = *line_bottom.get(&end).unwrap_or(&top);
+                code_blocks.insert(start, (top, (bottom - top).max(1)));
+            }
         }
 
         // Hit-test table for the input handler (consumed on the next frame,
@@ -473,7 +582,8 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             let mut hits = Vec::with_capacity(vlines.len());
             let mut line_y: i32 = 0;
             for (vi, vl) in vlines.iter().enumerate() {
-                let (fsz, adv, ref img) = layouts[vi];
+                let (fsz, adv, gap, ref img) = layouts[vi];
+                line_y += gap;
                 if adv > 0 {
                     let editing = line_editing(vl, fm_range, *cursor_y);
                     let kind = kinds
@@ -537,6 +647,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             let mut line_y: i32 = 0;
             for (vi, vl) in vlines.iter().enumerate() {
                 let advance = layouts[vi].1;
+                line_y += layouts[vi].2;
                 if line_y + advance >= scroll && line_y <= scroll + viewport_h {
                     min_line = min_line.min(vl.line);
                     max_line = max_line.max(vl.line);
@@ -584,10 +695,15 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         let mut cursor_line_top: Option<i32> = None;
         let mut cursor_line_bottom: Option<i32> = None;
 
-        // Pixel width of one indent-guide level ("    ", a tab width): guides
-        // sit at content-x0 + padding + level * step_px.
-        let indent_step_px =
-            text::measure(d, "    ", config::scaled_size(config::EDITOR_FONT_SIZE));
+        // Pixel width of one indent-guide level (a tab width, TAB_WIDTH
+        // spaces): guides sit at content-x0 + padding + level * step_px.
+        // Measured at the editor text size so a guide always lines up under
+        // the same column of text it belongs to.
+        let indent_step_px = text::measure(
+            d,
+            &" ".repeat(markdown::TAB_WIDTH as usize),
+            config::editor_scaled_size(config::EDITOR_FONT_SIZE),
+        );
 
         // Clip all content drawing to the area below the heading bar and
         // translate it up by the scroll offset.
@@ -606,7 +722,9 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             for (vi, line) in vlines.iter().enumerate() {
                 let first_vl_of_line = line.line != prev_source_line;
                 prev_source_line = line.line;
-                let (line_font_size, advance, ref image) = layouts[vi];
+                let (line_font_size, advance, gap, ref image) = layouts[vi];
+                // Rhythm space above this line (0 on continuation rows).
+                line_y += gap;
                 let editing_line = line_editing(line, fm_range, *cursor_y);
                 let kind = kinds
                     .get(line.line)
@@ -717,12 +835,14 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
 // column rather than pinned to its right edge.
 let cols = markdown::content_indent(&buf[line.line]).1;
 let levels = if !is_fence {
-    markdown::indent_guide_levels(cols, 4)
+    markdown::indent_guide_levels(cols, markdown::TAB_WIDTH)
 } else {
     Vec::new()
 };
 let gy = draw_top + padding / 2;
-let seg_h = advance + config::line_spacing();
+// Include the rhythm gap so a guide run stays unbroken across a heading /
+// code / quote gap as well as the uniform line spacing.
+let seg_h = advance + gap + config::line_spacing();
 for lvl in &levels {
     let gx = content_x0 + padding + indent_step_px * *lvl as i32 - indent_step_px / 2;
     match guide_runs.iter_mut().find(|r| r.lvl == *lvl) {
@@ -819,15 +939,24 @@ guide_runs.retain(|r| {
                     continue;
                 }
 
-                // Fenced code block: background for the full container width.
-                if is_fence && !editing_line {
-                    s.draw_rectangle(
-                        content_x0 + padding,
-                        draw_top,
-                        max_width,
-                        line_font_size,
-                        config::EDITOR_CODE_BG,
-                    );
+                // Fenced code block: one rounded panel behind the whole block,
+                // drawn once at its first line so it reads as a single object
+                // instead of a stack of per-line stripes.
+                if first_vl_of_line && !editing_line {
+                    if let Some(&(top, h)) = code_blocks.get(&line.line) {
+                        let cpad = config::scaled_size(config::EDITOR_CODE_PANEL_PAD);
+                        s.draw_rectangle_rounded(
+                            Rectangle::new(
+                                (content_x0 + padding - cpad) as f32,
+                                (content_y + top - scroll - cpad) as f32,
+                                (max_width + 2 * cpad) as f32,
+                                (h + 2 * cpad) as f32,
+                            ),
+                            0.12,
+                            8,
+                            config::EDITOR_CODE_BG,
+                        );
+                    }
                 }
 
                 // Draw selection highlight for this visual line
@@ -935,7 +1064,7 @@ guide_runs.retain(|r| {
                         && !autocomplete.matches.is_empty()
                         && !crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed)
                     {
-                        let item_h = config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT);
+                        let item_h = config::editor_scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT);
                         let mut box_w = 140;
                         for name in autocomplete
                             .matches
@@ -997,7 +1126,7 @@ guide_runs.retain(|r| {
                     // problem, just for commands instead of note names.
                     let palette = crate::editor::command::COMMAND_PALETTE.read().unwrap();
                     if palette.active && !palette.matches.is_empty() {
-                        let item_h = config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT);
+                        let item_h = config::editor_scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT);
                         let mut box_w = 140;
                         for (name, _) in palette
                             .matches
@@ -1080,16 +1209,17 @@ guide_runs.retain(|r| {
                     // list marker is drawn first, then the image is scaled down
                     // to fit the available width and max image height.
                     let mut img_x = content_x;
-                    if let Some((disp, _)) = &list_marker {
+                    if let Some(marker) = &list_marker {
+                        img_x += text::measure(&*s, &marker.indent, line_font_size);
                         text::draw(
                             &mut *s,
-                            disp,
+                            &marker.draw,
                             img_x,
                             draw_top + padding / 2,
                             line_font_size,
                             config::EDITOR_LIST_MARKER_COLOR,
                         );
-                        img_x += text::measure(&*s, disp, line_font_size);
+                        img_x += text::measure(&*s, &marker.marker, line_font_size);
                     }
                     crate::editor::images::draw(
                         &mut *s,
@@ -1141,6 +1271,13 @@ guide_runs.retain(|r| {
                         None
                     };
 
+                    // Headings draw a step brighter than the body so the
+                    // hierarchy reads even under a family with no bold cut. A
+                    // heading nested after list/quote markers still counts.
+                    let heading_view = !editing_line
+                        && !is_fence
+                        && markdown::parse_prefix(&buf[line.line]).heading_level().is_some();
+
                     let segments = markdown::render_line(&view_text, format);
                     let mut seg_x = content_x;
 
@@ -1148,33 +1285,43 @@ guide_runs.retain(|r| {
                         let mut text = seg.text.as_str();
                         if si == 0 {
                             // Quotes: the whole marker prefix (`>`, optionally
-                            // preceded by spaces) is display-only in view mode; the
-                            // rail replaces it and the text keeps its indent.
+                            // preceded by spaces) is display-only in view mode;
+                            // the rail replaces it and the text keeps its
+                            // indent. The prefix is compared in its expanded
+                            // form because render_line expands tabs.
                             if is_quote && !editing_line && line.start == 0 {
-                                if let Some(skip) = markdown::blockquote_marker_len(&buf[line.line])
+                                if let Some(exp) =
+                                    markdown::blockquote_marker_expanded(&buf[line.line])
                                 {
-                                    if skip <= text.as_bytes().len()
-                                        && text.as_bytes()[..skip]
-                                            == buf[line.line].as_bytes()[..skip]
+                                    if text.len() >= exp.len()
+                                        && text.as_bytes().starts_with(exp.as_bytes())
                                     {
-                                        text = &text[skip..];
+                                        text = &text[exp.len()..];
                                     }
                                 }
                             }
-                            if let Some((disp, raw_len)) = &list_marker {
-                                if text.as_bytes().len() >= *raw_len
-                                    && text.as_bytes()[..*raw_len]
-                                        == buf[line.line].as_bytes()[..*raw_len]
+                            if let Some(marker) = &list_marker {
+                                // The expanded leading region (indent + marker)
+                                // is replaced by the marker display, so it is
+                                // stripped from the segment text and its
+                                // measured width used as the advance.
+                                let strip = marker.indent.len() + marker.marker.len();
+                                if text.len() >= strip
+                                    && text.as_bytes().starts_with(marker.indent.as_bytes())
+                                    && text.as_bytes()[marker.indent.len()..]
+                                        .starts_with(marker.marker.as_bytes())
                                 {
-                                    text::draw(&mut *s, 
-                                        disp,
+                                    seg_x += text::measure(&*s, &marker.indent, line_font_size);
+                                    text::draw(
+                                        &mut *s,
+                                        &marker.draw,
                                         seg_x,
                                         draw_top + padding / 2,
                                         line_font_size,
                                         config::EDITOR_LIST_MARKER_COLOR,
                                     );
-                                    seg_x += text::measure(&*s, disp, line_font_size);
-                                    text = &text[*raw_len..];
+                                    seg_x += text::measure(&*s, &marker.marker, line_font_size);
+                                    text = &text[strip..];
                                 }
                             }
                         }
@@ -1184,6 +1331,8 @@ guide_runs.retain(|r| {
                             | markdown::SegmentStyle::Italic => {
                                 if let Some(fc) = fence_color {
                                     fc
+                                } else if heading_view {
+                                    config::EDITOR_HEADING_COLOR
                                 } else if is_quote {
                                     config::EDITOR_BLOCKQUOTE_COLOR
                                 } else {
@@ -1232,11 +1381,16 @@ guide_runs.retain(|r| {
                         }
 
                         if seg.style == markdown::SegmentStyle::Code {
-                            s.draw_rectangle(
-                                seg_x,
-                                draw_top + padding / 2,
-                                seg_w,
-                                line_font_size,
+                            let ipad = config::scaled_size(config::EDITOR_INLINE_CODE_PAD_X);
+                            s.draw_rectangle_rounded(
+                                Rectangle::new(
+                                    (seg_x - ipad) as f32,
+                                    (draw_top + padding / 2 - 2) as f32,
+                                    (seg_w + 2 * ipad) as f32,
+                                    (line_font_size + 4) as f32,
+                                ),
+                                0.3,
+                                8,
                                 config::EDITOR_CODE_BG,
                             );
                         }
@@ -1317,5 +1471,54 @@ guide_runs.retain(|r| {
         }
         scroll = scroll.clamp(0, max_scroll);
         *buffer::SCROLL_Y.write().unwrap() = scroll;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blocks::LineKind;
+
+    #[test]
+    fn block_gaps_separate_blocks_but_not_their_own_rows() {
+        // block_gap scales with the process-wide EDITOR_ZOOM, so serialize
+        // against the other tests that write it and pin it to 1.0 for exact
+        // comparisons.
+        let _guard = config::CONFIG_TEST_LOCK.lock().unwrap();
+        *config::EDITOR_ZOOM.write().unwrap() = 1.0;
+
+        let p = LineKind::Paragraph;
+        let h1 = LineKind::Heading { level: 1 };
+        let code = LineKind::FencedCode;
+        let fence = LineKind::FenceDelimiter;
+        let q = LineKind::Blockquote;
+        let hr = LineKind::HorizontalRule;
+
+        // A heading opens with the large gap; the line after it takes the small one.
+        assert_eq!(
+            block_gap(Some(p), h1),
+            config::EDITOR_HEADING_SPACE_BEFORE
+        );
+        assert_eq!(
+            block_gap(Some(h1), p),
+            config::EDITOR_HEADING_SPACE_AFTER
+        );
+        // A fenced block is buffered on both sides, but never between its own rows.
+        assert_eq!(block_gap(Some(p), fence), config::EDITOR_CODE_SPACE);
+        assert_eq!(block_gap(Some(fence), code), 0);
+        assert_eq!(block_gap(Some(code), fence), 0);
+        assert_eq!(block_gap(Some(fence), p), config::EDITOR_CODE_SPACE);
+        // A blockquote is buffered where it starts and ends, not within.
+        assert_eq!(block_gap(Some(p), q), config::EDITOR_QUOTE_SPACE);
+        assert_eq!(block_gap(Some(q), q), 0);
+        assert_eq!(block_gap(Some(q), p), config::EDITOR_QUOTE_SPACE);
+        // A horizontal rule gets air before and after.
+        assert_eq!(block_gap(Some(p), hr), config::EDITOR_HR_SPACE);
+        assert_eq!(block_gap(Some(hr), p), config::EDITOR_HR_SPACE);
+        // Plain lines get nothing beyond the uniform line spacing.
+        assert_eq!(block_gap(Some(p), p), 0);
+        assert_eq!(block_gap(None, p), 0);
+
+        *config::EDITOR_ZOOM.write().unwrap() = 1.0;
     }
 }

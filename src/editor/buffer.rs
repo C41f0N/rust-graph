@@ -239,9 +239,10 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
             && !crate::editor::hit_test::MOUSE_DRAGGING.load(std::sync::atomic::Ordering::Relaxed);
         let kind = kinds.get(line_index).copied().unwrap_or(crate::editor::blocks::LineKind::Paragraph);
 
-        // A nested list item sits indented by one tab width (four spaces) per
-        // depth; wrapped continuations hang by two spaces so they align under
-        // the item text after the marker. A quote line is nudged right by its
+        // A nested list item sits indented by one tab width (TAB_WIDTH spaces)
+        // per depth; wrapped continuations hang by two spaces so they align
+        // under the item text after the marker. A quote line is nudged right by
+        // its
         // marker width so wrapped continuations align under the quote text
         // instead of the `>` marker. A prose/heading line with leading source
         // indentation is shifted right by that indentation, so its wrapped
@@ -251,15 +252,17 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
         let mut base_indent = 0;
         let mut hang_indent = 0;
         if !editing_line {
-            let font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
+            let font_size = config::editor_scaled_size(config::EDITOR_FONT_SIZE);
             match kind {
                 crate::editor::blocks::LineKind::List { depth } => {
-                    base_indent = text::measure(d, "    ", font_size) * depth as i32;
+                    base_indent =
+                        text::measure(d, &" ".repeat(markdown::TAB_WIDTH as usize), font_size)
+                            * depth as i32;
                     hang_indent = text::measure(d, "  ", font_size);
                 }
                 crate::editor::blocks::LineKind::Blockquote => {
-                    base_indent = markdown::blockquote_marker_len(line)
-                        .map(|len| text::measure(d, &line[..len], font_size))
+                    base_indent = markdown::blockquote_marker_expanded(line)
+                        .map(|exp| text::measure(d, &exp, font_size))
                         .unwrap_or(0);
                     hang_indent = 0;
                 }
@@ -341,7 +344,7 @@ fn wrap_line(
 ) -> Vec<VisualLine> {
     let mut out = Vec::new();
     let mut start = 0;
-    let mut line_font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
+    let mut line_font_size = config::editor_scaled_size(config::EDITOR_FONT_SIZE);
 
     let prefix = markdown::parse_prefix(line);
     if let Some(level) = prefix.heading_level() {
@@ -355,7 +358,7 @@ fn wrap_line(
                 start = prefix.content();
             }
             line_font_size =
-                config::scaled_size(config::EDITOR_HEADING_SIZE[(level - 1) as usize]);
+                config::editor_scaled_size(config::EDITOR_HEADING_SIZE[(level - 1) as usize]);
         }
     } else if format && skip > 0 {
         // Prose indentation: base_indent already shifts the line; `skip` moves
@@ -666,8 +669,8 @@ mod tests {
     #[test]
     fn fold_ranges_outline_deeper_indented_block() {
         // A line with tabs/spaces under a shallower line is foldable; a
-        // flattened sibling ends the block. content_indent counts a tab as 4
-        // columns, so "\t\t" = 8.
+        // flattened sibling ends the block. content_indent counts a tab as 8
+        // columns, so "\t" = 8 and "\t\t" = 16.
         let buf = vec![
             "- item".to_string(),
             "\t- sub".to_string(),

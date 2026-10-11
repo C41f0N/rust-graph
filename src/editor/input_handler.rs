@@ -33,6 +33,27 @@ fn remove_command_text(buffer: &mut Vec<String>, y: usize, x: usize) -> i32 {
     x as i32
 }
 
+// Remove one indentation level from the start of `line`: a single leading tab,
+// or up to `tab_width` leading spaces (whatever is present). Returns the number
+// of bytes removed.
+fn remove_indent(line: &mut String, tab_width: usize) -> usize {
+    if line.starts_with('\t') {
+        line.drain(..1);
+        1
+    } else {
+        let removed = line
+            .as_bytes()
+            .iter()
+            .take(tab_width)
+            .take_while(|&&b| b == b' ')
+            .count();
+        if removed > 0 {
+            line.drain(..removed);
+        }
+        removed
+    }
+}
+
 fn prev_word_boundary(line: &str, x: usize) -> usize {
     let bytes = line.as_bytes();
     let mut i = x.min(bytes.len());
@@ -278,7 +299,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // offset to the real content height each frame, so we just nudge it.
     let wheel = rl.get_mouse_wheel_move();
     if wheel != 0.0 {
-        let step = config::scaled_size(config::EDITOR_FONT_SIZE) as f32 * 3.0;
+        let step = config::editor_scaled_size(config::EDITOR_FONT_SIZE) as f32 * 3.0;
         let mut scroll = buffer::SCROLL_Y.write().unwrap();
         let delta = (wheel * step) as i32;
         if delta != 0 {
@@ -403,7 +424,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
                     if ac.active && !ac.matches.is_empty() {
                         history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
                         let idx = m.y as i32 - ry;
-                        let row = (idx / config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT))
+                        let row = (idx / config::editor_scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT))
                             .clamp(0, ac.matches.len() as i32 - 1) as usize;
                         ac.selected = row;
                         let y = *cursor_y as usize;
@@ -872,7 +893,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
                         && m.y as i32 >= py
                         && m.y as i32 <= py + ph;
                     if inside && !cmd.matches.is_empty() {
-                        let row = ((m.y as i32 - py) / config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT))
+                        let row = ((m.y as i32 - py) / config::editor_scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT))
                             .clamp(0, cmd.matches.len() as i32 - 1) as usize;
                         cmd.selected = row;
                         let chosen = cmd.matches[row].1;
@@ -1043,12 +1064,15 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     }
 
     // ------------------------------------------------------------
-    // Tab / Shift+Tab = indent / unindent with 4 spaces
+    // Tab / Shift+Tab = indent / unindent. Tab inserts a real tab character
+    // (TAB_WIDTH columns wide when rendered); Shift+Tab removes one leading
+    // tab, falling back to up to a tab width of leading spaces.
     // ------------------------------------------------------------
 
     if rl.is_key_pressed(KeyboardKey::KEY_TAB) {
         let shift = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
             || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+        let tab_width = crate::editor::markdown::TAB_WIDTH as usize;
 
         history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
 
@@ -1056,17 +1080,9 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
             // Multi-line: indent / unindent every line in the selection.
             for y in sy..=ey {
                 if shift {
-                    let removed = buffer[y]
-                        .as_bytes()
-                        .iter()
-                        .take(4)
-                        .take_while(|&&b| b == b' ')
-                        .count();
-                    if removed > 0 {
-                        buffer[y].drain(..removed);
-                    }
+                    remove_indent(&mut buffer[y], tab_width);
                 } else {
-                    buffer[y].insert_str(0, "    ");
+                    buffer[y].insert_str(0, "\t");
                 }
             }
             *cursor_x = buffer[ey].len() as i32;
@@ -1077,14 +1093,8 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
             let y = *cursor_y as usize;
             let x = *cursor_x as usize;
             if shift {
-                let removed = buffer[y]
-                    .as_bytes()
-                    .iter()
-                    .take(4)
-                    .take_while(|&&b| b == b' ')
-                    .count();
+                let removed = remove_indent(&mut buffer[y], tab_width);
                 if removed > 0 {
-                    buffer[y].drain(..removed);
                     *cursor_x = if (x as i32) < removed as i32 {
                         0
                     } else {
@@ -1092,8 +1102,8 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
                     };
                 }
             } else {
-                buffer[y].insert_str(x, "    ");
-                *cursor_x += 4;
+                buffer[y].insert_str(x, "\t");
+                *cursor_x += 1;
             }
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;

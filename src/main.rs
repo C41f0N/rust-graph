@@ -189,15 +189,19 @@ fn main() {
             graph::input_handler::handle_input(&mut rl, &mut editor_open);
         }
 
-        // Ctrl + =/+ and Ctrl + - zoom the text scale. View-independent: the
-        // editor body text and the graph UI text share one factor, so the
-        // shortcut works in both views. `=` covers `+` on decimal keyboards
-        // (they share a key), numpad rows are handled too. When the editor is
-        // open and the scale changed, force the caret to stay visible: the new
-        // layout regenerates next frame, so the renderer needs a nudge to
-        // re-follow it.
+        // Ctrl + =/+ and Ctrl + - zoom the global text scale (editor body text
+        // and the graph UI text share one factor, so the shortcut works in both
+        // views). Ctrl+Shift + =/+ and + - zoom only the editor's document text:
+        // the font sizes, line heights and wrap measurements stay in sync, but
+        // the UI chrome (tabs bar, header, popups, settings dialog, graph view)
+        // never moves. `=` covers `+` on decimal keyboards (they share a key),
+        // numpad rows are handled too. When the editor is open and the scale
+        // changed, force the caret to stay visible: the new layout regenerates
+        // next frame, so the renderer needs a nudge to re-follow it.
         let ctrl = rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
             || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL);
+        let shift = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+            || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
         if ctrl {
             let zoom_in = rl.is_key_pressed(KeyboardKey::KEY_EQUAL)
                 || rl.is_key_pressed_repeat(KeyboardKey::KEY_EQUAL)
@@ -207,13 +211,22 @@ fn main() {
                 || rl.is_key_pressed_repeat(KeyboardKey::KEY_MINUS)
                 || rl.is_key_pressed(KeyboardKey::KEY_KP_SUBTRACT)
                 || rl.is_key_pressed_repeat(KeyboardKey::KEY_KP_SUBTRACT);
-            if zoom_in {
-                let mut z = config::TEXT_ZOOM.write().unwrap();
-                *z = (*z + config::TEXT_ZOOM_STEP).min(config::TEXT_ZOOM_MAX);
-                editor::buffer::force_follow_caret();
-            } else if zoom_out {
-                let mut z = config::TEXT_ZOOM.write().unwrap();
-                *z = (*z - config::TEXT_ZOOM_STEP).max(config::TEXT_ZOOM_MIN);
+            if zoom_in || zoom_out {
+                if shift {
+                    let mut z = config::EDITOR_ZOOM.write().unwrap();
+                    *z = if zoom_in {
+                        (*z + config::TEXT_ZOOM_STEP).min(config::TEXT_ZOOM_MAX)
+                    } else {
+                        (*z - config::TEXT_ZOOM_STEP).max(config::TEXT_ZOOM_MIN)
+                    };
+                } else {
+                    let mut z = config::TEXT_ZOOM.write().unwrap();
+                    *z = if zoom_in {
+                        (*z + config::TEXT_ZOOM_STEP).min(config::TEXT_ZOOM_MAX)
+                    } else {
+                        (*z - config::TEXT_ZOOM_STEP).max(config::TEXT_ZOOM_MIN)
+                    };
+                }
                 editor::buffer::force_follow_caret();
             }
         }

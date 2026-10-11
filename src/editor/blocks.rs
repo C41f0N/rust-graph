@@ -40,18 +40,18 @@ pub struct Block {
     pub end: usize,   // exclusive buffer line index
 }
 
-// Depth of a list marker line: one level per 4 leading columns, matching the
-// 4-space tab so a single tab always means one indent level.
+// Depth of a list marker line: one level per TAB_WIDTH leading columns,
+// matching markdown::TAB_WIDTH so a single tab always means one indent level.
 fn list_depth(line: &str) -> u32 {
     let mut cols = 0;
     for c in line.chars() {
         match c {
             ' ' => cols += 1,
-            '\t' => cols += 4,
+            '\t' => cols += crate::editor::markdown::TAB_WIDTH,
             _ => break,
         }
     }
-    cols / 4
+    cols / crate::editor::markdown::TAB_WIDTH
 }
 
 // A fenced code opening: 3+ backticks or tildes at the start (after lazy
@@ -249,12 +249,21 @@ mod tests {
 
     #[test]
     fn classifies_list_depths() {
-        // One depth level per 4 leading columns (one tab = one level).
-        let k = classify(&s(&["- one", "    - two", "        - three", "- four"]));
+        // One depth level per TAB_WIDTH (8) leading columns: one tab = one
+        // level, and 8 spaces equal a tab.
+        let k = classify(&s(&[
+            "- one",
+            "        - two",
+            "                - three",
+            "- four",
+        ]));
         assert_eq!(k[0], LineKind::List { depth: 0 });
         assert_eq!(k[1], LineKind::List { depth: 1 });
         assert_eq!(k[2], LineKind::List { depth: 2 });
         assert_eq!(k[3], LineKind::List { depth: 0 });
+        // A literal tab is one level too.
+        let k = classify(&s(&["- one", "\t- two"]));
+        assert_eq!(k[1], LineKind::List { depth: 1 });
     }
 
     #[test]

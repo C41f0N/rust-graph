@@ -44,6 +44,24 @@ pub fn scaled_size(base: i32) -> i32 {
     ((base as f32 * zoom()).round() as i32).max(1)
 }
 
+// Editor text scale (Ctrl+Shift +/-): a second factor that only scales the
+// editor's *text* — body/heading/code font sizes, their line heights and the
+// wrap/hit-test measurements that must agree with the draw — while every other
+// UI (tabs bar, header, autocomplete chrome, settings dialog, graph view)
+// stays on the global zoom. Resets to 1.0 each launch.
+pub static EDITOR_ZOOM: RwLock<f32> = RwLock::new(1.0);
+
+pub fn editor_zoom() -> f32 {
+    *EDITOR_ZOOM.read().unwrap()
+}
+
+// A base pixel size scaled by the editor text zoom only (see EDITOR_ZOOM).
+// Everything that renders or measures document text must go through this so
+// the draw, wrap, cursor and hit-test passes always agree on one size.
+pub fn editor_scaled_size(base: i32) -> i32 {
+    ((base as f32 * editor_zoom()).round() as i32).max(1)
+}
+
 // The editor panel is a centered rectangle covering this fraction of the
 // screen. Shared so the graph input handler can tell "click on/off editor".
 pub const EDITOR_PANEL_FRACTION: f32 = 0.8;
@@ -112,9 +130,18 @@ pub const EDITOR_FRONTMATTER_HEIGHT: i32 = 16;
 pub const EDITOR_FRONTMATTER_BG: Color = Color::new(60, 60, 72, 160);
 pub const EDITOR_FRONTMATTER_COLOR: Color = Color::new(150, 158, 190, 255);
 
-pub const EDITOR_FONT_COLOR: Color = Color::WHITE;
+// Body text is a soft off-white rather than pure white: at heading sizes a
+// hard #FFFFFF glares, and a slightly dimmed body lets the (brighter) headings
+// read as a step above it.
+pub const EDITOR_FONT_COLOR: Color = Color::new(216, 220, 228, 255);
+// Headings are a step brighter than the body so the hierarchy reads even
+// though they share the body's weight under a family with no bold cut.
+pub const EDITOR_HEADING_COLOR: Color = Color::new(245, 246, 250, 255);
 pub const EDITOR_SELECTION_COLOR: Color = Color::new(76, 128, 204, 102);
-pub const EDITOR_LINK_COLOR: Color = Color::SKYBLUE;
+// Links and list bullets stay in the same black-and-white family as the rest
+// of the theme: a soft mid-gray for links (the hover backplate carries the
+// interactivity) and a slightly dimmer gray so bullets recede behind the text.
+pub const EDITOR_LINK_COLOR: Color = Color::new(188, 194, 202, 255);
 pub const EDITOR_CODE_COLOR: Color = Color::new(240, 200, 120, 255);
 pub const EDITOR_CODE_BG: Color = Color::new(50, 50, 60, 220);
 pub const EDITOR_BLOCKQUOTE_COLOR: Color = Color::new(170, 190, 220, 255);
@@ -123,7 +150,38 @@ pub const EDITOR_HR_COLOR: Color = Color::new(120, 120, 120, 255);
 // Guides tuned for the dark editor background: a soft blue that reads
 // clearly on black without shouting over the text.
 pub const EDITOR_INDENT_GUIDE: Color = Color::new(150, 175, 220, 75);
-pub const EDITOR_LIST_MARKER_COLOR: Color = Color::new(160, 160, 220, 255);
+pub const EDITOR_LIST_MARKER_COLOR: Color = Color::new(172, 179, 187, 255);
+
+// --- Vertical rhythm -------------------------------------------------------
+// Extra space inserted ABOVE a visual line, on top of the uniform
+// line_spacing, so blocks breathe and the document reads as a hierarchy
+// instead of one evenly-glued wall of text. Each is scaled by the text zoom.
+// A heading opens with a generous gap and the following line gets a smaller
+// one; a fenced code block and a blockquote are buffered on both sides, and a
+// horizontal rule gets air before it.
+pub const EDITOR_HEADING_SPACE_BEFORE: i32 = 22;
+pub const EDITOR_HEADING_SPACE_AFTER: i32 = 8;
+pub const EDITOR_CODE_SPACE: i32 = 10;
+pub const EDITOR_QUOTE_SPACE: i32 = 6;
+pub const EDITOR_HR_SPACE: i32 = 10;
+
+// A fenced block's opening/closing ``` rows reserve only a sliver of height in
+// view mode (the markers are hidden): the code panel below supplies the visual
+// padding, so a full blank row on each end would read as a hole.
+pub const EDITOR_CODE_FENCE_PAD: i32 = 8;
+// Padding between a fenced code block's text and its rounded panel, and the
+// inline-code pill's horizontal padding either side of the glyphs.
+pub const EDITOR_CODE_PANEL_PAD: i32 = 8;
+pub const EDITOR_INLINE_CODE_PAD_X: i32 = 4;
+
+// --- Emphasis synthesis ----------------------------------------------------
+// Both bundled families are missing a cut (Adwaita Sans has no bold, Fira Code
+// no italic), so a missing style is synthesized: bold by a second strike
+// offset by the fraction below, italic by a horizontal shear of this slope.
+// Measurement is left untouched — real bold/italic advance nearly the upright
+// ones and the lean simply overhangs, exactly like a real cut.
+pub const EDITOR_FAUX_BOLD_OFFSET_DIV: f32 = 24.0;
+pub const EDITOR_FAUX_ITALIC_SLANT: f32 = 0.2;
 
 pub const AUTOCOMPLETE_MAX_VISIBLE: usize = 8;
 pub const AUTOCOMPLETE_ITEM_HEIGHT: i32 = 18;
@@ -157,6 +215,7 @@ mod tests {
     fn scaled_size_follows_zoom() {
         let _guard = CONFIG_TEST_LOCK.lock().unwrap();
         *TEXT_ZOOM.write().unwrap() = 1.0;
+        *EDITOR_ZOOM.write().unwrap() = 1.0;
         assert_eq!(scaled_size(20), 20);
         assert_eq!(scaled_size(70), 70);
         assert_eq!(scaled_size(0), 1);
@@ -172,7 +231,14 @@ mod tests {
         assert!(scaled_size(1) >= 1);
         assert!(scaled_size(20) >= 1);
 
+        // The editor-only zoom moves its own factor and leaves the global one.
         *TEXT_ZOOM.write().unwrap() = 1.0;
+        *EDITOR_ZOOM.write().unwrap() = 2.0;
+        assert_eq!(scaled_size(20), 20);
+        assert_eq!(editor_scaled_size(20), 40);
+        assert_eq!(editor_scaled_size(0), 1);
+
+        *EDITOR_ZOOM.write().unwrap() = 1.0;
     }
 
     // Same global-state caveat as the zoom test: run single-threaded.
