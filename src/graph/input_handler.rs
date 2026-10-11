@@ -648,8 +648,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             }
             Some(ContextRow::FoldSubGraph) => {
                 // Pack the node's outgoing-link children into its companion
-                // folder (see processing::fold_node); the directory rescan the
-                // fold performs refreshes this view.
+                // folder (see processing::fold_node); the in-place refresh the
+                // fold performs removes the packed children without respawning
+                // the graph.
                 let idx = *context_node;
                 *context_node = None;
                 if let Some(idx) = idx {
@@ -673,7 +674,8 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 return;
             }
             Some(ContextRow::UnwrapSubGraph) => {
-                // Expand a fold-created sub-graph back into this directory.
+                // Expand a fold-created sub-graph back into this directory; the
+                // in-place refresh re-seeds only the returning children.
                 let idx = *context_node;
                 *context_node = None;
                 if let Some(idx) = idx {

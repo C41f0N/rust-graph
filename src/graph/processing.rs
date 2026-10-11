@@ -6,7 +6,7 @@ use raylib::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 
 // Node disc radius: Logseq's exact page-node formula
 // (extensions/graph/pixi/logic.cljs `node-radius`): base 3.8, growth
@@ -217,6 +217,9 @@ pub fn hit_test_respawn_button(mx: f32, my: f32) -> bool {
 // positions, rebuilt edges, reset camera/zoom, cleared selection, sim woken.
 pub fn respawn_graph() {
     let dir = DIR_PATH.read().unwrap().clone();
+    // An explicit fresh start: drop this level's saved view first so the
+    // respawn is not immediately undone by a resume.
+    saved_views().write().unwrap().remove(&dir);
     generate_nodes_from_directory(&dir);
 }
 
@@ -544,6 +547,23 @@ pub fn context_menu_rows(idx: Option<usize>, nodes: &[Node]) -> Vec<ContextRow> 
 // Sub-graph navigation: stack of previous directory paths so the breadcrumb
 // trail can jump back to any ancestor level.
 pub static NAV_STACK: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
+
+// A level's last-seen view, snapshotted when the user navigates away: node
+// coordinates keyed by note path plus the camera (zoom + pan). Returning from a
+// sub-graph resumes exactly where they left off instead of respawning the
+// layout on the d3 spiral. In-memory only - a restart starts fresh.
+struct SavedView {
+    positions: std::collections::HashMap<PathBuf, Vector2>,
+    zoom: f32,
+    target: Vector2,
+}
+
+static SAVED_VIEWS: OnceLock<RwLock<std::collections::HashMap<PathBuf, SavedView>>> =
+    OnceLock::new();
+
+fn saved_views() -> &'static RwLock<std::collections::HashMap<PathBuf, SavedView>> {
+    SAVED_VIEWS.get_or_init(|| RwLock::new(std::collections::HashMap::new()))
+}
 // Set by the renderer when a breadcrumb component is clicked; consumed once
 // by the input handler so the click logic stays in the draw frame where
 // text::measure is available.
@@ -583,6 +603,10 @@ pub struct Edge {
 }
 
 pub fn generate_nodes_from_directory(dir: &Path) {
+    // Take any saved view for this level up front: acquire (and release) the
+    // view cache before the NODES lock, mirroring save_current_view's lock
+    // order so the two can never deadlock.
+    let saved = saved_views().write().unwrap().remove(dir);
     // The whole layout is about to be replaced; the force sim must rebuild.
     wake_simulation();
 
@@ -688,18 +712,246 @@ pub fn generate_nodes_from_directory(dir: &Path) {
     // nodes allow a closer view; the baseline (the max) keeps small graphs from
     // looking like a tiny speck in the middle of the screen. Node discs are
     // NODE_BASE_RADIUS, so zoom scales them to readable on-screen sizes.
-    let node_count = NODES.read().unwrap().len();
-    let zoom = (2.2_f32 / (node_count as f32).sqrt()).clamp(0.3, 2.2);
-    let mut camera = crate::graph::renderer::CAMERA.write().unwrap();
-    camera.zoom = zoom;
-    // Re-centre the camera so the new graph appears in the middle of the
-    // screen regardless of where the previous graph was panned.
-    camera.target = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
+    match saved {
+        // A level already visited resumes its saved view: every note the disk
+        // still knows lands back on its old coordinate (matched by path, so
+        // notes added meanwhile keep their fresh seed) and the camera keeps its
+        // zoom and pan - coming back from a sub-graph continues where the user
+        // left off instead of respawning the layout.
+        Some(view) => {
+            let mut nodes = NODES.write().unwrap();
+            for node in nodes.iter_mut() {
+                if let Some(&p) = view.positions.get(&node.path) {
+                    node.position = p;
+                }
+            }
+            drop(nodes);
+            let mut camera = crate::graph::renderer::CAMERA.write().unwrap();
+            camera.zoom = view.zoom;
+            camera.target = view.target;
+        }
+        // First visit: frame from scratch.
+        None => {
+            let node_count = NODES.read().unwrap().len();
+            let zoom = (2.2_f32 / (node_count as f32).sqrt()).clamp(0.3, 2.2);
+            let mut camera = crate::graph::renderer::CAMERA.write().unwrap();
+            camera.zoom = zoom;
+            // Re-centre the camera so the new graph appears in the middle of
+            // the screen regardless of where the previous graph was panned.
+            camera.target =
+                Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
+        }
+    }
+}
+
+// Fold/unwrap refresh: reconcile the in-memory node set with what the disk now
+// holds at `dir` WITHOUT restarting the layout. A fold moves notes into a
+// folder and an unwrap moves them back, but the surviving graph should stay
+// exactly where the user left it - only the notes that actually changed should
+// appear or disappear. Every note that is still valid is reused verbatim
+// (same position, velocity, radius), so a fold "just moves the node" instead
+// of respawning the whole graph on the d3 spiral. What happened on disk:
+//   - notes whose file left this level (packed children, notes that became
+//     their folder's main md) are dropped from the view;
+//   - notes back at this level (unwrap's returning children, a note that
+//     became a folder-backed main) are seeded at exactly the d3 phyllotaxis
+//     position a full scan would give them;
+//   - stale ghosts are dropped and `rebuild_edges` re-derives headers, links,
+//     ghosts and radii from the surviving notes;
+//   - the sim is woken so the changed corner of the graph settles back.
+// The camera/zoom are untouched (unlike generate_nodes_from_directory), and
+// index-based selection/drag/context state is remapped onto surviving notes.
+fn sync_graph_in_place(dir: &Path) {
+    wake_simulation();
+
+    let files = filesystem::scan_directory(dir);
+
+    // Folder-backed mains at this level - the same rule as
+    // generate_nodes_from_directory: an immediate sub-folder `X/` holding its
+    // own `X/X.md` is a self-contained sub-graph, unless a same-named loose
+    // note at this level takes precedence (its file node already came from
+    // `files`).
+    let mut backed: Vec<(String, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let Some(folder_name) = p.file_name().map(|s| s.to_string_lossy().to_string()) else {
+                continue;
+            };
+            if folder_name == "assets" || folder_name.starts_with('.') {
+                continue;
+            }
+            let main = p.join(format!("{folder_name}.md"));
+            if main.is_file()
+                && !files.iter().any(|f| {
+                    f.file_name()
+                        .map_or(false, |n| n.to_string_lossy() == folder_name.as_str())
+                })
+            {
+                backed.push((folder_name, main));
+            }
+        }
+    }
+    backed.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let center = Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
+
+    // Hold both locks while rewriting the node set so a concurrent sim frame
+    // never sees new nodes with stale edges (mirrors generate's clear order).
+    let mut nodes = NODES.write().unwrap();
+    let mut edges = EDGES.write().unwrap();
+    let existing: Vec<Node> = std::mem::take(&mut *nodes);
+    // Keyed by name: stems are unique at a level (loose note, folder-backed
+    // main and ghost never share a name in a stable graph), and the fold parent
+    // is matched by name across its path change (a.md <-> a/a.md).
+    let mut by_name: std::collections::HashMap<String, (usize, Node)> =
+        std::collections::HashMap::with_capacity(existing.len());
+    for (i, node) in existing.into_iter().enumerate() {
+        by_name.insert(node.name.clone(), (i, node));
+    }
+
+    let mut new_nodes: Vec<Node> = Vec::with_capacity(by_name.len() + files.len() + backed.len());
+    let mut old_to_new: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+
+    // Every surviving node keeps its spot; only genuinely new notes are seeded.
+    for f in &files {
+        let stem = f
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let old = by_name.remove(&stem);
+        new_nodes.push(sync_adopt_node(
+            old,
+            false,
+            f.clone(),
+            center,
+            new_nodes.len(),
+            &mut old_to_new,
+        ));
+    }
+    for (name, main) in &backed {
+        let old = by_name.remove(name);
+        new_nodes.push(sync_adopt_node(
+            old,
+            true,
+            main.clone(),
+            center,
+            new_nodes.len(),
+            &mut old_to_new,
+        ));
+    }
+    // Whatever is left in `by_name` - packed children, notes that turned into
+    // their folder's main md (unless matched above), stale ghosts - is gone
+    // from this level. Ghosts are re-derived by rebuild_edges anyway.
+
+    *nodes = new_nodes;
+    edges.clear();
+    drop(nodes);
+    drop(edges);
+    rebuild_edges();
+
+    // Indices shifted with the node set: remap index-based state onto the
+    // surviving nodes so a selection/drag/header-pick keeps its note. A state
+    // aimed at a removed node (no mapping) becomes None. Read first, then
+    // write - a same-statement read+write on one lock would self-deadlock.
+    let remap = |old: Option<usize>| old.and_then(|i| old_to_new.get(&i).copied());
+    let v = remap(*SELECTED_NODE.read().unwrap());
+    *SELECTED_NODE.write().unwrap() = v;
+    let v = remap(*EDITING_NODE.read().unwrap());
+    *EDITING_NODE.write().unwrap() = v;
+    let v = remap(*DRAGGING_NODE.read().unwrap());
+    *DRAGGING_NODE.write().unwrap() = v;
+    let v = remap(*HOVER_NODE.read().unwrap());
+    *HOVER_NODE.write().unwrap() = v;
+    let v = remap(*HEADER_PICK_REQUEST.read().unwrap());
+    *HEADER_PICK_REQUEST.write().unwrap() = v;
+    *DELETE_PENDING.write().unwrap() = false;
+    *CONTEXT_NODE.write().unwrap() = None;
+    *CONTEXT_EMPTY.write().unwrap() = false;
+}
+
+// Shared by sync_graph_in_place: either reuse `old`'s node verbatim (kept
+// position/velocity/radius) or build a fresh one seeded where a full scan
+// would put it, refreshing the disk-derived fields (path, file identity and
+// the folder-backed / has_subgraph flags).
+fn sync_adopt_node(
+    old: Option<(usize, Node)>,
+    folder_backed: bool,
+    path: PathBuf,
+    center: Vector2,
+    new_index: usize,
+    old_to_new: &mut std::collections::HashMap<usize, usize>,
+) -> Node {
+    let reused = old.is_some();
+    let mut node = match old {
+        Some((old_idx, node)) => {
+            old_to_new.insert(old_idx, new_index);
+            node
+        }
+        None => Node {
+            radius: NODE_BASE_RADIUS,
+            color: Color::WHITE,
+            position: Vector2::zero(),
+            velocity: Vector2::zero(),
+            name: String::new(),
+            file_name: String::new(),
+            path: PathBuf::new(),
+            header: None,
+            has_subgraph: false,
+            folder_backed: false,
+        },
+    };
+    let file_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    node.path = path;
+    node.file_name = file_name.clone();
+    if node.name.is_empty() {
+        node.name = file_name.trim_end_matches(".md").to_string();
+    }
+    node.folder_backed = folder_backed;
+    node.has_subgraph = folder_backed || filesystem::is_dir(&filesystem::subgraph_dir(&node.path));
+    if !reused {
+        // Fresh note: d3's seed for position-less nodes, exactly where
+        // generate_nodes_from_directory would place it (radii/degrees come
+        // from rebuild_edges right after).
+        let angle = D3_INITIAL_ANGLE * new_index as f32;
+        let radius = D3_INITIAL_RADIUS * (new_index as f32 + 0.5).sqrt();
+        node.position =
+            Vector2::new(center.x + radius * angle.cos(), center.y + radius * angle.sin());
+        node.radius = NODE_BASE_RADIUS;
+    }
+    node
+}
+
+// Snapshot the current level's node coordinates and camera into the view cache,
+// right before navigation switches DIR_PATH away. Each lock is taken and
+// released in turn (never held together), and every navigation call site drops
+// handle_input's NODES guard first, so this cannot deadlock.
+fn save_current_view() {
+    let dir = DIR_PATH.read().unwrap().clone();
+    let positions: std::collections::HashMap<PathBuf, Vector2> = {
+        let nodes = NODES.read().unwrap();
+        nodes.iter().map(|n| (n.path.clone(), n.position)).collect()
+    };
+    let (zoom, target) = {
+        let camera = crate::graph::renderer::CAMERA.read().unwrap();
+        (camera.zoom, camera.target)
+    };
+    saved_views()
+        .write()
+        .unwrap()
+        .insert(dir, SavedView { positions, zoom, target });
 }
 
 // Navigate into a sub-graph folder. Pushes the current directory onto the
 // navigation stack so the breadcrumb trail can later return here.
 pub fn navigate_into(subdir_name: &str) {
+    save_current_view();
     let mut stack = NAV_STACK.write().unwrap();
     let mut dir = DIR_PATH.write().unwrap();
     stack.push(dir.clone());
@@ -708,6 +960,13 @@ pub fn navigate_into(subdir_name: &str) {
 
 // Jump back to a specific ancestor level in the breadcrumb trail (0 = root).
 pub fn navigate_to_level(level: usize) {
+    {
+        let stack = NAV_STACK.read().unwrap();
+        if level >= stack.len() {
+            return;
+        }
+    }
+    save_current_view();
     let mut stack = NAV_STACK.write().unwrap();
     if level < stack.len() {
         let new_dir = stack[level].clone();
@@ -946,7 +1205,9 @@ pub fn fold_node(dir: &Path, idx: usize) -> bool {
         }
     }
 
-    generate_nodes_from_directory(dir);
+    // Refresh this level in place: packed children leave the view, the parent
+    // stays put and becomes its own folder-backed main note - no respawn.
+    sync_graph_in_place(dir);
     true
 }
 
@@ -1042,7 +1303,9 @@ pub fn unwrap_node(dir: &Path, idx: usize) -> bool {
         eprintln!("[unwrap] {} not empty; left in place", subdir.display());
     }
 
-    generate_nodes_from_directory(dir);
+    // Refresh this level in place: the main note un-packs back to a loose file
+    // and the returning children are seeded fresh - the rest stays put.
+    sync_graph_in_place(dir);
     true
 }
 
@@ -2869,6 +3132,97 @@ mod tests {
     }
 
     #[test]
+    fn returning_from_a_subgraph_resumes_the_saved_view() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_resume_view_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::create_dir(&dir.join("a"));
+        filesystem::write_file(&dir.join("a").join("a.md"), "# A\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        // Simulate a settled / dragged layout and a panned, zoomed camera.
+        let moved = Vector2::new(1234.0, 567.0);
+        {
+            let mut nodes = NODES.write().unwrap();
+            nodes.iter_mut().find(|n| n.name == "b").unwrap().position = moved;
+        }
+        {
+            let mut camera = crate::graph::renderer::CAMERA.write().unwrap();
+            camera.zoom = 0.77;
+            camera.target = Vector2::new(31.0, 47.0);
+        }
+
+        // Leave for the sub-graph, then come back: the parent view resumes
+        // exactly where it was - node coordinates and camera alike.
+        navigate_into("a");
+        generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+        navigate_to_level(0);
+        generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+
+        {
+            let nodes = NODES.read().unwrap();
+            let b = nodes.iter().find(|n| n.name == "b").expect("b is back");
+            assert_eq!(b.position.x, moved.x, "b resumes its exact spot");
+            assert_eq!(b.position.y, moved.y);
+        }
+        {
+            let camera = crate::graph::renderer::CAMERA.read().unwrap();
+            assert_eq!(camera.zoom, 0.77, "zoom resumes");
+            assert_eq!(camera.target.x, 31.0);
+            assert_eq!(camera.target.y, 47.0);
+        }
+
+        NAV_STACK.write().unwrap().clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn respawn_discards_the_saved_view() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_respawn_view_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        // A saved view for the current level with a wild coordinate/camera.
+        {
+            let mut nodes = NODES.write().unwrap();
+            nodes.iter_mut().find(|n| n.name == "b").unwrap().position =
+                Vector2::new(100000.0, -100000.0);
+        }
+        crate::graph::renderer::CAMERA.write().unwrap().zoom = 0.11;
+        save_current_view();
+
+        // Respawn is a deliberate reset: it drops the saved view, so the wild
+        // coordinates and zoom do not come back.
+        respawn_graph();
+
+        {
+            let nodes = NODES.read().unwrap();
+            let b = nodes.iter().find(|n| n.name == "b").unwrap();
+            assert!(b.position.x != 100000.0, "respawn re-seeds, no resume");
+        }
+        assert!(
+            crate::graph::renderer::CAMERA.read().unwrap().zoom != 0.11,
+            "respawn re-frames, no resume"
+        );
+
+        NAV_STACK.write().unwrap().clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn rename_rewrites_links_in_other_notes() {
         let _guard = TEST_NAV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join("rg_rename_links_test");
@@ -3333,6 +3687,76 @@ mod tests {
         let nodes = NODES.read().unwrap();
         assert!(nodes.iter().find(|n| n.name == "solo").unwrap().folder_backed);
         drop(nodes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fold_and_unwrap_keep_surviving_nodes_in_place() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_inplace_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        // a -> b, a -> c fold together; d stays behind untouched.
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n[[c]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n");
+        filesystem::write_file(&dir.join("d.md"), "# D\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let (a_pos, d_pos) = {
+            let nodes = NODES.read().unwrap();
+            let a = nodes.iter().find(|n| n.name == "a").unwrap();
+            let d = nodes.iter().find(|n| n.name == "d").unwrap();
+            (a.position, d.position)
+        };
+
+        // Fold: the parent keeps its screen spot and becomes the folder-backed
+        // main node; d is untouched - the rest of the graph is not respawned.
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(fold_node(&dir, a_idx));
+        {
+            let nodes = NODES.read().unwrap();
+            assert!(nodes.iter().all(|n| n.name != "b" && n.name != "c"));
+            let a = nodes.iter().find(|n| n.name == "a").unwrap();
+            assert!(a.folder_backed);
+            assert_eq!(a.position.x, a_pos.x);
+            assert_eq!(a.position.y, a_pos.y);
+            let d = nodes.iter().find(|n| n.name == "d").unwrap();
+            assert_eq!(d.position.x, d_pos.x);
+            assert_eq!(d.position.y, d_pos.y);
+        }
+
+        // Unwrap: the main note returns to its old spot, the packed children
+        // come back as fresh seeds, and d still does not move.
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(unwrap_node(&dir, a_idx));
+        {
+            let nodes = NODES.read().unwrap();
+            let a = nodes.iter().find(|n| n.name == "a").unwrap();
+            assert!(!a.folder_backed);
+            assert_eq!(a.position.x, a_pos.x);
+            assert_eq!(a.position.y, a_pos.y);
+            let d = nodes.iter().find(|n| n.name == "d").unwrap();
+            assert_eq!(d.position.x, d_pos.x);
+            assert_eq!(d.position.y, d_pos.y);
+            // The returning children are real (non-ghost) notes again.
+            assert!(nodes.iter().any(|n| n.name == "b" && n.path.is_file()));
+            assert!(nodes.iter().any(|n| n.name == "c" && n.path.is_file()));
+        }
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
