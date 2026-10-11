@@ -353,6 +353,10 @@ pub fn create_and_open(dir: &Path, stem: &str) -> usize {
         (node.path.clone(), node.name.clone())
     };
     let tab = open(&path, &name);
+    // Creating a note is a writing intent, not "opening to read": the new
+    // blank document starts with a live caret so the user can type at once,
+    // unlike a freshly loaded existing note which lands in nav mode.
+    crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
     crate::graph::processing::rebuild_edges();
     tab
 }

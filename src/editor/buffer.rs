@@ -516,9 +516,13 @@ pub fn load_from_file(path: &Path) {
     *cursor_x = buffer.last().map_or(0, |l| l.len() as i32);
     *anchor_x = *cursor_x;
     *anchor_y = *cursor_y;
-    // A freshly loaded document always opens in edit mode: nav state belongs
-    // to whoever last owned the file, not to the new one.
-    crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+    // A freshly loaded document opens in navigation mode (caret detached,
+    // every line rendered as formatted view-source): showing a note is a read
+    // until the user asks to edit (Enter/e, or clicking into the content).
+    // Mode is not stored per tab, so every newly shown note starts in nav
+    // mode; creating a new note flips back to edit mode afterwards so the
+    // user can type immediately.
+    crate::editor::NAV_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
     ensure_trailing_newline_locked(&mut buffer);
     crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     crate::editor::LAST_EDIT_MILLIS.store(0, std::sync::atomic::Ordering::Relaxed);

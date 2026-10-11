@@ -368,7 +368,8 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
 
         // Detect transitions AFTER all input has been processed. The editor's tab
         // system loads documents itself (on open/activate), so the open
-        // transition needs nothing else here.
+        // transition needs nothing else here: the loaded document decides the
+        // mode (navigation mode, until the user asks to edit).
 
         if !editor_open && was_open {
             // Leaving the editor: snapshot the active tab (saving it if it
@@ -378,12 +379,6 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
             // editor closing (its state has no node behind it anymore).
             editor::CREATING_NODE.store(false, std::sync::atomic::Ordering::Relaxed);
             *editor::NEW_NODE_NAME.write().unwrap() = String::new();
-        }
-
-        if editor_open && !was_open {
-            // Opening the editor always starts with a live caret (edit mode),
-            // never frozen in the detatched/cursorless navigation state.
-            editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
         }
 
         editor_was_open = editor_open;
