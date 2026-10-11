@@ -11,6 +11,7 @@ mod global_palette;
 mod graph;
 mod helpbar;
 mod sidebar;
+mod startup;
 
 use graph::processing::*;
 
@@ -78,17 +79,25 @@ fn main() {
         std::process::exit(0);
     }
 
-    let dir_path = if args.len() > 1 {
-        PathBuf::from(&args[1])
-    } else {
-        eprintln!("Usage: {} <directory>", args[0]);
-        std::process::exit(1);
+    let dir_path = match args.get(1) {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::new(),
     };
 
-    if !dir_path.is_dir() {
-        eprintln!("Error: '{}' is not a directory", dir_path.display());
-        std::process::exit(1);
+    // A missing (or non-existent) folder lands on the first-launch picker:
+    // the app asks where to open a notes folder or creates a brand-new one
+    // seeded with tutorial notes. With a valid folder the vault loads now and
+    // the picker never shows.
+    if !dir_path.as_os_str().is_empty() && dir_path.is_dir() {
+        *DIR_PATH.write().unwrap() = dir_path.clone();
+        startup::VAULT_READY.store(true, std::sync::atomic::Ordering::Relaxed);
+    } else if !dir_path.as_os_str().is_empty() {
+        eprintln!(
+            "Warning: '{}' is not a directory; opening the folder picker.",
+            dir_path.display()
+        );
     }
+    let vault_ready = startup::VAULT_READY.load(std::sync::atomic::Ordering::Relaxed);
 
     let mut editor_open = false;
     // Panel size is recomputed every frame from the fullscreen toggle; only
@@ -110,17 +119,19 @@ fn main() {
     // compile the SDF field-text shader used by every loaded font.
     editor::text::init_text(&mut rl, &thread);
 
-    // Store the directory and generate nodes from it
-    *DIR_PATH.write().unwrap() = dir_path.clone();
-
     // On the first launch (no global config yet), import the legacy
     // per-folder `.graph-params` file so previously dialled-in values
     // aren't lost. The global file is written once during the import
-    // and the old file is deleted from the folder.
-    let cfg = if app_config::has_global_config() {
-        startup
+    // and the old file is deleted from the folder. Skipped entirely on
+    // the picker path, which has no folder to import from yet.
+    let cfg = if vault_ready {
+        if app_config::has_global_config() {
+            startup
+        } else {
+            app_config::import_legacy_graph_params(&dir_path).unwrap_or(startup)
+        }
     } else {
-        app_config::import_legacy_graph_params(&dir_path).unwrap_or(startup)
+        startup
     };
     // Enumerate system fonts for the settings dialog's font picker.
     graph::settings::build_font_list();
@@ -129,7 +140,11 @@ fn main() {
     // name and queues the load, which the loop fulfils on the first frame.
     cfg.apply();
     app_config::save();
-    generate_nodes_from_directory(&dir_path);
+    startup::init();
+
+    if vault_ready {
+        generate_nodes_from_directory(&dir_path);
+    }
 
     let mut editor_was_open = false;
     // Autosave fires when the buffer has edits and no input has happened for
@@ -151,6 +166,51 @@ fn main() {
             // The gravity centre moved with the window, so a settled layout no
             // longer reflects the new size: wake the sim to re-balance.
             wake_simulation();
+        }
+
+        // Process a font selection from the settings dialog: load (or clear)
+        // the active custom font. Needs the raylib handle, so it happens here
+        // between input and drawing on the GL context thread. Runs before the
+        // first-launch guard: the picker draws text too, so the font queued at
+        // startup must be fulfilled there as well (otherwise the picker would
+        // render with raylib's built-in fallback font).
+        let font_request = *graph::settings::REQUEST_LOAD_FONT.read().unwrap();
+        if let Some(idx) = font_request {
+            let fonts = graph::settings::FONTS.read().unwrap();
+            if let Some(fam) = fonts.get(idx) {
+                // Every catalog row carries pre-baked serialized SDF atlas bytes
+                // for the style cuts it ships, so a font switch is a parse +
+                // texture upload with no rasterization. Any cut without baked
+                // bytes stays empty and the editor falls back to the upright
+                // font (and that failing too falls back to the built-in font).
+                let load = |src: &Option<graph::settings::FontStyleSource>| {
+                    src.as_ref()
+                        .and_then(|s| s.data.as_deref())
+                        .and_then(editor::text::load_sdf_font_from_bytes)
+                };
+                let regular = fam
+                    .data
+                    .as_deref()
+                    .and_then(editor::text::load_sdf_font_from_bytes);
+                let bold = load(&fam.bold);
+                let italic = load(&fam.italic);
+                editor::text::set_active_fonts(editor::text::LoadedFontSet {
+                    regular,
+                    bold,
+                    italic,
+                });
+                *graph::settings::SELECTED_FONT.write().unwrap() = Some(idx);
+            }
+            *graph::settings::REQUEST_LOAD_FONT.write().unwrap() = None;
+        }
+
+        // First-launch picker: until a folder is chosen the graph, editor and
+        // their chrome are all gated off; this screen owns the whole frame.
+        if !startup::VAULT_READY.load(std::sync::atomic::Ordering::Relaxed) {
+            startup::handle_input(&mut rl);
+            let mut d = rl.begin_drawing(&thread);
+            startup::draw(&mut d);
+            continue;
         }
 
         // Capture editor state BEFORE input handling
@@ -332,39 +392,6 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
         }
 
         update_forces(&mut rl);
-
-        // Process a font selection from the settings dialog: load (or clear)
-        // the active custom font. Needs the raylib handle, so it happens here
-        // between input and drawing on the GL context thread.
-        let font_request = *graph::settings::REQUEST_LOAD_FONT.read().unwrap();
-        if let Some(idx) = font_request {
-            let fonts = graph::settings::FONTS.read().unwrap();
-            if let Some(fam) = fonts.get(idx) {
-                // Every catalog row carries pre-baked serialized SDF atlas bytes
-                // for the style cuts it ships, so a font switch is a parse +
-                // texture upload with no rasterization. Any cut without baked
-                // bytes stays empty and the editor falls back to the upright
-                // font (and that failing too falls back to the built-in font).
-                let load = |src: &Option<graph::settings::FontStyleSource>| {
-                    src.as_ref()
-                        .and_then(|s| s.data.as_deref())
-                        .and_then(editor::text::load_sdf_font_from_bytes)
-                };
-                let regular = fam
-                    .data
-                    .as_deref()
-                    .and_then(editor::text::load_sdf_font_from_bytes);
-                let bold = load(&fam.bold);
-                let italic = load(&fam.italic);
-                editor::text::set_active_fonts(editor::text::LoadedFontSet {
-                    regular,
-                    bold,
-                    italic,
-                });
-                *graph::settings::SELECTED_FONT.write().unwrap() = Some(idx);
-            }
-            *graph::settings::REQUEST_LOAD_FONT.write().unwrap() = None;
-        }
 
         // Detect transitions AFTER all input has been processed. The editor's tab
         // system loads documents itself (on open/activate), so the open
