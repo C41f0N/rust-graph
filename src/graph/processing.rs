@@ -477,30 +477,60 @@ fn collect_folded_names(nodes: &[Node]) -> std::collections::HashSet<String> {
     names
 }
 
-// Fold guards, derived from the live edge set. A fold may not cross the one-way
-// boundary: no packed child may be referenced from outside the fold set, and
-// nothing in the fold set (the main note or a packed child) may link out to a
-// real note that stays behind. Ghost links (no file on disk) never block.
-fn fold_guards_ok(idx: usize, nodes: &[Node]) -> bool {
+// The set a fold of `idx` would pack: every real-file note reachable from it
+// through the live edge set - the whole chain, sub-graph tails included. The
+// main note itself is not part of the set (it moves by its own path). Ghost
+// targets have no file, so they are never packed; they follow their referrer.
+fn fold_pack_set(idx: usize, nodes: &[Node]) -> std::collections::HashSet<usize> {
     let edges = EDGES.read().unwrap();
-    // The fold set: this node plus every real-file direct child.
-    let mut fold: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    fold.insert(idx);
-    for e in edges.iter().filter(|e| e.n1 == idx) {
-        if nodes.get(e.n2).map_or(false, |c| c.path.is_file()) {
-            fold.insert(e.n2);
+    let mut pack: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut stack: Vec<usize> = vec![idx];
+    while let Some(cur) = stack.pop() {
+        for e in edges.iter().filter(|e| e.n1 == cur) {
+            if e.n2 == idx {
+                continue; // a cycle back to the main note; the guard rejects it
+            }
+            if nodes.get(e.n2).map_or(false, |c| c.path.is_file()) && pack.insert(e.n2) {
+                stack.push(e.n2);
+            }
         }
     }
-    for e in edges.iter() {
-        let a_real = nodes.get(e.n1).map_or(false, |n| n.path.is_file());
-        let b_real = nodes.get(e.n2).map_or(false, |n| n.path.is_file());
-        // Outward: something folded links to a real note staying behind.
-        if fold.contains(&e.n1) && !fold.contains(&e.n2) && b_real {
-            return false;
+    pack
+}
+
+// Fold guards, derived from the live edge set. A fold is blocked only by a
+// cycle that leads back to the folded node, or by a shared descendant: a real
+// note that stays behind referencing a note the fold would pack (references to
+// the main note itself are allowed). Chains pack cleanly because everything
+// reachable is packed, so no "outward" boundary can form. Ghost links (no file
+// on disk) never block.
+fn fold_guards_ok(idx: usize, nodes: &[Node]) -> bool {
+    let edges = EDGES.read().unwrap();
+    // Cycle back to the node (DFS over edges). Ghosts never matter - no file
+    // means no outgoing edges - and a folder-backed node is a leaf at this
+    // level, so the search cannot loop through a sub-graph's internals.
+    let mut seen = vec![false; nodes.len()];
+    seen[idx] = true;
+    let mut stack = vec![idx];
+    while let Some(cur) = stack.pop() {
+        for e in edges.iter().filter(|e| e.n1 == cur) {
+            if e.n2 == idx {
+                return false;
+            }
+            if !seen[e.n2] {
+                seen[e.n2] = true;
+                stack.push(e.n2);
+            }
         }
-        // Inbound to a packed child from outside the fold set (references to
-        // the main note from outside are allowed).
-        if e.n2 != idx && fold.contains(&e.n2) && !fold.contains(&e.n1) && a_real {
+    }
+    // Shared descendant: a real note outside the pack references a to-be-packed
+    // note, which would silently drop that edge. Anything inside the pack is
+    // fine to reference (it folds away together).
+    let pack = fold_pack_set(idx, nodes);
+    let packed = |i: usize| i == idx || pack.contains(&i);
+    for e in edges.iter() {
+        let stays_behind = nodes.get(e.n1).map_or(false, |n| n.path.is_file());
+        if e.n2 != idx && pack.contains(&e.n2) && !packed(e.n1) && stays_behind {
             return false;
         }
     }
@@ -508,8 +538,9 @@ fn fold_guards_ok(idx: usize, nodes: &[Node]) -> bool {
 }
 
 // A node may be folded when it is a plain note at this level (not itself the
-// main md of a folder) and the one-way boundary holds. A childless note folds
-// into an empty nest.
+// main md of a folder) and the fold guards pass: no cycle leads back to it and
+// no stay-behind note references its pack. A childless note folds into an
+// empty nest.
 fn fold_eligible(node: &Node, idx: usize, nodes: &[Node]) -> bool {
     if node.folder_backed || !node.path.is_file() {
         return false;
@@ -1097,10 +1128,11 @@ fn move_asset_into(src: &Path, root_assets: &Path, sub_assets: &Path) {
 }
 
 // Fold a node into its own sub-graph folder: the note itself moves inside
-// (`<name>.md` -> `<name>/<name>.md`) and its direct link children are packed
-// beside it, together with their companion folders and referenced assets.
-// Returns false when the one-way boundary guards reject the fold or the move
-// fails. A childless note folds into an empty nest.
+// (`<name>.md` -> `<name>/<name>.md`) and its whole reachable chain is packed
+// beside it - every real note link-reachable from the main note, sub-graph
+// tails included (a folder-backed reachable note moves as a whole folder).
+// Returns false when the fold guards reject the fold or the move fails. A
+// childless note folds into an empty nest.
 pub fn fold_node(dir: &Path, idx: usize) -> bool {
     let (name, node_path, folder_backed) = {
         let nodes = NODES.read().unwrap();
@@ -1118,8 +1150,8 @@ pub fn fold_node(dir: &Path, idx: usize) -> bool {
     if subdir.join(format!("{name}.md")).is_file() {
         return false;
     }
-    // One-way boundary guards: no packed child may be referenced from outside
-    // the fold set, and nothing folded may link out to a note staying behind.
+    // Fold guards: no cycle may lead back to this node and no stay-behind note
+    // may reference what the fold would pack.
     {
         let nodes = NODES.read().unwrap();
         if !fold_guards_ok(idx, &nodes) {
@@ -1127,27 +1159,35 @@ pub fn fold_node(dir: &Path, idx: usize) -> bool {
         }
     }
 
-    // Children: outgoing edges whose target is a real note file in the current
-    // directory. Ghost targets have no file, so they cannot move; they follow
-    // their referrer implicitly because a ghost is re-created where the note
-    // that links to it lives, i.e. inside the sub-graph once it is scanned.
-    let children: Vec<(PathBuf, String, String)> = {
+    // Pack set: every real note transitively reachable from the main note.
+    // Ghost targets have no file, so they cannot move; they follow their
+    // referrer implicitly because a ghost is re-created wherever the note that
+    // links to it lives, i.e. inside the sub-graph once it is scanned.
+    // Folder-backed reachable notes pack as whole folders.
+    let (loose, subfolders): (Vec<(PathBuf, String, String)>, Vec<(String, PathBuf)>) = {
         let nodes = NODES.read().unwrap();
-        let edges = EDGES.read().unwrap();
-        let mut out: Vec<(PathBuf, String, String)> = Vec::new();
-        for edge in edges.iter().filter(|e| e.n1 == idx) {
-            let Some(child) = nodes.get(edge.n2) else {
+        let mut loose: Vec<(PathBuf, String, String)> = Vec::new();
+        let mut subfolders: Vec<(String, PathBuf)> = Vec::new();
+        for j in fold_pack_set(idx, &nodes) {
+            let Some(child) = nodes.get(j) else {
                 continue;
             };
-            if child.path.is_file()
+            if child.folder_backed {
+                // The whole folder `dir/name` moves in, sub-graph assets and all.
+                let Some(parent) = child.path.parent() else {
+                    continue;
+                };
+                let folder_name = child.file_name.trim_end_matches(".md").to_string();
+                subfolders.push((folder_name, parent.to_path_buf()));
+            } else if child.path.is_file()
                 && child.path.parent() == Some(dir)
-                && !out.iter().any(|(p, _, _)| *p == child.path)
+                && !loose.iter().any(|(p, _, _)| *p == child.path)
             {
                 let content = filesystem::read_file(&child.path);
-                out.push((child.path.clone(), child.file_name.clone(), content));
+                loose.push((child.path.clone(), child.file_name.clone(), content));
             }
         }
-        out
+        (loose, subfolders)
     };
 
     let parent_content = filesystem::read_file(&node_path);
@@ -1171,8 +1211,8 @@ pub fn fold_node(dir: &Path, idx: usize) -> bool {
         }
     }
 
-    // Pack each direct link child (note file + companion folder + assets).
-    for (child_path, file_name, content) in &children {
+    // Pack each reachable note (note file + companion folder + assets).
+    for (child_path, file_name, content) in &loose {
         if subdir.join(file_name).exists() {
             eprintln!("[fold] {file_name} already in the sub-graph; left at the parent level");
             continue;
@@ -1202,6 +1242,22 @@ pub fn fold_node(dir: &Path, idx: usize) -> bool {
                 continue;
             }
             move_asset_into(&src, &root_assets, &sub_assets);
+        }
+    }
+
+    // Sub-graph tails in the chain move wholesale into the new sub-graph.
+    for (folder_name, folder) in &subfolders {
+        let dest = subdir.join(folder_name);
+        if dest.exists() {
+            eprintln!(
+                "[fold] {folder_name} already in the sub-graph; left at the parent level"
+            );
+            continue;
+        }
+        if std::fs::rename(folder, &dest).is_err() {
+            eprintln!(
+                "[fold] could not move {folder_name} sub-graph into the sub-graph; skipping it"
+            );
         }
     }
 
@@ -3282,13 +3338,14 @@ mod tests {
     }
 
 #[test]
-    fn fold_packs_direct_link_children_only() {
+    fn fold_packs_the_reachable_chain_but_not_unlinked_notes() {
         let _guard = TEST_NAV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join("rg_fold_test");
         let _ = std::fs::remove_dir_all(&dir);
         filesystem::create_dir(&dir);
-        // a -> b, a -> c, b -> c: every edge stays inside the fold set, so the
-        // one-way boundary holds. d is not linked at all and stays behind.
+        // a -> b -> c and a -> c: every reachable note packs (children and
+        // their children), so every edge stays inside the pack. d is not
+        // linked at all and stays behind.
         filesystem::write_file(&dir.join("a.md"), "# A\n\n[[b]]\n[[c]]\n");
         filesystem::write_file(&dir.join("b.md"), "# B\n\n[[c]]\n");
         filesystem::write_file(&dir.join("c.md"), "# C\n");
@@ -3577,13 +3634,13 @@ mod tests {
     }
 
     #[test]
-    fn fold_guards_block_boundary_crossings() {
+    fn fold_packs_a_reachable_chain() {
         let _guard = TEST_NAV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir().join("rg_fold_guard_test");
+        let dir = std::env::temp_dir().join("rg_fold_chain_test");
         let _ = std::fs::remove_dir_all(&dir);
         filesystem::create_dir(&dir);
-
-        // Outward: a packed child links to a real note staying behind.
+        // a -> b -> c: the whole chain is reachable and packs together, so the
+        // old "outward link to a note staying behind" block no longer applies.
         filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n");
         filesystem::write_file(&dir.join("b.md"), "# B\n[[c]]\n");
         filesystem::write_file(&dir.join("c.md"), "# C\n");
@@ -3591,27 +3648,200 @@ mod tests {
         *DIR_PATH.write().unwrap() = dir.clone();
         NAV_STACK.write().unwrap().clear();
         generate_nodes_from_directory(&dir);
-        let a_idx = NODES.read().unwrap().iter().position(|n| n.name == "a").unwrap();
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
         {
             let nodes = NODES.read().unwrap();
             let rows = context_menu_rows(Some(a_idx), &nodes);
-            assert!(!rows.contains(&ContextRow::FoldSubGraph), "outward link blocks");
+            assert!(rows.contains(&ContextRow::FoldSubGraph), "reachable chain folds");
         }
-        assert!(!fold_node(&dir, a_idx), "outward link blocks");
+        assert!(fold_node(&dir, a_idx), "reachable chain folds");
+        assert!(dir.join("a").join("a.md").exists());
+        assert!(dir.join("a").join("b.md").exists());
+        assert!(dir.join("a").join("c.md").exists());
+        assert!(!dir.join("b.md").exists() && !dir.join("c.md").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fold_blocks_shared_descendants() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_guard_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        // a -> b and c -> b: b belongs to both reachable sets, so folding
+        // either note would silently drop the other's link to b. Neither folds.
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n[[b]]\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        let c_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "c")
+            .unwrap();
+        {
+            let nodes = NODES.read().unwrap();
+            let a_rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(!a_rows.contains(&ContextRow::FoldSubGraph), "shared descendant blocks a");
+            let c_rows = context_menu_rows(Some(c_idx), &nodes);
+            assert!(!c_rows.contains(&ContextRow::FoldSubGraph), "shared descendant blocks c");
+        }
+        assert!(!fold_node(&dir, a_idx), "shared descendant blocks a");
+        assert!(!fold_node(&dir, c_idx), "shared descendant blocks c");
+        assert!(dir.join("a.md").exists() && dir.join("c.md").exists());
+        assert!(dir.join("b.md").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fold_blocks_cycles_back_to_the_node() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_cycle_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        // A 2-cycle back through a packed child.
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n[[a]]\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        {
+            let nodes = NODES.read().unwrap();
+            let rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(!rows.contains(&ContextRow::FoldSubGraph), "cycle back to a blocks");
+        }
+        assert!(!fold_node(&dir, a_idx), "cycle back to a blocks");
+
+        // A longer cycle: a -> b -> c -> a.
+        filesystem::write_file(&dir.join("b.md"), "# B\n[[c]]\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n[[a]]\n");
+        generate_nodes_from_directory(&dir);
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        {
+            let nodes = NODES.read().unwrap();
+            let rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(!rows.contains(&ContextRow::FoldSubGraph), "3-cycle back to a blocks");
+        }
+        assert!(!fold_node(&dir, a_idx), "3-cycle back to a blocks");
         assert!(dir.join("a.md").exists() && dir.join("b.md").exists());
 
-        // Inbound: a note outside the fold set links to a to-be-packed child.
-        filesystem::write_file(&dir.join("b.md"), "# B\n"); // drop the outward link
-        filesystem::write_file(&dir.join("d.md"), "# D\n[[b]]\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fold_allows_a_contained_cycle_among_packed_children() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_inner_cycle_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        // b <-> c form a cycle, but it never leads back to a, and both are
+        // packed along with a, so the fold is allowed.
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n[[c]]\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n[[b]]\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
         generate_nodes_from_directory(&dir);
-        let a_idx = NODES.read().unwrap().iter().position(|n| n.name == "a").unwrap();
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
         {
             let nodes = NODES.read().unwrap();
             let rows = context_menu_rows(Some(a_idx), &nodes);
-            assert!(!rows.contains(&ContextRow::FoldSubGraph), "external inbound blocks");
+            assert!(rows.contains(&ContextRow::FoldSubGraph), "contained cycle folds");
         }
-        assert!(!fold_node(&dir, a_idx), "external inbound blocks");
-        assert!(dir.join("b.md").exists());
+        assert!(fold_node(&dir, a_idx));
+        assert!(dir.join("a").join("b.md").exists());
+        assert!(dir.join("a").join("c.md").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fold_packs_a_chain_ending_in_a_subgraph() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_fold_subgraph_tail_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        // a -> b -> c -> d, where d is a folder-backed sub-graph tail. The
+        // whole folder moves inside the packed chain: d/ travels wholesale.
+        filesystem::write_file(&dir.join("a.md"), "# A\n[[b]]\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n[[c]]\n");
+        filesystem::write_file(&dir.join("c.md"), "# C\n[[d]]\n");
+        filesystem::create_dir(&dir.join("d"));
+        filesystem::write_file(&dir.join("d").join("d.md"), "# D\n[[inside]]\n");
+        filesystem::write_file(&dir.join("d").join("inside.md"), "# Inside\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        {
+            let nodes = NODES.read().unwrap();
+            let rows = context_menu_rows(Some(a_idx), &nodes);
+            assert!(
+                rows.contains(&ContextRow::FoldSubGraph),
+                "sub-graph tail folds with the chain"
+            );
+        }
+        assert!(fold_node(&dir, a_idx));
+        assert!(dir.join("a").join("a.md").exists());
+        assert!(dir.join("a").join("b.md").exists());
+        assert!(dir.join("a").join("c.md").exists());
+        // The sub-graph moved wholesale with its content.
+        assert!(dir.join("a").join("d").join("d.md").exists());
+        assert!(dir.join("a").join("d").join("inside.md").exists());
+        assert!(!dir.join("d").exists(), "sub-graph left the parent level");
+
+        // Unwrap restores the full disk set, sub-graph tail included.
+        let a_idx = NODES
+            .read()
+            .unwrap()
+            .iter()
+            .position(|n| n.name == "a")
+            .unwrap();
+        assert!(unwrap_node(&dir, a_idx));
+        assert!(dir.join("c.md").exists());
+        assert!(dir.join("d").join("d.md").exists());
+        assert!(dir.join("d").join("inside.md").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3974,8 +4204,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         filesystem::create_dir(&dir);
         // A -> B -> D, where D is an unwritten ghost: folding A packs B, and
-        // B's link re-materializes D inside the folder. A real D staying behind
-        // would block the fold (see fold_guards_block_boundary_crossings).
+        // B's link re-materializes D inside the folder. A real D would be
+        // packed too (the whole reachable chain folds together).
         filesystem::write_file(&dir.join("a.md"), "# A\n\n[[b]]\n");
         filesystem::write_file(&dir.join("b.md"), "# B\n\n[[d]]\n");
 

@@ -647,10 +647,10 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 return;
             }
             Some(ContextRow::FoldSubGraph) => {
-                // Pack the node's outgoing-link children into its companion
-                // folder (see processing::fold_node); the in-place refresh the
-                // fold performs removes the packed children without respawning
-                // the graph.
+                // Pack the node's reachable chain into its companion folder
+                // (see processing::fold_node); the in-place refresh the fold
+                // performs removes the packed notes without respawning the
+                // graph.
                 let idx = *context_node;
                 *context_node = None;
                 if let Some(idx) = idx {
