@@ -7,7 +7,10 @@ edition = "2024"
 dirs = "6"
 libc = "0.2"
 rand = "0.10.1"
-raylib = { version = "6.0.0", features = ["SUPPORT_FILEFORMAT_JPG", "SUPPORT_FILEFORMAT_BMP", "SUPPORT_FILEFORMAT_TGA", "SUPPORT_IMAGE_GENERATION"] }
+raylib = { version = "6.0.0", features = ["GLFW_BUILD_WAYLAND", "SUPPORT_FILEFORMAT_JPG", "SUPPORT_FILEFORMAT_BMP", "SUPPORT_FILEFORMAT_TGA", "SUPPORT_IMAGE_GENERATION"] }
 raylib_imgui = "1.0.1"
-rfd = "0.15"
+# gtk3 backend instead of xdg-portal: drops the ashpd/wayland-client link
+# chain, so the binary no longer demands libwayland-client just to load.
+# GTK3 is present on virtually every desktop distro and is bundleable.
+rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
 #raylib-rs = "0.1.0"
