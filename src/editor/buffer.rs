@@ -369,6 +369,20 @@ fn wrap_line(
 
     let chars: Vec<char> = line.chars().collect();
 
+    // start/end reported on a VisualLine are byte offsets into the source line:
+    // the editor's caret and all string edits work in bytes (String::insert /
+    // drain), and the renderer slices the raw line at these offsets. The wrap
+    // loop below walks the line's chars, so every emitted index is converted
+    // to its byte position here - slicing at a raw char index would panic or
+    // mis-render any multi-byte character (an emoji is 4 bytes).
+    let mut char_bytes: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+    let mut byte_len = 0;
+    for c in &chars {
+        char_bytes.push(byte_len);
+        byte_len += c.len_utf8();
+    }
+    char_bytes.push(byte_len);
+
     if chars.is_empty() {
         out.push(VisualLine {
             start: 0,
@@ -427,8 +441,8 @@ fn wrap_line(
 
         if end == chars.len() {
             out.push(VisualLine {
-                start,
-                end,
+                start: char_bytes[start],
+                end: char_bytes[end],
                 line: buf_index,
                 indent: cur_indent,
             });
@@ -438,8 +452,8 @@ fn wrap_line(
         if let Some(space) = last_space {
             // Wrap at the last space.
             out.push(VisualLine {
-                start,
-                end: space,
+                start: char_bytes[start],
+                end: char_bytes[space],
                 line: buf_index,
                 indent: cur_indent,
             });
@@ -456,8 +470,8 @@ fn wrap_line(
             }
 
             out.push(VisualLine {
-                start,
-                end,
+                start: char_bytes[start],
+                end: char_bytes[end],
                 line: buf_index,
                 indent: cur_indent,
             });
@@ -544,6 +558,52 @@ mod tests {
         assert!(vls.len() >= 2);
         for vl in &vls {
             assert_eq!(vl.indent, 0);
+        }
+    }
+
+    #[test]
+    fn wrap_offsets_are_byte_positions_with_multibyte_text() {
+        // "a🚀bc" is 4 chars but 7 bytes (the emoji is 4 bytes). The wrap must
+        // report byte offsets so the renderer's `&line[start..end]` slice never
+        // splits a character - previously a char index reached the slice and
+        // panicked mid-emoji.
+        let line = "a🚀bc";
+        let vls = wrap_line(
+            line,
+            100,
+            0,
+            0,
+            0,
+            LineKind::Paragraph,
+            true,
+            0,
+            |t, s, _st| pix(t, s),
+        );
+        assert_eq!(vls.len(), 1);
+        assert_eq!(vls[0].start, 0);
+        assert_eq!(vls[0].end, 7, "end is the line's byte length, not its char count");
+        assert!(line.is_char_boundary(vls[0].end));
+        // The exact renderer slice (panics on a split character).
+        let slice = &line[vls[0].start..vls[0].end];
+        assert_eq!(slice, line);
+
+        // A wrapping line: every reported offset must slice the raw line.
+        let long = "rocket 🚀 engine one two three four five six seven";
+        let vls = wrap_line(
+            long,
+            100,
+            0,
+            0,
+            0,
+            LineKind::Paragraph,
+            true,
+            0,
+            |t, s, _st| pix(t, s),
+        );
+        assert!(vls.len() >= 2, "expected the long line to wrap");
+        for vl in &vls {
+            assert!(vl.start <= vl.end && vl.end <= long.len());
+            let _slice = &long[vl.start..vl.end];
         }
     }
 
