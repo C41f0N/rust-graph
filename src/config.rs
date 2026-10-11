@@ -130,10 +130,9 @@ pub const EDITOR_FRONTMATTER_HEIGHT: i32 = 16;
 pub const EDITOR_FRONTMATTER_BG: Color = Color::new(60, 60, 72, 160);
 pub const EDITOR_FRONTMATTER_COLOR: Color = Color::new(150, 158, 190, 255);
 
-// Body text is a soft off-white rather than pure white: at heading sizes a
-// hard #FFFFFF glares, and a slightly dimmed body lets the (brighter) headings
-// read as a step above it.
-pub const EDITOR_FONT_COLOR: Color = Color::new(216, 220, 228, 255);
+// Body text is pure white per the current theme choice; headings and the body
+// still separate via weight and the selector colors below.
+pub const EDITOR_FONT_COLOR: Color = Color::WHITE;
 // Headings are a step brighter than the body so the hierarchy reads even
 // though they share the body's weight under a family with no bold cut.
 pub const EDITOR_HEADING_COLOR: Color = Color::new(245, 246, 250, 255);
