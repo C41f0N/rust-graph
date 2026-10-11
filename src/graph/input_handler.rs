@@ -61,8 +61,25 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 *editor_open = false;
             }
         }
+        // The zoom scale belongs to the graph: never linger over the editor.
+        *ZOOM_SCALE_HOVER.write().unwrap() = false;
+        *ZOOM_SCALE_DRAGGING.write().unwrap() = false;
         return;
     }
+
+    // ------------------------------------------------------------
+    // Vertical zoom scale: hover state is refreshed every frame (including
+    // modal overlays like delete prompts) so the fade-out can never strand it
+    // on screen; the drag itself is driven at the end of the frame.
+    // ------------------------------------------------------------
+    *ZOOM_SCALE_HOVER.write().unwrap() = {
+        let (zx, ztop, zw, zh) = zoom_scale_band();
+        let hover_m = rl.get_mouse_position();
+        hover_m.x as i32 >= zx
+            && hover_m.x as i32 <= zx + zw
+            && hover_m.y as i32 >= ztop
+            && hover_m.y as i32 <= ztop + zh
+    };
 
     // ------------------------------------------------------------
     // Rename-note name prompt mode
@@ -459,6 +476,65 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         return;
     }
 
+    // ------------------------------------------------------------
+    // Ctrl+C / Ctrl+X / Ctrl+V — copy, cut and paste notes. Copy/Cut grab the
+    // selected (else hovered) note into the node clipboard; paste drops it
+    // into the folder this graph level is showing (e.g. the sub-graph you
+    // navigated into). Both clipboard fns lock NODES, so every guard drops
+    // first, exactly like the J journal block above.
+    // ------------------------------------------------------------
+
+    let ctrl =
+        rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL);
+    if !*editor_open && ctrl {
+        let grab_target = (*selected_node).or(*hover_node);
+        let wants_grab = rl.is_key_pressed(KeyboardKey::KEY_C) || rl.is_key_pressed(KeyboardKey::KEY_X);
+        if wants_grab && grab_target.is_some() {
+            let idx = grab_target.unwrap();
+            let kind = if rl.is_key_pressed(KeyboardKey::KEY_C) {
+                ClipKind::Copy
+            } else {
+                ClipKind::Cut
+            };
+            drop(nodes);
+            drop(dragging_node);
+            drop(hover_node);
+            drop(selected_node);
+            drop(delete_pending);
+            drop(editing_node);
+            drop(adding_note);
+            drop(adding_name);
+            drop(context_node);
+            drop(context_pos);
+            drop(renaming);
+            drop(rename_name);
+            drop(dir_path);
+            drop(context_empty);
+            crate::graph::processing::clipboard_grab(idx, kind);
+            return;
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_V) {
+            drop(nodes);
+            drop(dragging_node);
+            drop(hover_node);
+            drop(selected_node);
+            drop(delete_pending);
+            drop(editing_node);
+            drop(adding_note);
+            drop(adding_name);
+            drop(context_node);
+            drop(context_pos);
+            drop(renaming);
+            drop(rename_name);
+            drop(dir_path);
+            drop(context_empty);
+            if let Some(idx) = crate::graph::processing::clipboard_paste() {
+                *SELECTED_NODE.write().unwrap() = Some(idx);
+            }
+            return;
+        }
+    }
+
     // Escape dismisses an open context menu
     if (context_node.is_some() || *context_empty) && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
         *context_node = None;
@@ -601,14 +677,40 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         let mh = config::scaled_size(config::CONTEXT_MENU_ITEM_H);
 
         if *context_empty {
-            // Empty-space menu: Add Node for now; more items plug in here.
-            let clicked_add = screen_mouse.x as i32 >= mx
-                && screen_mouse.x as i32 <= mx + mw
-                && screen_mouse.y as i32 >= my
-                && screen_mouse.y as i32 <= my + mh;
-            if clicked_add {
+            // Empty-space menu: Add Node, plus Paste when the clipboard holds
+            // a note (both rows mirror the renderer's empty menu exactly).
+            let has_clip = crate::graph::processing::CLIPBOARD.read().unwrap().is_some();
+            let click = rl.get_mouse_position();
+            let clicked = |r: i32| {
+                click.x as i32 >= mx
+                    && click.x as i32 <= mx + mw
+                    && click.y as i32 >= my + r * mh
+                    && click.y as i32 <= my + r * mh + mh
+            };
+            if clicked(0) {
                 *adding_name = String::new();
                 *adding_note = true;
+            } else if has_clip && clicked(1) {
+                drop(nodes);
+                drop(dragging_node);
+                drop(hover_node);
+                drop(selected_node);
+                drop(delete_pending);
+                drop(editing_node);
+                drop(adding_note);
+                drop(adding_name);
+                drop(context_node);
+                drop(context_pos);
+                drop(renaming);
+                drop(rename_name);
+                drop(dir_path);
+                drop(context_empty);
+                *CONTEXT_NODE.write().unwrap() = None;
+                *CONTEXT_EMPTY.write().unwrap() = false;
+                if let Some(idx) = crate::graph::processing::clipboard_paste() {
+                    *SELECTED_NODE.write().unwrap() = Some(idx);
+                }
+                return;
             }
             *context_node = None;
             *context_empty = false;
@@ -648,6 +750,50 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                     *delete_pending = true;
                 }
                 *context_node = None;
+                return;
+            }
+            Some(ContextRow::Copy) => {
+                let idx = *context_node;
+                *context_node = None;
+                if let Some(idx) = idx {
+                    drop(nodes);
+                    drop(dragging_node);
+                    drop(hover_node);
+                    drop(selected_node);
+                    drop(delete_pending);
+                    drop(editing_node);
+                    drop(adding_note);
+                    drop(adding_name);
+                    drop(context_node);
+                    drop(context_pos);
+                    drop(renaming);
+                    drop(rename_name);
+                    drop(dir_path);
+                    drop(context_empty);
+                    crate::graph::processing::clipboard_grab(idx, ClipKind::Copy);
+                }
+                return;
+            }
+            Some(ContextRow::Cut) => {
+                let idx = *context_node;
+                *context_node = None;
+                if let Some(idx) = idx {
+                    drop(nodes);
+                    drop(dragging_node);
+                    drop(hover_node);
+                    drop(selected_node);
+                    drop(delete_pending);
+                    drop(editing_node);
+                    drop(adding_note);
+                    drop(adding_name);
+                    drop(context_node);
+                    drop(context_pos);
+                    drop(renaming);
+                    drop(rename_name);
+                    drop(dir_path);
+                    drop(context_empty);
+                    crate::graph::processing::clipboard_grab(idx, ClipKind::Cut);
+                }
                 return;
             }
             Some(ContextRow::OpenSubGraph) => {
@@ -751,7 +897,19 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         }
     }
 
-    if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+    // A left press on the vertical zoom scale belongs to it alone: don't let
+    // it select nodes, arm drags or toggle anything. The drag block at the end
+    // of the frame drives the camera from the pointer instead.
+    let zoom_band_press = {
+        let (zx, ztop, zw, zh) = zoom_scale_band();
+        let click = rl.get_mouse_position();
+        click.x as i32 >= zx
+            && click.x as i32 <= zx + zw
+            && click.y as i32 >= ztop
+            && click.y as i32 <= ztop + zh
+    };
+
+    if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) && !zoom_band_press {
         let click = rl.get_mouse_position();
 
         // Settings button (screen space, top-left) toggles the dialog.
@@ -885,6 +1043,24 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
         camera.target.x -= delta.x / camera.zoom;
         camera.target.y -= delta.y / camera.zoom;
+    }
+
+    // Vertical zoom scale drag: pressing the band grabs it (hover was set up
+    // top), the pointer then drives the zoom clamped to the band, and a
+    // release drops it. Same 0.1..10 camera range as the wheel.
+    {
+        let (_zx, ztop, _zw, zh) = zoom_scale_band();
+        let m = rl.get_mouse_position();
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) && *ZOOM_SCALE_HOVER.read().unwrap() {
+            *ZOOM_SCALE_DRAGGING.write().unwrap() = true;
+        }
+        if !rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
+            *ZOOM_SCALE_DRAGGING.write().unwrap() = false;
+        }
+        if *ZOOM_SCALE_DRAGGING.read().unwrap() {
+            let t = 1.0 - ((m.y as i32 - ztop) as f32 / zh as f32).clamp(0.0, 1.0);
+            camera.zoom = t_to_zoom(t);
+        }
     }
 
     drop(camera);

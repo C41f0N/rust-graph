@@ -83,9 +83,13 @@ pub const EDITOR_HEADING_SIZE: [i32; 6] = [70, 52, 42, 33, 25, 21];
 // text. Modifiable from the settings dialog, hence the RwLock. Like every other
 // editor pixel it is a base value the text zoom scales.
 pub static EDITOR_PADDING: RwLock<i32> = RwLock::new(EDITOR_PADDING_DEFAULT);
-pub const EDITOR_PADDING_DEFAULT: i32 = 12;
+pub const EDITOR_PADDING_DEFAULT: i32 = 24;
 pub const EDITOR_PADDING_MIN: i32 = 0;
 pub const EDITOR_PADDING_MAX: i32 = 96;
+// The scrollbar floats on its own gutter pinned to the content's right edge,
+// NOT inside the text padding, so changing EDITOR_PADDING never shoves the
+// bar leftward. A small fixed physical gap (scaled like other editor pixels).
+pub const EDITOR_SCROLLBAR_GAP: i32 = 4;
 // Extra vertical gap between consecutive lines. Also modifiable, but unlike the
 // padding it stays unscaled: it is a fixed physical glue between rows, so
 // cranking the zoom does not tear text apart any further.

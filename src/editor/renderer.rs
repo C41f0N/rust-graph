@@ -662,7 +662,9 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
 
         // --- Scrollbar (right edge, draggable) ---
         let bar_w = 6;
-        let bar_x = content_x0 + content_w - bar_w - padding;
+        // The bar pins to the content's right edge via its own physical gutter
+        // (EDITOR_SCROLLBAR_GAP), never shifting with the text padding.
+        let bar_x = content_x0 + content_w - bar_w - config::scaled_size(config::EDITOR_SCROLLBAR_GAP);
         let mut dragging_bar = false;
         if max_scroll > 0 {
             let bar_h = viewport_h;
@@ -711,6 +713,13 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // translate it up by the scroll offset.
         d.draw_scissor_mode(content_x0, content_y, content_w, editor_height - header_h - crate::editor::tabs::TABS_H, |mut s| {
             let mut line_y = 0;
+            // Left-gutter chrome (nav-mode selection bar + fold carets): the
+            // caret hovers just left of the text start with a little air,
+            // while the selection bar rides left of the caret so the two
+            // never cover each other. Both track the padding, each clamping
+            // in-panel at the smallest paddings.
+            let caret_x = (content_x0 + padding - 19).max(content_x0 + 7);
+            let indicator_x = (caret_x - 5).max(content_x0 + 2);
             let mut quote_rail: Option<(i32, i32, i32)> = None;
             // Accumulating indent-guide runs (see the GuideRun site below);
             // flushed to screen when a level drops, at hard continuations,
@@ -818,7 +827,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     // text), not at the raw band top, so it always sits level
                     // with the highlighted lines.
                     s.draw_rectangle(
-                        content_x0 + 2,
+                        indicator_x,
                         draw_top + padding / 2,
                         3,
                         advance,
@@ -877,7 +886,7 @@ guide_runs.retain(|r| {
                 if first_vl_of_line && folds.iter().any(|&(head, _)| head == line.line) {
                     let cw = 13;
                     let ch = 13;
-                    let cx = (content_x0 + 2).max(content_x0 + 2); // gutter-aligned, left of text area
+                    let cx = caret_x; // just left of the text, clear of the selection bar
                     let cy = draw_top + padding / 2 + (line_font_size - ch) / 2;
                     let over = {
                         let m = s.get_mouse_position();

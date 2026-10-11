@@ -427,7 +427,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
         let content_top = ey + header_h + crate::editor::tabs::TABS_H;
         let content_h = eh - header_h - crate::editor::tabs::TABS_H;
         let bar_w = 6;
-        let bar_x = ex + ew - bar_w - config::scaled_size(config::editor_padding());
+        let bar_x = ex + ew - bar_w - config::scaled_size(config::EDITOR_SCROLLBAR_GAP);
 
         // --- Left press ---
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {

@@ -19,6 +19,41 @@ pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
     zoom: 1.0,
 });
 
+// ---------------------------------------------------------------------------
+// Vertical zoom scale (right edge, auto-hiding). The stylus-friendly zoom: it
+// fades in while the pointer hovers its band and slides to rescale the camera,
+// mapping the same 0.1..10 range as the mouse wheel on a log scale so the
+// whole band stays useful. The renderer fades and draws it; the input handler
+// reports hover and drives the drag. Both share this one band geometry so the
+// hit-test and the drawn track can never disagree.
+// ---------------------------------------------------------------------------
+
+pub const ZOOM_SCALE_MIN: f32 = 0.1;
+pub const ZOOM_SCALE_MAX: f32 = 10.0;
+
+pub static ZOOM_SCALE_HOVER: RwLock<bool> = RwLock::new(false);
+pub static ZOOM_SCALE_DRAGGING: RwLock<bool> = RwLock::new(false);
+static ZOOM_SCALE_ALPHA: RwLock<f32> = RwLock::new(0.0);
+
+// The pointer band (screen space): a tall, narrow strip hugging the right
+// edge with a little breathing room. Everything derives from this rect.
+pub fn zoom_scale_band() -> (i32, i32, i32, i32) {
+    let w = config::scaled_size(26);
+    let right = config::scaled_size(6);
+    let top = config::scaled_size(72);
+    let bottom = (config::height() - config::scaled_size(28)).max(top + 1);
+    (config::width() - w - right, top, w, bottom - top)
+}
+
+// Camera zoom <-> band position (log-spaced both ways, so the thumb round-trips
+// exactly: t_to_zoom(zoom_to_t(z)) == z up to float rounding).
+fn zoom_to_t(z: f32) -> f32 {
+    (z.ln() - ZOOM_SCALE_MIN.ln()) / (ZOOM_SCALE_MAX.ln() - ZOOM_SCALE_MIN.ln())
+}
+pub fn t_to_zoom(t: f32) -> f32 {
+    ZOOM_SCALE_MIN * (ZOOM_SCALE_MAX / ZOOM_SCALE_MIN).powf(t.clamp(0.0, 1.0))
+}
+
 // Base on-screen size of a node label in pixels (before the global Ctrl +/- text
 // zoom). Graph labels keep this constant screen size at ANY graph zoom: the
 // world-unit font is label_px / camera.zoom, so the words read the same at the
@@ -251,19 +286,25 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let my_ofs = (mh - mf) / 2;
 
         if context_empty {
-            // Empty-space menu: a single "Add Node" action for now; this is
-            // where more global actions can hang in the future.
-            let menu_h = mh;
+            // Empty-space menu: "Add Node" always, plus "Paste" when the
+            // clipboard holds a note (it drops into the folder this graph
+            // level is showing — e.g. the sub-graph you navigated into).
+            let has_clip = crate::graph::processing::CLIPBOARD.read().unwrap().is_some();
+            let rows = if has_clip { 2usize } else { 1usize };
+            let menu_h = rows as i32 * mh;
             d.draw_rectangle(mx, my, mw, menu_h, Color::new(20, 20, 20, 235));
-            let hover = screen_mouse.x as i32 >= mx
-                && screen_mouse.x as i32 <= mx + mw
-                && screen_mouse.y as i32 >= my
-                && screen_mouse.y as i32 <= my + mh;
-            d.draw_rectangle(
-                mx, my, mw, mh,
-                if hover { Color::new(76, 180, 120, 160) } else { Color::new(0, 0, 0, 0) },
-            );
-            text::draw(d, "Add Node", mx + 10, my + my_ofs, mf, Color::WHITE);
+            for (i, label) in [("Add Node",), ("Paste",)].iter().enumerate().take(rows) {
+                let y = my + i as i32 * mh;
+                let hover = screen_mouse.x as i32 >= mx
+                    && screen_mouse.x as i32 <= mx + mw
+                    && screen_mouse.y as i32 >= y
+                    && screen_mouse.y as i32 <= y + mh;
+                d.draw_rectangle(
+                    mx, y, mw, mh,
+                    if hover { Color::new(76, 180, 120, 160) } else { Color::new(0, 0, 0, 0) },
+                );
+                text::draw(d, label.0, mx + 10, y + my_ofs, mf, Color::WHITE);
+            }
         } else {
             // Node menu: rows come from context_menu_rows (shared with the
             // input handler) so drawing and hit-testing can't drift apart.
@@ -712,6 +753,63 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             Color::WHITE,
         );
     }
+
+    // Vertical zoom scale: fades in while the pointer hovers its band near the
+    // right edge (or drags it) and floats on top of the graph, so a stylus can
+    // grab it over any node. Skipped while the settings dialog covers the
+    // screen, like the force panel.
+    if !settings_open {
+        draw_zoom_scale(d);
+    }
+}
+
+// Auto-hiding vertical zoom scale drawing. Runs last in the graph frame so it
+// floats above nodes at the right edge. `alpha` eases toward 1.0 while the
+// input handler reports hover/drag and back to 0.0 when it does not.
+fn draw_zoom_scale(d: &mut RaylibDrawHandle) {
+    let mut alpha = *ZOOM_SCALE_ALPHA.read().unwrap();
+    let target = if *ZOOM_SCALE_HOVER.read().unwrap() || *ZOOM_SCALE_DRAGGING.read().unwrap() {
+        1.0
+    } else {
+        0.0
+    };
+    alpha += (target - alpha) * 0.18;
+    *ZOOM_SCALE_ALPHA.write().unwrap() = alpha;
+    if alpha <= 0.02 {
+        return;
+    }
+
+    let (bx, btop, bw, bh) = zoom_scale_band();
+    let track_w = config::scaled_size(4);
+    let track_x = bx + (bw - track_w) / 2;
+
+    // Faint guide rail along the whole band.
+    d.draw_rectangle(track_x, btop, track_w, bh, Color::new(255, 255, 255, (22.0 * alpha) as u8));
+
+    // Thumb: the current camera zoom projected onto the band (log-spaced).
+    let zoom = CAMERA.read().unwrap().zoom;
+    let t = zoom_to_t(zoom).clamp(0.0, 1.0);
+    let thumb_h = config::scaled_size(30) as f32;
+    let thumb_w = config::scaled_size(10);
+    let ty = btop as f32 + (1.0 - t) * (bh as f32 - thumb_h);
+    let tx = bx + (bw - thumb_w) / 2;
+    d.draw_rectangle_rounded(
+        Rectangle::new(tx as f32, ty, thumb_w as f32, thumb_h),
+        0.4,
+        4,
+        Color::new(120, 170, 240, (210.0 * alpha) as u8),
+    );
+
+    // The current zoom percentage floats beside the thumb while readable.
+    if alpha >= 0.4 {
+        let label = format!("{:.0}%", zoom * 100.0);
+        let fs = config::scaled_size(12);
+        let lw = text::measure(d, &label, fs) as i32;
+        let lx = tx - lw - config::scaled_size(8);
+        let ly = (ty + thumb_h * 0.5 - fs as f32 / 2.0) as i32;
+        d.draw_rectangle(lx - 4, ly - 2, lw + 8, fs + 4, Color::new(0, 0, 0, (130.0 * alpha) as u8));
+        text::draw(d, &label, lx, ly, fs, Color::new(255, 255, 255, (235.0 * alpha) as u8));
+    }
 }
 
 // Current value of the slider at `idx` (0=Link Strength ... 9=Label Fade),
@@ -735,6 +833,27 @@ fn read_slider_value(idx: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoom_scale_mapping_round_trips_and_clamps() {
+        // Band extremes map to the camera zoom limits.
+        assert!((t_to_zoom(0.0) - ZOOM_SCALE_MIN).abs() < 1e-6);
+        assert!((t_to_zoom(1.0) - ZOOM_SCALE_MAX).abs() < 1e-6);
+        // Out-of-range t clamps instead of extending past the limits.
+        assert!((t_to_zoom(-0.5) - ZOOM_SCALE_MIN).abs() < 1e-6);
+        assert!((t_to_zoom(2.0) - ZOOM_SCALE_MAX).abs() < 1e-6);
+        // Mid-band is log-midway, and zoom <-> t round-trips.
+        let mid = t_to_zoom(0.5);
+        assert!((mid - (ZOOM_SCALE_MIN * ZOOM_SCALE_MAX).sqrt()).abs() < 1e-4);
+        for z in [0.1, 0.3, 1.0, 3.0, 10.0] {
+            let t = zoom_to_t(z).clamp(0.0, 1.0);
+            assert!((t_to_zoom(t) - z).abs() < 1e-4);
+        }
+        // The band stays inside the window with a sane vertical extent.
+        let (bx, btop, bw, bh) = zoom_scale_band();
+        assert!(bx > 0 && bx + bw <= crate::config::width());
+        assert!(bh > 0 && btop + bh <= crate::config::height());
+    }
 
     #[test]
     fn circle_rect_intersection_cases() {

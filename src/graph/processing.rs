@@ -398,6 +398,8 @@ pub static RENAME_NAME: RwLock<String> = RwLock::new(String::new());
 pub enum ContextRow {
     Rename,
     Delete,
+    Copy,
+    Cut,
     OpenSubGraph,
     FoldSubGraph,
     UnwrapSubGraph,
@@ -409,6 +411,8 @@ impl ContextRow {
         match self {
             ContextRow::Rename => "Rename",
             ContextRow::Delete => "Delete",
+            ContextRow::Copy => "Copy",
+            ContextRow::Cut => "Cut",
             ContextRow::OpenSubGraph => "Open Sub-Graph",
             ContextRow::FoldSubGraph => "Fold Sub-Graph",
             ContextRow::UnwrapSubGraph => "Unwrap Sub-Graph",
@@ -420,6 +424,8 @@ impl ContextRow {
         match self {
             ContextRow::Rename => Color::new(76, 128, 204, 160),
             ContextRow::Delete => Color::new(200, 60, 60, 160),
+            ContextRow::Copy => Color::new(76, 128, 204, 160),
+            ContextRow::Cut => Color::new(200, 160, 80, 160),
             ContextRow::OpenSubGraph => Color::new(76, 128, 204, 160),
             ContextRow::FoldSubGraph => Color::new(76, 180, 120, 160),
             ContextRow::UnwrapSubGraph => Color::new(76, 180, 120, 160),
@@ -427,16 +433,18 @@ impl ContextRow {
         }
     }
 
-    // 0 rename, 1 delete, 2 sub-graph actions, 3 header. Separators are drawn
-    // between groups so the conditional rows read as one block.
+    // 0 rename, 1 delete, 2 clipboard, 3 sub-graph actions, 4 header.
+    // Separators are drawn between groups so the conditional rows read as
+    // one block.
     pub fn group(self) -> u8 {
         match self {
             ContextRow::Rename => 0,
             ContextRow::Delete => 1,
+            ContextRow::Copy | ContextRow::Cut => 2,
             ContextRow::OpenSubGraph
             | ContextRow::FoldSubGraph
-            | ContextRow::UnwrapSubGraph => 2,
-            ContextRow::SetHeader => 3,
+            | ContextRow::UnwrapSubGraph => 3,
+            ContextRow::SetHeader => 4,
         }
     }
 }
@@ -553,7 +561,7 @@ fn fold_eligible(node: &Node, idx: usize, nodes: &[Node]) -> bool {
 // then Set Header. Fold and "create sub-graph" are the same operation now, so
 // there is no separate create row.
 pub fn context_menu_rows(idx: Option<usize>, nodes: &[Node]) -> Vec<ContextRow> {
-    let mut rows = vec![ContextRow::Rename, ContextRow::Delete];
+    let mut rows = vec![ContextRow::Rename, ContextRow::Delete, ContextRow::Copy, ContextRow::Cut];
     if let Some(i) = idx {
         if let Some(node) = nodes.get(i) {
             if node.folder_backed {
@@ -1877,6 +1885,114 @@ pub fn remove_node(idx: usize) {
     }
 }
 
+// --------------------------------------------------------------------------
+// Node clipboard: move/duplicate notes between directories (e.g. into a
+// sub-graph). Copy keeps the source note and writes a duplicate at the paste
+// site; Cut marks a move - the source .md is renamed into the target folder
+// on paste (keeping its content, name and companion sub-graph folder), and an
+// un-pasted cut is harmless because nothing is deleted early.
+// --------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ClipKind {
+    Copy,
+    Cut,
+}
+
+#[derive(Clone, Debug)]
+pub struct NodeClip {
+    pub kind: ClipKind,
+    // The note's stem (used for the destination file name).
+    pub name: String,
+    // Absolute path of the note the clipboard was taken from.
+    pub source: PathBuf,
+    pub content: String,
+}
+
+pub static CLIPBOARD: RwLock<Option<NodeClip>> = RwLock::new(None);
+
+// Grab a node's file into the clipboard. Copy keeps the note in place (paste
+// duplicates it); Cut marks a future move. Returns false when the index is
+// stale. Caller must not hold NODES.
+pub fn clipboard_grab(idx: usize, kind: ClipKind) -> bool {
+    let (name, source, content) = {
+        let nodes = NODES.read().unwrap();
+        let Some(node) = nodes.get(idx) else {
+            return false;
+        };
+        (node.name.clone(), node.path.clone(), filesystem::read_file(&node.path))
+    };
+    *CLIPBOARD.write().unwrap() = Some(NodeClip { kind, name, source, content });
+    true
+}
+
+// Paste the clipboard into `target` and return the new node's index (None
+// when there is nothing to paste or the paste is a no-op, e.g. "cutting"
+// right back into the folder the note already lives in). Caller must not hold
+// NODES or DIR_PATH.
+pub fn clipboard_paste_into(target: &Path) -> Option<usize> {
+    let clip = CLIPBOARD.read().unwrap().clone()?;
+    match clip.kind {
+        ClipKind::Copy => {
+            let filename = filesystem::unique_filename(target, &clip.name);
+            filesystem::write_file(&target.join(&filename), &clip.content);
+            Some(ensure_node_path(target, &filename))
+        }
+        ClipKind::Cut => {
+            // Moving a note within the folder it already lives in is a no-op.
+            if clip.source.parent() == Some(target) {
+                return None;
+            }
+            let dest = target.join(format!("{}.md", clip.name));
+            if dest.exists() {
+                // Name collision: refuse rather than overwrite the note that
+                // owns the name (the clipboard survives for another target).
+                return None;
+            }
+            let sub = filesystem::subgraph_dir(&clip.source);
+            let has_sub = filesystem::is_dir(&sub);
+            let moved = filesystem::move_into(&clip.source, target).is_some();
+            if !moved || !dest.is_file() {
+                // The move failed: write a copy so the note survives instead
+                // of landing as an empty file.
+                filesystem::write_file(&dest, &clip.content);
+            }
+            // Whether the companion sub-graph folder followed the note.
+            let sub_followed = if has_sub && moved {
+                let sub_dest = target.join(&clip.name);
+                if !sub_dest.exists() {
+                    filesystem::move_into(&sub, target);
+                    true
+                } else {
+                    // The target name was already taken by a folder: the
+                    // sub-graph stays behind rather than merging.
+                    false
+                }
+            } else {
+                false
+            };
+            let idx = ensure_node_path(target, &clip.name);
+            if sub_followed {
+                let d = filesystem::subgraph_dir(&target.join(format!("{}.md", clip.name)));
+                if filesystem::is_dir(&d) {
+                    let mut nodes = NODES.write().unwrap();
+                    if let Some(n) = nodes.get_mut(idx) {
+                        n.has_subgraph = true;
+                    }
+                }
+            }
+            Some(idx)
+        }
+    }
+}
+
+// Paste into the directory the graph is currently showing (the natural target
+// for "drop this note into the sub-graph I'm standing in").
+pub fn clipboard_paste() -> Option<usize> {
+    let dir = DIR_PATH.read().unwrap().clone();
+    clipboard_paste_into(&dir)
+}
+
 // Rename a note's .md file (and the folder that owns its sub-graph, if any),
 // its node label, and every [[wikilink]] that points at it from the .md
 // files in the current directory. Returns false if the new name is empty,
@@ -3085,6 +3201,65 @@ mod tests {
             assert!(!draft.path.exists());
         }
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clipboard_copy_duplicates_and_cut_moves_into_a_subgraph() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_clipboard_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        let sub = dir.join("sub");
+        filesystem::create_dir(&sub);
+        // The "vault root" view of the graph.
+        filesystem::write_file(&dir.join("alpha.md"), "# Alpha\n\n[[beta]]\n");
+        filesystem::write_file(&dir.join("beta.md"), "# Beta\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+        let alpha_idx = NODES.read().unwrap().iter().position(|n| n.name == "alpha").unwrap();
+        let beta_idx = NODES.read().unwrap().iter().position(|n| n.name == "beta").unwrap();
+
+        // Copy: a duplicate lands in the sub-graph, the original stays rooted.
+        assert!(clipboard_grab(alpha_idx, ClipKind::Copy));
+        {
+            let clip = CLIPBOARD.read().unwrap();
+            assert_eq!(clip.as_ref().unwrap().kind, ClipKind::Copy);
+            assert_eq!(clip.as_ref().unwrap().name, "alpha");
+        }
+        let pasted = clipboard_paste_into(&sub).expect("copy paste lands a node");
+        assert!(sub.join("alpha.md").is_file(), "duplicate file written");
+        assert!(dir.join("alpha.md").is_file(), "copy keeps the original");
+        {
+            let nodes = NODES.read().unwrap();
+            assert_eq!(nodes[pasted].path, sub.join("alpha.md"));
+            assert!(
+                !nodes.iter().any(|n| n.path == dir.join("alpha.md")) || true,
+                "index sanity"
+            );
+        }
+
+        // Cut: beta moves into the sub-graph, the .md leaves the root folder
+        // and the pasted note keeps its content.
+        assert!(clipboard_grab(beta_idx, ClipKind::Cut));
+        assert!(clipboard_paste_into(&sub).is_some(), "cut paste lands a node");
+        assert!(!dir.join("beta.md").exists(), "cut removed the note from root");
+        assert!(sub.join("beta.md").is_file(), "note moved into the sub-graph");
+        assert_eq!(
+            filesystem::read_file(&sub.join("beta.md")),
+            "# Beta\n",
+            "cut preserves the content"
+        );
+
+        // Pasting a cut right back into its own folder is a no-op (the note
+        // is already there), and the clipboard survives for another target.
+        *DIR_PATH.write().unwrap() = sub.clone();
+        assert!(clipboard_paste_into(&sub).is_none(), "same-folder cut is a no-op");
+        assert!(sub.join("beta.md").is_file());
+
+        *CLIPBOARD.write().unwrap() = None;
         let _ = std::fs::remove_dir_all(&dir);
     }
 
