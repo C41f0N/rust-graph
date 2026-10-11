@@ -9,6 +9,7 @@ mod fonts;
 mod frontmatter;
 mod global_palette;
 mod graph;
+mod helpbar;
 mod sidebar;
 
 use graph::processing::*;
@@ -455,6 +456,10 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
 
         // The view-switcher bar is drawn last so it stays on top of both views.
         sidebar::draw(&mut d, editor_open);
+
+        // The shortcut-helper bar sits on top of both views too, showing the
+        // keys for whatever state the input handlers are in right now.
+        helpbar::draw(&mut d, editor_open);
 
         // The Ctrl+K palette overlays everything, dimming both views.
         global_palette::draw(&mut d);

@@ -204,6 +204,16 @@ pub const BREADCRUMB_PAD: i32 = 8;
 // Editor tab bar: pixels the horizontal tab strip scrolls per wheel notch.
 pub const TAB_SCROLL_STEP: i32 = 40;
 
+// Bottom shortcut-helper bar: shows the keys that fire in the current state.
+// Height is a base UI pixel, scaled with the global zoom like the other
+// chrome; the chip colors follow the quiet dark palette of the menus.
+pub const HELPBAR_H: i32 = 26;
+pub const HELPBAR_BG: Color = Color::new(20, 20, 24, 210);
+pub const HELPBAR_SEP: Color = Color::new(255, 255, 255, 28);
+pub const HELPBAR_KEY_BG: Color = Color::new(52, 56, 68, 255);
+pub const HELPBAR_KEY_TEXT: Color = Color::new(233, 236, 243, 255);
+pub const HELPBAR_ACTION_TEXT: Color = Color::new(168, 173, 186, 255);
+
 #[cfg(test)]
 mod tests {
     use super::*;
