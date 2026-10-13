@@ -31,10 +31,6 @@ pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
 pub const ZOOM_SCALE_MIN: f32 = 0.1;
 pub const ZOOM_SCALE_MAX: f32 = 10.0;
 
-// One keyboard (Shift+C / C) zoom step, as a fraction of the log band, so the
-// multiplicative step stays even across the whole 0.1..10 range.
-const KB_ZOOM_STEP_T: f32 = 0.045;
-
 pub static ZOOM_SCALE_HOVER: RwLock<bool> = RwLock::new(false);
 pub static ZOOM_SCALE_DRAGGING: RwLock<bool> = RwLock::new(false);
 static ZOOM_SCALE_ALPHA: RwLock<f32> = RwLock::new(0.0);
@@ -58,18 +54,11 @@ pub fn zoom_scale_band() -> (i32, i32, i32, i32) {
 
 // Camera zoom <-> band position (log-spaced both ways, so the thumb round-trips
 // exactly: t_to_zoom(zoom_to_t(z)) == z up to float rounding).
-fn zoom_to_t(z: f32) -> f32 {
+pub fn zoom_to_t(z: f32) -> f32 {
     (z.ln() - ZOOM_SCALE_MIN.ln()) / (ZOOM_SCALE_MAX.ln() - ZOOM_SCALE_MIN.ln())
 }
 pub fn t_to_zoom(t: f32) -> f32 {
     ZOOM_SCALE_MIN * (ZOOM_SCALE_MAX / ZOOM_SCALE_MIN).powf(t.clamp(0.0, 1.0))
-}
-
-// One keyboard zoom step along the same log band the wheel and the scale use:
-// dir +1 zooms in, -1 zooms out. The result clamps to the band, so the keyboard
-// honours the same 0.1..10 camera limits.
-pub fn stepped_zoom(z: f32, dir: f32) -> f32 {
-    t_to_zoom(zoom_to_t(z) + dir * KB_ZOOM_STEP_T)
 }
 
 // Base on-screen size of a node label in pixels (before the global Ctrl +/- text
@@ -909,19 +898,6 @@ mod tests {
         assert!(bh > 0 && btop + bh <= crate::config::height());
         // The bar is held clear of the right edge rather than flush against it.
         assert!(bx + bw < crate::config::width());
-    }
-
-    #[test]
-    fn stepped_zoom_moves_within_the_band_and_clamps() {
-        // Zooming in raises the zoom, zooming out lowers it.
-        assert!(stepped_zoom(1.0, 1.0) > 1.0);
-        assert!(stepped_zoom(1.0, -1.0) < 1.0);
-        // Steps stay inside the shared 0.1..10 limits even at the extremes.
-        assert!((stepped_zoom(10.0, 1.0) - ZOOM_SCALE_MAX).abs() < 1e-4);
-        assert!((stepped_zoom(0.1, -1.0) - ZOOM_SCALE_MIN).abs() < 1e-4);
-        // A step in and back out returns to the starting zoom.
-        let z = stepped_zoom(stepped_zoom(0.7, 1.0), -1.0);
-        assert!((z - 0.7).abs() < 1e-4);
     }
 
     #[test]

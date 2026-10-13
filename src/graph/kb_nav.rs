@@ -1,11 +1,13 @@
 // Keyboard graph navigation: a reticle pinned to the centre of the view stands
 // in for the mouse while the user drives the graph from the keys. W/A/S/D pan
-// the camera under the reticle, C zooms out and Shift+C zooms in (both anchored
-// on the reticle), and Space / V / R act on the node under it (open, enter its
-// sub-graph, context menu). Any real mouse motion (or Esc) hands the pointer
-// back to the mouse, so the two never fight over the hover target.
+// the camera under the reticle, holding C zooms out and Shift+C zooms in
+// (continuous, anchored on the reticle), and Space / V / R act on the node
+// under it (open, enter its sub-graph, context menu). Any real mouse motion
+// (or Esc) hands the pointer back to the mouse, so the two never fight over
+// the hover target.
 
 use crate::config;
+use crate::graph::renderer::{t_to_zoom, zoom_to_t};
 use raylib::prelude::*;
 use std::sync::RwLock;
 
@@ -22,6 +24,19 @@ pub const RETICLE_HANDOFF_PX: f32 = 3.0;
 // advances by pan_px / zoom world units, so the view glides at a constant rate
 // on screen no matter how far the camera is zoomed in or out.
 pub const PAN_PX_PER_SEC: f32 = 560.0;
+
+// Continuous keyboard zoom speed: the fraction of the log zoom band crossed
+// per second while C (out) / Shift+C (in) is held. Applied per frame with
+// frame time, the zoom glides smoothly like the wheel instead of jumping in
+// key-repeat steps.
+pub const KB_ZOOM_T_PER_SEC: f32 = 0.6;
+
+// Advance the log zoom band by `dir` (+1 in, -1 out) for `dt` seconds from
+// `z`, clamped to the same 0.1..10 limits the wheel and zoom scale use.
+pub fn zoomed_continuously(z: f32, dir: f32, dt: f32) -> f32 {
+    let t = (zoom_to_t(z) + dir * KB_ZOOM_T_PER_SEC * dt).clamp(0.0, 1.0);
+    t_to_zoom(t)
+}
 
 // The centre of the viewport, where the reticle sits.
 pub fn screen_center() -> (f32, f32) {
@@ -95,5 +110,25 @@ mod tests {
         let after = reticle_world(&next);
         assert!((after.x - world.x).abs() < 1e-3);
         assert!((after.y - world.y).abs() < 1e-3);
+    }
+
+    #[test]
+    fn continuous_zoom_glides_and_round_trips() {
+        // Holding in raises the zoom, holding out lowers it.
+        let up = zoomed_continuously(0.7, 1.0, 0.3);
+        assert!(up > 0.7);
+        let back = zoomed_continuously(up, -1.0, 0.3);
+        assert!((back - 0.7).abs() < 1e-3, "round-trip drift to {back}");
+        // Zero elapsed time changes nothing.
+        assert!((zoomed_continuously(1.0, 1.0, 0.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn continuous_zoom_clamps_at_the_band_limits() {
+        // A long hold saturates at the wheel's own 0.1..10 bounds.
+        let max = t_to_zoom(1.0);
+        let min = t_to_zoom(0.0);
+        assert!((zoomed_continuously(max, 1.0, 10.0) - max).abs() < 1e-6);
+        assert!((zoomed_continuously(min, -1.0, 10.0) - min).abs() < 1e-6);
     }
 }

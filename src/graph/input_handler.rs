@@ -1,6 +1,7 @@
 use crate::config;
 use crate::graph::kb_nav::{
-    reticle_world, target_for_center, PAN_PX_PER_SEC, RETICLE_ACTIVE, RETICLE_HANDOFF_PX,
+    reticle_world, target_for_center, zoomed_continuously, PAN_PX_PER_SEC, RETICLE_ACTIVE,
+    RETICLE_HANDOFF_PX,
 };
 use crate::graph::processing::*;
 use crate::graph::renderer::*;
@@ -1001,25 +1002,24 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
     // ------------------------------------------------------------
     // Keyboard navigation: a reticle pinned to the centre of the view stands
-    // in for the pointer. W/A/S/D pan the graph under it, C zooms out and
-    // Shift+C zooms in (both anchored on the reticle), and Space / V / R act
-    // on the node under it. Esc or any real mouse motion hands the pointer
-    // back and hides the reticle.
+    // in for the pointer. W/A/S/D pan the graph under it, holding C zooms out
+    // and Shift+C zooms in (continuous, anchored on the reticle), and Space /
+    // V / R act on the node under it. Esc or any real mouse motion hands the
+    // pointer back and hides the reticle.
     // ------------------------------------------------------------
 
     let nav_x =
         rl.is_key_down(KeyboardKey::KEY_D) as i32 - rl.is_key_down(KeyboardKey::KEY_A) as i32;
     let nav_y =
         rl.is_key_down(KeyboardKey::KEY_S) as i32 - rl.is_key_down(KeyboardKey::KEY_W) as i32;
-    let zoom_press = !ctrl
-        && (rl.is_key_pressed(KeyboardKey::KEY_C) || rl.is_key_pressed_repeat(KeyboardKey::KEY_C));
+    let zoom_held = !ctrl && rl.is_key_down(KeyboardKey::KEY_C);
     let shift_held = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
         || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
 
     {
         let mut reticle = RETICLE_ACTIVE.write().unwrap();
-        // WASD movement or a zoom press engages keyboard navigation.
-        if nav_x != 0 || nav_y != 0 || zoom_press {
+        // WASD movement or holding a zoom key engages keyboard navigation.
+        if nav_x != 0 || nav_y != 0 || zoom_held {
             *reticle = true;
         }
         // Esc, or any real mouse motion/press, hands the pointer back.
@@ -1159,9 +1159,12 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             camera.target.x += nav_x as f32 * step;
             camera.target.y += nav_y as f32 * step;
         }
-        if zoom_press {
+        if zoom_held {
+            // Continuous: advance the log band per frame of frame time while
+            // the key is held, re-anchoring so the reticle's node stays put.
             let world = reticle_world(&camera);
-            camera.zoom = stepped_zoom(camera.zoom, if shift_held { 1.0 } else { -1.0 });
+            let dir = if shift_held { 1.0 } else { -1.0 };
+            camera.zoom = zoomed_continuously(camera.zoom, dir, rl.get_frame_time());
             camera.target = target_for_center(world, &camera);
         }
     }
