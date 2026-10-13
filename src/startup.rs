@@ -1,8 +1,10 @@
 // First-launch picker: when the app starts without a folder (or the folder it
 // was handed does not exist), the main loop shows this standalone screen
 // instead of the graph. It offers either browsing to an existing notes folder
-// or creating a brand-new one seeded with a handful of tutorial notes that
-// link to each other, so the graph is alive the moment it loads.
+// or creating a brand-new one seeded with a "Fold me" tour: notes that link
+// each other (so the graph is alive on load), a formatting showcase, and a
+// folding demo that ships unfolded - fold the hub and its children pack into
+// a sub-graph folder right in front of you.
 //
 // While VAULT_READY is false the rest of the app (graph/editor/sidebar/palette
 // input and rendering) is gated off in main.rs; choosing a folder calls
@@ -132,119 +134,223 @@ fn unique_dir(parent: &Path, name: &str) -> PathBuf {
 }
 
 // The note files a fresh tutorial vault is seeded with. Every [[wikilink]]
-// must name one of these stems so the graph draws real edges on first load.
+// must name one of these stems so the graph draws real edges on first load;
+// image targets (`[[assets/...]]`) are exempt - they paint pictures, not
+// edges.
 fn tutorial_notes() -> Vec<(&'static str, &'static str)> {
     vec![
-        (
-            "Welcome.md",
-            "# Welcome to the Graph\n\
-             \n\
-             This is your new notes vault. The starter notes below already\n\
-             link to each other with wikilinks, so the graph view shows a\n\
-             real network the moment it loads.\n\
-             \n\
-             - [[The Graph]]\n\
-             - [[The Editor]]\n\
-             - [[Shortcuts]]\n\
-             - [[Wikilinks]]\n\
-             - [[Sub-graphs]]\n\
-             \n\
-             When you are ready, delete these notes (select one, press Delete,\n\
-             confirm with Y) and write your own. Press N to add a new one.\n",
-        ),
-        (
-            "The Graph.md",
-            "# The Graph\n\
-             \n\
-             Every note is a node and a link to another note draws an edge, so a\n\
-             web of notes becomes a web of connected dots.\n\
-             \n\
-             - Double-click a node (or hover it and press E) to open it.\n\
-             - Press N to create a new note here.\n\
-             - Press F for the force-simulation tweaks panel.\n\
-             - Drag a node to move it; the simulation finds a new balance.\n\
-             - Wheel zooms, middle-drag pans, right-click opens a menu.\n\
-             - Sub-graph folders nest a mini-graph inside a note — see\n\
-             [[Sub-graphs]].\n\
-             \n\
-             The layout is a force simulation (d3-style); tick budgets keep it\n\
-             smooth. The camera follows the mouse when you zoom or pan.\n",
-        ),
-        (
-            "The Editor.md",
-            "# The Editor\n\
-             \n\
-             Opening a note lands you in **navigation mode**: the caret is\n\
-             detached and the document renders as formatted view-source.\n\
-             \n\
-             - Enter or E — start editing on the selected line\n\
-             - Esc — back to navigation mode\n\
-             - G — close the editor and return to the graph\n\
-             - Q — toggle editor fullscreen\n\
-             - Ctrl+S saves (autosave also fires after a typing pause)\n\
-             - Ctrl+Z / Ctrl+Y undo and redo\n\
-             \n\
-             Click [[Welcome]] to open the linked note, or type [[ and pick from the\n\
-             popup to start a new one.\n",
-        ),
-        (
-            "Shortcuts.md",
-            "# Shortcuts\n\
-             \n\
-             The bar at the bottom of the screen always shows the keys that do\n\
-             something in the current state; here is the whole map.\n\
-             \n\
-             **Graph**\n\
-             - E — open the hovered node\n\
-             - N — new note\n\
-             - Del — delete the selected node (Y confirms)\n\
-             - F — force-panel toggle\n\
-             - Alt+Left — leave a sub-graph\n\
-             - Ctrl+K — note palette\n\
-             \n\
-             **Editor**\n\
-             - Enter / E — edit; Esc — nav mode; G — back to graph; Q — fullscreen\n\
-             - Ctrl+S save; Ctrl+Z undo; Ctrl+Y redo\n\
-             \n\
-             **Anywhere** — Ctrl + = and Ctrl + - zoom the UI text.\n",
-        ),
-        (
-            "Wikilinks.md",
-            "# Wikilinks\n\
-             \n\
-             Links are what make the graph: every link from one note to another\n\
-             becomes an edge connecting their nodes.\n\
-             \n\
-             - [[Welcome]] renders as a clickable link to the welcome note.\n\
-             - Click a link to open the note in a new tab.\n\
-             - Renaming a note rewrites every link that points at it.\n\
-             - Targets match the note's file stem, so [[The Graph]] finds\n\
-             The Graph.md.\n\
-             \n\
-             To make a new link, open the editor and type two opening brackets:\n\
-             the autocomplete popup lists existing notes to pick from.\n",
-        ),
-        (
-            "Sub-graphs.md",
-            "# Sub-graphs\n\
-             \n\
-             A note can own a folder of its own: when `Project.md` sits next to\n\
-             a `Project/` folder, the notes inside that folder form a sub-graph\n\
-             nested under the Project note.\n\
-             \n\
-             - Double-click the folder disc to dive into the sub-graph.\n\
-             - The breadcrumb across the top shows where you are.\n\
-             - Alt+Left climbs back to the parent level.\n\
-             - The editor's \"Open sub-graph\" button jumps straight there.\n\
-             \n\
-             Sub-graphs keep companion material (assets, daily notes, project\n\
-             scratch) together with the note that owns them.\n",
-        ),
+        ("Formatting.md", formatting_note()),
+        ("Shortcuts.md", shortcuts_note()),
+        ("Try this.md", try_this_note()),
+        // The fold demo: a hub note plus four children it references. Each
+        // child is referenced by exactly one note (the hub) and nothing
+        // links back - shared or cyclic references would trip the fold
+        // guards. It ships unfolded so the children are visible on load;
+        // the Fold menu row packs them into `Fold me/` and Unwrap spills
+        // them back out.
+        ("Fold me.md", fold_hub_note()),
+        ("Inside.md", inside_fold_note()),
+        ("Deeper.md", deeper_note()),
+        ("Leaf.md", leaf_note()),
+        ("Core.md", core_note()),
     ]
 }
 
+fn fold_hub_note() -> &'static str {
+    "# Fold me\n\
+     \n\
+     This starter vault is a live tour of the app: notes that link each\n\
+     other, so the graph is alive the moment it loads. This note is a\n\
+     working fold demo all on its own - these four notes are its children:\n\
+     \n\
+     - [[Inside]] - the first level packed away\n\
+     - [[Deeper]] - one more level down\n\
+     - [[Leaf]] - the end of the branch\n\
+     - [[Core]] - where the fold stops\n\
+     \n\
+     Each child is referenced by exactly one note (me), and none of them\n\
+     points back at anything. That single-owner rule is what keeps a fold\n\
+     legal: shared children or back-links block it.\n\
+     \n\
+     Right-click this node and choose Fold: the children pack into a\n\
+     folder named `Fold me/` and disappear, and this node becomes a disc.\n\
+     Unwrap spills them back out; V (or double-click) dives into the\n\
+     folded folder.\n\
+     \n\
+     From the editor, Ctrl+K jumps to any note by name, N creates one,\n\
+     and J is today's journal. When the tour is over, delete these notes\n\
+     (select, Del, confirm Y) and make the vault yours."
+}
+
+fn formatting_note() -> &'static str {
+    concat!(
+        "---\n",
+        "title: Formatting\n",
+        "header: [[assets/swatch.bmp]]\n",
+        "---\n",
+        "\n",
+        "# Formatting\n",
+        "\n",
+        "Every markup style the editor renders, in one place. The image on\n",
+        "this note's graph node is its header - `header:` in the frontmatter\n",
+        "above - and a whole-line image link draws inline as well:\n",
+        "\n",
+        "[[assets/swatch.bmp]]\n",
+        "\n",
+        "## Emphasis\n",
+        "\n",
+        "- **bold** with two asterisks or two underscores\n",
+        "- *italic* with one asterisk or one underscore\n",
+        "- __bold__ and _italic_ - the underscore spellings work too\n",
+        "\n",
+        "## Code\n",
+        "\n",
+        "Short spans go in `inline backticks`, longer samples in a fence:\n",
+        "\n",
+        "```\n",
+        "rust\n",
+        "fn fold(block: &Block) {\n",
+        "    block.collapsed()\n",
+        "}\n",
+        "```\n",
+        "\n",
+        "## Links\n",
+        "\n",
+        "- [[Fold me]] - a plain wikilink; every link becomes a graph edge\n",
+        "- [custom label]([[Try this]]) - the markdown form\n",
+        "- Type two opening brackets in the editor to pick a target from the palette\n",
+        "\n",
+        "## Lists\n",
+        "\n",
+        "Indented bullets build a foldable block: the head line gets a caret.\n",
+        "\n",
+        "- level one\n",
+        "    - level two\n",
+        "        - level three\n",
+        "\n",
+        "1. Numbered lists work too\n",
+        "2. And they nest the same way\n",
+        "\n",
+        "## Blocks fold\n",
+        "\n",
+        "Whole blocks collapse behind their head line, like a code editor's\n",
+        "outline: click the fold caret on a list item (or a heading that owns\n",
+        "indented content) and everything beneath it folds away.\n",
+        "\n",
+        "- A fold head owns the nested block below it\n",
+        "    - deeper indents stack more levels\n",
+        "- A heading folds whatever sits indented under it\n",
+        "        this line hides when the heading above folds\n",
+        "\n",
+        "## Quotes and rules\n",
+        "\n",
+        "> Blockquotes draw a trailing rail beside the text.\n",
+        "\n",
+        "---\n",
+        "\n",
+        "A horizontal rule splits sections, and the frontmatter block at the\n",
+        "top holds the `title:` and `header:` fields the editor and graph\n",
+        "both read. Notes fold into sub-graphs too - [[Fold me]] on the main\n",
+        "level is one ready to collapse.\n",
+    )
+}
+
+fn shortcuts_note() -> &'static str {
+    "# Shortcuts\n\
+     \n\
+     The bar at the bottom of the screen always shows the keys that do\n\
+     something right now; here is the whole map. [[Fold me]] ties it all\n\
+     together.\n\
+     \n\
+     **Graph**\n\
+     - WASD - move; C / Shift+C - zoom out / in (hold to glide)\n\
+     - Space - open the hovered node\n\
+     - V - dive into the hovered node's sub-graph\n\
+     - R - node context menu\n\
+     - N - new note; Del - delete (Y confirms)\n\
+     - J - today's journal note\n\
+     - F - force-simulation tweaks\n\
+     - Alt+Left - climb out of a sub-graph\n\
+     \n\
+     **Editor, navigation mode**\n\
+     - Enter / E - start editing the selected line\n\
+     - Esc - back to navigation mode\n\
+     - G - close the editor and return to the graph\n\
+     - Q - toggle editor fullscreen\n\
+     - Click a fold caret to fold or unfold the block under it\n\
+     - J - today's journal; [ and ] - previous / next day\n\
+     \n\
+     **Editor, edit mode**\n\
+     - Ctrl+S - save (autosave also fires after a typing pause)\n\
+     - Ctrl+Z / Ctrl+Y - undo / redo\n\
+     - Esc - back to navigation mode\n\
+     \n\
+     **Everywhere** - Ctrl+K opens any note by name; Ctrl+= and Ctrl+-\n\
+     resize the UI text."
+}
+
+fn try_this_note() -> &'static str {
+    "# Try this\n\
+     \n\
+     A five-minute tour, in order. Everything links out for the details:\n\
+     [[Formatting]] for markup, [[Shortcuts]] for keys, and [[Fold me]]\n\
+     for the fold demo.\n\
+     \n\
+     1. Open [[Fold me]] and read how its demo works.\n\
+     2. Hold C, then Shift+C: the view zooms out, then in, smoothly.\n\
+     3. Right-click [[Fold me]] and choose Fold: its children vanish into\n\
+        a disc right in front of you. Unwrap spills them back out, then\n\
+        Fold again - the round trip is the whole demo in ten seconds.\n\
+     4. Dive into the folded [[Fold me]] with V, then climb back out\n\
+        with Alt+Left or the breadcrumb.\n\
+     5. Right-click any node: rename, delete, fold, set a header image.\n\
+     6. Press N, type a title, press Enter: a note joins the graph on save.\n\
+     7. Press J for today's journal note.\n\
+     8. Open [[Formatting]] and click the fold caret on its demo block.\n\
+     9. Spend a minute in the Ctrl+K note palette, then delete these\n\
+        notes (select, Del, confirm Y) and start your own vault.\n\
+     \n\
+     You have now touched every major surface of the app."
+}
+
+fn inside_fold_note() -> &'static str {
+    "# Inside\n\
+     \n\
+     The first level of the fold. This note is a plain leaf: it references\n\
+     nothing, and only Fold me references it - so when Fold me folds,\n\
+     this note folds away with it and nothing gets left behind."
+}
+
+fn deeper_note() -> &'static str {
+    "# Deeper\n\
+     \n\
+     One level further down. A leaf like this one is what keeps a fold\n\
+     honest: no back-links, no shared references. Fold packs a folder\n\
+     around it, and it stays tucked in until Unwrap."
+}
+
+fn leaf_note() -> &'static str {
+    "# Leaf\n\
+     \n\
+     The end of the branch - the fold stops here. Nothing beyond this\n\
+     note exists in the demo, so the whole set (Fold me, Inside, Deeper,\n\
+     this note) packs and unpacks as one unit."
+}
+
+fn core_note() -> &'static str {
+    "# Core\n\
+     \n\
+     The innermost child. To fold your own graph, create a note (N), have\n\
+     it reference a couple of fresh notes, then right-click it and choose\n\
+     Fold - the menu row appears whenever the graph agrees the fold is\n\
+     legal, and the children disappear exactly like the four here."
+}
+
 // Create a fresh tutorial vault under `parent` named `name` (sanitized and
-// de-duplicated), written with the tutorial notes. Returns the created path.
+// de-duplicated). All tutorial notes are written flat: the fold demo ships
+// unfolded, so its children start as ordinary root notes and the folder
+// appears only when the user folds the hub. A generated header-image asset
+// is written too. Returns the created path.
 pub fn create_tutorial_vault(parent: &Path, name: &str) -> PathBuf {
     let cleaned = sanitize_name(name);
     let dir = unique_dir(parent, &cleaned);
@@ -252,7 +358,55 @@ pub fn create_tutorial_vault(parent: &Path, name: &str) -> PathBuf {
     for (file, content) in tutorial_notes() {
         crate::filesystem::write_file(&dir.join(file), content);
     }
+    crate::filesystem::create_dir(&dir.join("assets"));
+    std::fs::write(dir.join("assets").join("swatch.bmp"), swatch_bmp()).unwrap();
     dir
+}
+
+// A tiny 24-bit bitmap the starter vault uses as Formatting.md's header
+// image, generated at seed time so no binary asset ships with the source.
+// A blue-to-mint gradient reads clearly as a node disc and as the note's
+// inline image.
+fn swatch_bmp() -> Vec<u8> {
+    const W: u32 = 64;
+    const H: u32 = 64;
+    let row_bytes = W * 3;
+    let pad = (4 - row_bytes % 4) % 4;
+    let mut out = Vec::with_capacity(54 + (H * (row_bytes + pad)) as usize);
+    // BITMAPFILEHEADER
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&(54 + H * (row_bytes + pad)).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&54u32.to_le_bytes()); // pixel data offset
+    // BITMAPINFOHEADER (24-bit, no compression)
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&W.to_le_bytes());
+    out.extend_from_slice(&(H as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // planes
+    out.extend_from_slice(&24u16.to_le_bytes()); // bpp
+    out.extend_from_slice(&0u32.to_le_bytes()); // compression
+    out.extend_from_slice(&(H * (row_bytes + pad)).to_le_bytes()); // image size
+    out.extend_from_slice(&2835i32.to_le_bytes()); // 72 dpi
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // palette colours
+    out.extend_from_slice(&0u32.to_le_bytes());
+    // Pixels, rows bottom-up in BGR order.
+    for row in (0..H).rev() {
+        for col in 0..W {
+            let t = (row + col) as f32 / ((W + H - 2) as f32);
+            let blue = (150.0 - 90.0 * t).clamp(0.0, 255.0) as u8;
+            let green = (120.0 + 60.0 * t).clamp(0.0, 255.0) as u8;
+            let red = (60.0 + 100.0 * t).clamp(0.0, 255.0) as u8;
+            out.push(blue);
+            out.push(green);
+            out.push(red);
+        }
+        for _ in 0..pad {
+            out.push(0);
+        }
+    }
+    out
 }
 
 // ---------- Input ----------
@@ -667,9 +821,23 @@ mod tests {
         assert!(dir.is_dir());
 
         let files = crate::filesystem::scan_tree(&dir);
-        assert!(files.len() >= 6, "tutorial vault should have >= 6 notes");
+        assert!(files.len() >= 8, "tutorial vault should have >= 8 notes");
 
-        // Every wikilink target resolves to a sibling note file.
+        // The fold demo ships unfolded: a loose hub note plus four children
+        // as plain root notes, and no `Fold me/` folder yet. Folding
+        // generates that folder at runtime; the header swatch always ships
+        // under assets/ as a generated bitmap.
+        assert!(dir.join("Fold me.md").is_file());
+        for child in ["Inside.md", "Deeper.md", "Leaf.md", "Core.md"] {
+            assert!(dir.join(child).is_file(), "{child} should be a root note");
+        }
+        assert!(!dir.join("Fold me").is_dir(), "fold demo must ship unfolded");
+        let bmp = std::fs::read(dir.join("assets").join("swatch.bmp")).unwrap();
+        assert_eq!(&bmp[..2], b"BM", "swatch should be a bitmap");
+
+        // Every wikilink target resolves to a sibling note file. Image targets
+        // ([[assets/...]]) draw pictures, not edges, so they are exempt - the
+        // graph's edge builder treats them the same way.
         let stems: Vec<String> = files
             .iter()
             .filter_map(|p| p.file_stem())
@@ -683,6 +851,9 @@ mod tests {
                 f.file_name().unwrap()
             );
             for target in crate::filesystem::parse_links(&content) {
+                if crate::editor::images::is_image_target(&target) {
+                    continue;
+                }
                 assert!(
                     stems.iter().any(|s| s == &target),
                     "{:?} links to [[{}]] which has no note here",
@@ -691,9 +862,13 @@ mod tests {
                 );
             }
         }
-        // The welcome note links the hub notes, so edges exist.
-        let welcome = std::fs::read_to_string(dir.join("Welcome.md")).unwrap();
-        assert!(welcome.contains("[[Wikilinks]]"));
+        // The hub references its four children (so folding packs exactly them),
+        // and a tour note links back into it, so real edges exist on first
+        // load.
+        let hub = std::fs::read_to_string(dir.join("Fold me.md")).unwrap();
+        assert!(hub.contains("[[Inside]]") && hub.contains("[[Core]]"));
+        let formatting = std::fs::read_to_string(dir.join("Formatting.md")).unwrap();
+        assert!(formatting.contains("[[Fold me]]"));
     }
 
     #[test]
@@ -732,7 +907,77 @@ mod tests {
 
         assert!(VAULT_READY.load(Ordering::Relaxed));
         assert_eq!(*crate::graph::processing::DIR_PATH.read().unwrap(), dir);
-        assert!(crate::graph::processing::NODES.read().unwrap().len() >= 6);
+        assert!(crate::graph::processing::NODES.read().unwrap().len() >= 5);
+
+        VAULT_READY.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn fold_me_demo_round_trips_on_disk() {
+        let _guard = crate::graph::processing::TEST_NAV_LOCK.lock().unwrap();
+        let parent = temp_parent();
+        let dir = create_tutorial_vault(&parent, "Vault");
+        VAULT_READY.store(false, Ordering::Relaxed);
+        set_vault(&dir);
+        crate::graph::processing::rebuild_edges();
+
+        // The hub ships unfolded and folds cleanly (its four children are
+        // dead-end leaves with a single owner).
+        let idx = {
+            let nodes = crate::graph::processing::NODES.read().unwrap();
+            let i = nodes
+                .iter()
+                .position(|n| {
+                    n.path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy() == "Fold me")
+                        .unwrap_or(false)
+                })
+                .unwrap();
+            let rows = crate::graph::processing::context_menu_rows(Some(i), &nodes);
+            assert!(
+                rows.contains(&crate::graph::processing::ContextRow::FoldSubGraph),
+                "hub must offer Fold"
+            );
+            i
+        };
+        assert!(crate::graph::processing::fold_node(&dir, idx));
+        assert!(dir.join("Fold me").join("Fold me.md").is_file());
+        for child in ["Inside.md", "Deeper.md", "Leaf.md", "Core.md"] {
+            assert!(
+                !dir.join(child).exists(),
+                "{child} should be packed inside the fold"
+            );
+            assert!(dir.join("Fold me").join(child).is_file());
+        }
+
+        // After folding, the hub is a folder-backed disc: it offers Unwrap and
+        // the round trip restores every note to the root exactly as seeded.
+        crate::graph::processing::generate_nodes_from_directory(&dir);
+        let hub = {
+            let nodes = crate::graph::processing::NODES.read().unwrap();
+            let i = nodes
+                .iter()
+                .position(|n| {
+                    n.path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy() == "Fold me")
+                        .unwrap_or(false)
+                })
+                .unwrap();
+            assert!(nodes[i].folder_backed);
+            let rows = crate::graph::processing::context_menu_rows(Some(i), &nodes);
+            assert!(
+                rows.contains(&crate::graph::processing::ContextRow::UnwrapSubGraph),
+                "folded hub must offer Unwrap"
+            );
+            i
+        };
+        assert!(crate::graph::processing::unwrap_node(&dir, hub));
+        assert!(dir.join("Fold me.md").is_file());
+        for child in ["Inside.md", "Deeper.md", "Leaf.md", "Core.md"] {
+            assert!(dir.join(child).is_file(), "{child} should be back at root");
+        }
 
         VAULT_READY.store(false, Ordering::Relaxed);
     }
