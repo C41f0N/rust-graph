@@ -31,17 +31,28 @@ pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
 pub const ZOOM_SCALE_MIN: f32 = 0.1;
 pub const ZOOM_SCALE_MAX: f32 = 10.0;
 
+// One keyboard (Shift+C / C) zoom step, as a fraction of the log band, so the
+// multiplicative step stays even across the whole 0.1..10 range.
+const KB_ZOOM_STEP_T: f32 = 0.045;
+
 pub static ZOOM_SCALE_HOVER: RwLock<bool> = RwLock::new(false);
 pub static ZOOM_SCALE_DRAGGING: RwLock<bool> = RwLock::new(false);
 static ZOOM_SCALE_ALPHA: RwLock<f32> = RwLock::new(0.0);
 
-// The pointer band (screen space): a tall, narrow strip hugging the right
-// edge with a little breathing room. Everything derives from this rect.
+// Breathing room between the zoom scale and the window's right edge, and the
+// height of its strip (a short band rather than a full-height rail).
+const ZOOM_SCALE_RIGHT_MARGIN: i32 = 16;
+const ZOOM_SCALE_HEIGHT: i32 = 320;
+
+// The pointer band (screen space): a narrow strip near the right edge, held
+// clear of the edge and bounded in height. Everything derives from this rect.
 pub fn zoom_scale_band() -> (i32, i32, i32, i32) {
     let w = config::scaled_size(26);
-    let right = config::scaled_size(6);
+    let right = config::scaled_size(ZOOM_SCALE_RIGHT_MARGIN);
     let top = config::scaled_size(72);
-    let bottom = (config::height() - config::scaled_size(28)).max(top + 1);
+    let bottom = (top + config::scaled_size(ZOOM_SCALE_HEIGHT))
+        .min(config::height() - config::scaled_size(28))
+        .max(top + 1);
     (config::width() - w - right, top, w, bottom - top)
 }
 
@@ -52,6 +63,13 @@ fn zoom_to_t(z: f32) -> f32 {
 }
 pub fn t_to_zoom(t: f32) -> f32 {
     ZOOM_SCALE_MIN * (ZOOM_SCALE_MAX / ZOOM_SCALE_MIN).powf(t.clamp(0.0, 1.0))
+}
+
+// One keyboard zoom step along the same log band the wheel and the scale use:
+// dir +1 zooms in, -1 zooms out. The result clamps to the band, so the keyboard
+// honours the same 0.1..10 camera limits.
+pub fn stepped_zoom(z: f32, dir: f32) -> f32 {
+    t_to_zoom(zoom_to_t(z) + dir * KB_ZOOM_STEP_T)
 }
 
 // Base on-screen size of a node label in pixels (before the global Ctrl +/- text
@@ -232,6 +250,42 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             label_font,
             Color::WHITE.alpha(label_alpha),
         );
+    }
+
+    // Keyboard-navigation reticle: a small crosshair pinned to the centre of
+    // the view, drawn in world space at a constant on-screen size so it tracks
+    // the graph as W/A/S/D pans the camera underneath it.
+    if *crate::graph::kb_nav::RETICLE_ACTIVE.read().unwrap() {
+        let c = crate::graph::kb_nav::reticle_world(&camera);
+        let col = Color::new(255, 255, 255, 220);
+        let t = 1.2 / camera.zoom;
+        let gap = 3.0 / camera.zoom;
+        let len = 11.0 / camera.zoom;
+        mode.draw_line_ex(
+            Vector2::new(c.x - len, c.y),
+            Vector2::new(c.x - gap, c.y),
+            t,
+            col,
+        );
+        mode.draw_line_ex(
+            Vector2::new(c.x + gap, c.y),
+            Vector2::new(c.x + len, c.y),
+            t,
+            col,
+        );
+        mode.draw_line_ex(
+            Vector2::new(c.x, c.y - len),
+            Vector2::new(c.x, c.y - gap),
+            t,
+            col,
+        );
+        mode.draw_line_ex(
+            Vector2::new(c.x, c.y + gap),
+            Vector2::new(c.x, c.y + len),
+            t,
+            col,
+        );
+        mode.draw_circle_v(c, 1.6 / camera.zoom, col);
     }
 
     drop(mode);
@@ -853,6 +907,21 @@ mod tests {
         let (bx, btop, bw, bh) = zoom_scale_band();
         assert!(bx > 0 && bx + bw <= crate::config::width());
         assert!(bh > 0 && btop + bh <= crate::config::height());
+        // The bar is held clear of the right edge rather than flush against it.
+        assert!(bx + bw < crate::config::width());
+    }
+
+    #[test]
+    fn stepped_zoom_moves_within_the_band_and_clamps() {
+        // Zooming in raises the zoom, zooming out lowers it.
+        assert!(stepped_zoom(1.0, 1.0) > 1.0);
+        assert!(stepped_zoom(1.0, -1.0) < 1.0);
+        // Steps stay inside the shared 0.1..10 limits even at the extremes.
+        assert!((stepped_zoom(10.0, 1.0) - ZOOM_SCALE_MAX).abs() < 1e-4);
+        assert!((stepped_zoom(0.1, -1.0) - ZOOM_SCALE_MIN).abs() < 1e-4);
+        // A step in and back out returns to the starting zoom.
+        let z = stepped_zoom(stepped_zoom(0.7, 1.0), -1.0);
+        assert!((z - 0.7).abs() < 1e-4);
     }
 
     #[test]

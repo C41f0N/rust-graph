@@ -974,9 +974,12 @@ guide_runs.retain(|r| {
                 if let Some((sy, sx, ey, ex)) = sel {
                     if let Some((_, iw, ih)) = &image {
                         if line.line >= sy && line.line <= ey {
+                            // Same reference line as the image draw below
+                            // (`padding/2` down from the band top), so the
+                            // highlight sits exactly over the image.
                             s.draw_rectangle(
                                 content_x,
-                                draw_top,
+                                draw_top + padding / 2,
                                 *iw,
                                 *ih,
                                 config::EDITOR_SELECTION_COLOR,
@@ -1024,9 +1027,13 @@ guide_runs.retain(|r| {
                                         line_font_size,
                                     );
 
+                                // Start the highlight at the glyph band
+                                // (`draw_top + padding/2`, where the text layer
+                                // draws every line), not the raw band top, so
+                                // it sits level with the highlighted text.
                                 s.draw_rectangle(
                                     x_start,
-                                    draw_top,
+                                    draw_top + padding / 2,
                                     x_end - x_start,
                                     line_font_size,
                                     config::EDITOR_SELECTION_COLOR,

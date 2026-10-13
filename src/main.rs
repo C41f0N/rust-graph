@@ -386,14 +386,14 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
             }
         }
 
-        // Autosave: after a typing pause, save if the buffer is dirty.
+        // Autosave: after a typing pause, save every dirty tab (not just the
+        // active one) so a tab can never be left behind.
         if editor_open && editor::DIRTY.load(std::sync::atomic::Ordering::Relaxed) {
             let now_ms = (rl.get_time() * 1000.0) as u64;
             let last_edit =
                 editor::LAST_EDIT_MILLIS.load(std::sync::atomic::Ordering::Relaxed);
             if last_edit > 0 && now_ms.saturating_sub(last_edit) >= autosave_pause_ms {
-                if let Some(path) = editor::tabs::active_path() {
-                    editor::buffer::save_to_file(&path);
+                for path in editor::tabs::save_all_dirty() {
                     refresh_saved_node(&path);
                 }
             }
@@ -494,6 +494,10 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
         // The Ctrl+K palette overlays everything, dimming both views.
         global_palette::draw(&mut d);
     }
+
+    // The window closed mid-edit: flush every tab so anything typed within the
+    // autosave pause is not lost on quit.
+    let _ = editor::tabs::save_all_dirty();
 
     // Persist the current settings (window size, zoom, font, force values) to
     // the global appdata config so everything survives a restart.

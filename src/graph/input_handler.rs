@@ -1,4 +1,7 @@
 use crate::config;
+use crate::graph::kb_nav::{
+    reticle_world, target_for_center, PAN_PX_PER_SEC, RETICLE_ACTIVE, RETICLE_HANDOFF_PX,
+};
 use crate::graph::processing::*;
 use crate::graph::renderer::*;
 use crate::graph::settings;
@@ -64,6 +67,8 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         // The zoom scale belongs to the graph: never linger over the editor.
         *ZOOM_SCALE_HOVER.write().unwrap() = false;
         *ZOOM_SCALE_DRAGGING.write().unwrap() = false;
+        // The keyboard reticle belongs to the graph too.
+        *RETICLE_ACTIVE.write().unwrap() = false;
         return;
     }
 
@@ -419,28 +424,6 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     if !*editor_open && rl.is_key_pressed(KeyboardKey::KEY_N) {
         *adding_name = String::new();
         *adding_note = true;
-        return;
-    }
-
-    // ------------------------------------------------------------
-    // E key = open the hovered (or failing that, the selected) node in the
-    // editor as a tab, like a double-click.
-    // ------------------------------------------------------------
-
-    if !*editor_open && rl.is_key_pressed(KeyboardKey::KEY_E) {
-        let mut target = *hover_node;
-        if target.is_none() {
-            target = *selected_node;
-        }
-        if let Some(i) = target {
-            let (path, name) = {
-                let n = &nodes[i];
-                (n.path.clone(), n.name.clone())
-            };
-            *editor_open = true;
-            crate::editor::tabs::open(&path, &name);
-            *context_node = None;
-        }
         return;
     }
 
@@ -1016,14 +999,145 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         nodes[i].velocity = Vector2::zero();
     }
 
-    // Hover node code.
+    // ------------------------------------------------------------
+    // Keyboard navigation: a reticle pinned to the centre of the view stands
+    // in for the pointer. W/A/S/D pan the graph under it, C zooms out and
+    // Shift+C zooms in (both anchored on the reticle), and Space / V / R act
+    // on the node under it. Esc or any real mouse motion hands the pointer
+    // back and hides the reticle.
+    // ------------------------------------------------------------
+
+    let nav_x =
+        rl.is_key_down(KeyboardKey::KEY_D) as i32 - rl.is_key_down(KeyboardKey::KEY_A) as i32;
+    let nav_y =
+        rl.is_key_down(KeyboardKey::KEY_S) as i32 - rl.is_key_down(KeyboardKey::KEY_W) as i32;
+    let zoom_press = !ctrl
+        && (rl.is_key_pressed(KeyboardKey::KEY_C) || rl.is_key_pressed_repeat(KeyboardKey::KEY_C));
+    let shift_held = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+        || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+
+    {
+        let mut reticle = RETICLE_ACTIVE.write().unwrap();
+        // WASD movement or a zoom press engages keyboard navigation.
+        if nav_x != 0 || nav_y != 0 || zoom_press {
+            *reticle = true;
+        }
+        // Esc, or any real mouse motion/press, hands the pointer back.
+        if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE)
+            || rl.get_mouse_delta().length() > RETICLE_HANDOFF_PX
+            || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+            || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)
+            || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_MIDDLE)
+        {
+            *reticle = false;
+        }
+    }
+    let reticle_on = *RETICLE_ACTIVE.read().unwrap();
+
+    // Hover node code. With keyboard navigation active the reticle (screen
+    // centre) is the pointer; otherwise the mouse is.
     *hover_node = None;
+    let hover_point = if reticle_on {
+        let cam = CAMERA.read().unwrap();
+        reticle_world(&cam)
+    } else {
+        mouse_pos
+    };
 
     for (i, node) in nodes.iter().enumerate() {
-        let dist = (node.position - mouse_pos).length();
+        let dist = (node.position - hover_point).length();
         if dist <= node.radius {
             *hover_node = Some(i);
             break;
+        }
+    }
+
+    // Reticle actions, aimed at the hovered note (else the selected one).
+    // Skipped while a context menu is open — that menu owns the keyboard.
+    let menu_open = context_node.is_some() || *context_empty;
+    let action_target = (*hover_node).or(*selected_node);
+    if !*editor_open && !menu_open {
+        // Space opens the note in the editor, like a double-click.
+        if rl.is_key_pressed(KeyboardKey::KEY_SPACE) {
+            if let Some(i) = action_target {
+                let (path, name) = {
+                    let n = &nodes[i];
+                    (n.path.clone(), n.name.clone())
+                };
+                *editor_open = true;
+                crate::editor::tabs::open(&path, &name);
+                *context_node = None;
+            }
+            return;
+        }
+
+        // V enters the note's sub-graph, like a middle-click (folder nodes
+        // only). Ctrl+V stays paste, so require no modifier.
+        if rl.is_key_pressed(KeyboardKey::KEY_V) && !ctrl {
+            let mut nav_name: Option<String> = None;
+            if let Some(i) = action_target {
+                if nodes[i].has_subgraph {
+                    nav_name = Some(nodes[i].name.clone());
+                }
+            }
+            if let Some(name) = nav_name {
+                drop(nodes);
+                drop(dragging_node);
+                drop(hover_node);
+                drop(selected_node);
+                drop(delete_pending);
+                drop(editing_node);
+                drop(adding_note);
+                drop(adding_name);
+                drop(context_node);
+                drop(context_pos);
+                drop(renaming);
+                drop(rename_name);
+                drop(dir_path);
+                drop(context_empty);
+                navigate_into(&name);
+                // Regenerate nodes/edges (also resets camera + zoom).
+                generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+                return;
+            }
+        }
+
+        // R opens the note's context menu at the reticle (the mouse then takes
+        // over to pick an item). With no target it opens the empty-space menu,
+        // mirroring a right-click on blank canvas.
+        if rl.is_key_pressed(KeyboardKey::KEY_R) && !ctrl {
+            let (mw, mh) = (
+                config::scaled_size(config::CONTEXT_MENU_W),
+                config::scaled_size(config::CONTEXT_MENU_ITEM_H),
+            );
+            let rows = match action_target {
+                Some(i) => context_menu_rows(Some(i), &nodes).len() as i32,
+                None => {
+                    let has_clip = CLIPBOARD.read().unwrap().is_some();
+                    if has_clip {
+                        2
+                    } else {
+                        1
+                    }
+                }
+            };
+            match action_target {
+                Some(i) => {
+                    *selected_node = Some(i);
+                    *context_node = Some(i);
+                    *renaming = false;
+                    *context_empty = false;
+                }
+                None => {
+                    *context_node = None;
+                    *context_empty = true;
+                }
+            }
+            *context_pos = (
+                config::width() / 2 - mw / 2,
+                config::height() / 2 - rows * mh / 2,
+            );
+            return;
         }
     }
 
@@ -1035,6 +1149,21 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     // editor's scrollview then).
     if wheel != 0.0 && !*editor_open {
         camera.zoom = (camera.zoom + wheel * 0.1).clamp(0.1, 10.0);
+    }
+
+    // Keyboard pan + zoom, anchored on the reticle so the node under it stays
+    // put while the camera moves or rescales.
+    if reticle_on && !*editor_open {
+        if nav_x != 0 || nav_y != 0 {
+            let step = PAN_PX_PER_SEC * rl.get_frame_time() / camera.zoom;
+            camera.target.x += nav_x as f32 * step;
+            camera.target.y += nav_y as f32 * step;
+        }
+        if zoom_press {
+            let world = reticle_world(&camera);
+            camera.zoom = stepped_zoom(camera.zoom, if shift_held { 1.0 } else { -1.0 });
+            camera.target = target_for_center(world, &camera);
+        }
     }
 
     // Pan

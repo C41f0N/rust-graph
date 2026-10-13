@@ -146,7 +146,11 @@ fn resolve_from(f: &StateFlags) -> HelpContext {
 // The default (no sub-graph stack) graph view: "up level" is a no-op at the
 // root, so it only appears once a stack exists (GRAPH_BASE_FULL).
 const GRAPH_BASE: &[Chip] = &[
-    ("E", "open"),
+    ("WASD", "move"),
+    ("C/Shift+C", "zoom out/in"),
+    ("Space", "open"),
+    ("V", "subgraph"),
+    ("R", "menu"),
     ("N", "new"),
     ("Del", "delete"),
     ("Ctrl+C/V/X", "copy/cut/paste"),
@@ -156,7 +160,11 @@ const GRAPH_BASE: &[Chip] = &[
 ];
 
 const GRAPH_BASE_FULL: &[Chip] = &[
-    ("E", "open"),
+    ("WASD", "move"),
+    ("C/Shift+C", "zoom out/in"),
+    ("Space", "open"),
+    ("V", "subgraph"),
+    ("R", "menu"),
     ("N", "new"),
     ("Del", "delete"),
     ("Ctrl+C/V/X", "copy/cut/paste"),

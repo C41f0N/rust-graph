@@ -104,6 +104,35 @@ pub fn active_path() -> Option<PathBuf> {
     tabs.get(idx).map(|t| t.path.clone())
 }
 
+// Save every open tab that holds unsaved edits and clear its dirty state,
+// returning the paths written so the caller can refresh their graph nodes.
+// Autosave runs through here so a typing pause flushes every tab, not just the
+// one on screen. The active document's text lives in the shared buffer globals
+// (not in its Tab), so its live dirty flag is folded back in before the write;
+// every other tab is flushed the moment it is switched away from
+// (store_active_globals), which is why only the active tab is normally dirty.
+pub fn save_all_dirty() -> Vec<PathBuf> {
+    let active = *ACTIVE.read().unwrap();
+    let mut tabs = TABS.write().unwrap();
+    let mut saved = Vec::new();
+
+    for (i, tab) in tabs.iter_mut().enumerate() {
+        if Some(i) == active {
+            tab.dirty = crate::editor::DIRTY.load(std::sync::atomic::Ordering::Relaxed);
+        }
+        if tab.dirty && !tab.path.as_os_str().is_empty() {
+            buffer::save_to_file(&tab.path);
+            saved.push(tab.path.clone());
+        }
+        tab.dirty = false;
+        tab.last_edit_ms = 0;
+    }
+
+    crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::editor::LAST_EDIT_MILLIS.store(0, std::sync::atomic::Ordering::Relaxed);
+    saved
+}
+
 fn find_by_path(tabs: &[Tab], path: &Path) -> Option<usize> {
     tabs.iter().position(|t| t.path == path)
 }
