@@ -952,14 +952,17 @@ guide_runs.retain(|r| {
 
                 // Fenced code block: one rounded panel behind the whole block,
                 // drawn once at its first line so it reads as a single object
-                // instead of a stack of per-line stripes.
+                // instead of a stack of per-line stripes. The box anchors to
+                // the same glyph reference the text uses (`+padding/2` over the
+                // band tops of the block's first and last rows), so the code
+                // sits centered inside it instead of hugging its top edge.
                 if first_vl_of_line && !editing_line {
                     if let Some(&(top, h)) = code_blocks.get(&line.line) {
                         let cpad = config::scaled_size(config::EDITOR_CODE_PANEL_PAD);
                         s.draw_rectangle_rounded(
                             Rectangle::new(
                                 (content_x0 + padding - cpad) as f32,
-                                (content_y + top - scroll - cpad) as f32,
+                                (content_y + top - scroll - cpad + padding / 2) as f32,
                                 (max_width + 2 * cpad) as f32,
                                 (h + 2 * cpad) as f32,
                             ),
@@ -1206,13 +1209,27 @@ guide_runs.retain(|r| {
                 // Accumulate the quote rail across contiguous quote visual lines
                 // so a block reads as one continuous vertical bar. The rail is
                 // hidden where the cursor is editing (raw markers are shown).
+                // It runs in the same reference frame as the text: starting at
+                // the glyph top (`draw_top + padding/2`, where every line's
+                // ink is placed), not the raw band top, so the bar sits flush
+                // with the quoted glyphs instead of floating over the band's
+                // top padding.
                 if is_quote && !editing_line {
-                    let (_, _, h) =
-                        quote_rail.get_or_insert((content_x0 + padding, draw_top, 0));
+                    let (_, _, h) = quote_rail
+                        .get_or_insert((content_x0 + padding, draw_top + padding / 2, 0));
                     *h += advance + config::line_spacing();
                 } else {
                     if let Some((x, top, h)) = quote_rail.take() {
-                        s.draw_rectangle(x, top, 3, h, config::EDITOR_BLOCKQUOTE_BAR);
+                        // Every quoted row also counted the trailing line
+                        // spacing; trim one so the rail stops exactly under
+                        // the closing glyph row.
+                        s.draw_rectangle(
+                            x,
+                            top,
+                            3,
+                            h - config::line_spacing(),
+                            config::EDITOR_BLOCKQUOTE_BAR,
+                        );
                     }
                 }
 
@@ -1438,7 +1455,14 @@ guide_runs.retain(|r| {
             }
 
             if let Some((x, top, h)) = quote_rail.take() {
-                s.draw_rectangle(x, top, 3, h, config::EDITOR_BLOCKQUOTE_BAR);
+                // Same trailing-line-spacing trim as the in-loop flush.
+                s.draw_rectangle(
+                    x,
+                    top,
+                    3,
+                    h - config::line_spacing(),
+                    config::EDITOR_BLOCKQUOTE_BAR,
+                );
             }
         });
 
