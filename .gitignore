@@ -1,3 +1,5 @@
 /target
-Cargo.lock
 test_graphs/*
+# Container release build output (root-owned on the host, written by
+# packaging/Dockerfile.release via the /work bind mount).
+/dist
