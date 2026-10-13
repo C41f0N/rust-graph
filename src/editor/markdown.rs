@@ -432,19 +432,19 @@ pub(crate) fn parse_prefix(line: &str) -> LinePrefix {
         q = li + len;
     }
 
-    // An ATX heading after the markers, or as the first marker when the
-    // leading indentation is at most 3 columns (tabs count TAB_WIDTH, so a
-    // single `\t## x` is body text but `   ## x` still is a heading).
+    // An ATX heading after the markers, or as the first marker. Leading
+    // indentation (spaces or tabs) never demotes a heading to body text: notes
+    // are freely tabbed in, so `\t# x` stays a heading rather than an indented
+    // code block (``` fences cover real code). A list/quote marker still wins
+    // per the precedence above (`- ## x` is a list item, not a heading block).
     if let Some((level, hlen)) = heading_at(bytes, q) {
-        if !units.is_empty() || indent_cols <= 3 {
-            if units.is_empty() && indent_len > 0 {
-                units.push(PrefixUnit::Indent {
-                    cols: indent_cols,
-                    len: indent_len,
-                });
-            }
-            units.push(PrefixUnit::Heading { level, len: hlen });
+        if units.is_empty() && indent_len > 0 {
+            units.push(PrefixUnit::Indent {
+                cols: indent_cols,
+                len: indent_len,
+            });
         }
+        units.push(PrefixUnit::Heading { level, len: hlen });
     }
 
     // Leading indentation counts as a marker only when a block marker follows.
@@ -796,24 +796,25 @@ mod tests {
 
     #[test]
     fn indented_headings() {
-        // Up to 3 leading columns still count as a heading; a tab (4 cols)
-        // exceeds that bound, so `\t## x` is body text, not a heading.
+        // Leading indentation never demotes a heading to body text: up to 3
+        // spaces, a deeper space run, and tabs (one byte but TAB_WIDTH columns)
+        // all still produce a heading. The offset counts the indentation bytes.
         assert_eq!(heading_info("## x"), Some((2, 3)));
         assert_eq!(heading_info("  ## x"), Some((2, 5)));
         assert_eq!(heading_info("   ## x"), Some((2, 6)));
-        assert_eq!(heading_info("    ## x"), None);
-        assert_eq!(heading_info("\t## x"), None);
-        assert_eq!(heading_info("\t\t## x"), None);
-        assert_eq!(heading_info("\t# x"), None);
+        assert_eq!(heading_info("    ## x"), Some((2, 7)));
+        assert_eq!(heading_info("\t## x"), Some((2, 4)));
+        assert_eq!(heading_info("\t\t## x"), Some((2, 5)));
+        assert_eq!(heading_info("\t# x"), Some((1, 3)));
 
         // Composition: indent + markers + heading.
-        assert_eq!(heading_after_markers("\t## x"), None);
+        assert_eq!(heading_after_markers("\t## x"), Some((2, 4)));
         assert_eq!(heading_after_markers("\t- ## x"), Some((2, 6)));
         assert_eq!(heading_after_markers("  > ## x"), Some((2, 7)));
         // Only a single optional space may sit between marker and heading.
         assert_eq!(heading_after_markers("-   ## x"), None);
         assert_eq!(heading_after_markers(">  ## x"), None);
-        assert_eq!(marker_content_skip("\t## x"), 0);
+        assert_eq!(marker_content_skip("\t## x"), 1);
         assert_eq!(marker_content_skip("  > ## x"), 4);
     }
 
