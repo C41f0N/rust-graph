@@ -84,6 +84,22 @@ pub fn row_at_y(rows: &[HitRow], y: i32) -> Option<&HitRow> {
         .find(|r| y >= r.top && y < r.top + r.advance)
 }
 
+/// Clickable band top for a row, in content-relative pixels.
+///
+/// Rows that paint text or images do so `glyph_shift` pixels below the layout
+/// band top (`padding / 2`, the glyph frame every text layer uses), so their
+/// hit band must start there too or clicks on the lower half of a line land on
+/// the next one. Rows with no glyphs of their own (the collapsed frontmatter
+/// bar, a non-editing fence delimiter sliver) are drawn flush with the band
+/// top and keep their band there.
+pub fn glyph_band_top(band_top: i32, glyph_shift: i32, draws_glyphs: bool) -> i32 {
+    if draws_glyphs {
+        band_top + glyph_shift
+    } else {
+        band_top
+    }
+}
+
 /// Map a content-relative X pixel to the byte offset the user clicked.
 /// `px_from_padding` is measured from `editor_x + padding` (the content
 /// origin).  The returned offset is always at a char boundary.
@@ -111,6 +127,7 @@ pub fn offset_at_px(
     }
 
     let mut best = origin_raw;
+    let mut best_w = 0;
     for (rel, _) in line[origin_raw..safe_end].char_indices() {
         let raw = origin_raw + rel;
         if raw == origin_raw {
@@ -125,9 +142,16 @@ pub fn offset_at_px(
             &measure,
         );
         if w > eff {
-            break;
+            // The click sits between two char boundaries: pick the closer
+            // one, so clicking the right half of a glyph lands after it
+            // instead of always snapping back to its left edge.
+            if eff - best_w > w - eff {
+                best = raw;
+            }
+            return best;
         }
         best = raw;
+        best_w = w;
     }
 
     let full_w = crate::editor::markdown::segments_width(
@@ -201,6 +225,28 @@ mod tests {
     #[test]
     fn plain_offset_past_end() {
         assert_eq!(offset_at_px("hello", &plain_row(), 999, |t, s, _st| pix(t, s)), 5);
+    }
+
+    #[test]
+    fn plain_offset_right_half_snaps_forward() {
+        // 16 px is past the middle of "e" (10..20), so the caret goes after it.
+        assert_eq!(offset_at_px("hello", &plain_row(), 16, |t, s, _st| pix(t, s)), 2);
+    }
+
+    #[test]
+    fn plain_offset_left_half_stays() {
+        // 14 px is closer to "e"'s left edge (10) than its right (20).
+        assert_eq!(offset_at_px("hello", &plain_row(), 14, |t, s, _st| pix(t, s)), 1);
+    }
+
+    #[test]
+    fn glyph_band_top_follows_drawn_glyphs() {
+        assert_eq!(glyph_band_top(100, 12, true), 112);
+    }
+
+    #[test]
+    fn glyph_band_top_flush_rows_stay_flat() {
+        assert_eq!(glyph_band_top(100, 12, false), 100);
     }
 
     #[test]

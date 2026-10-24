@@ -579,7 +579,11 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
 
         // Hit-test table for the input handler (consumed on the next frame,
         // so mouse clicks land on exactly what this frame drew). `top` is in
-        // content-relative pixels, matching the draw loop's `line_y`.
+        // content-relative pixels and follows the glyph frame the draw loop
+        // paints text/images on (`line_y + padding/2`), not the raw band top;
+        // the collapsed frontmatter bar is drawn at the band top and stays
+        // there. Without this the clickable band sits padding/2 above the
+        // visible glyphs and lower-half clicks land on the next line.
         {
             let mut hits = Vec::with_capacity(vlines.len());
             let mut line_y: i32 = 0;
@@ -605,18 +609,23 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     } else {
                         0
                     };
+                    let fm_bar = kind == blocks::LineKind::Frontmatter && !editing;
+                    // Text/images sit padding/2 below the band top; the fm bar
+                    // and a non-editing fence sliver are drawn flush with it.
+                    let draws_glyphs = !fm_bar
+                        && !(kind == blocks::LineKind::FenceDelimiter && !editing);
                     hits.push(hit_test::HitRow {
                         line: vl.line,
                         start: vl.start,
                         end: vl.end,
                         indent_px: vl.indent,
                         font_size: fsz,
-                        top: line_y,
+                        top: hit_test::glyph_band_top(line_y, padding / 2, draws_glyphs),
                         advance: adv,
                         view_mode,
                         quote_skip,
                         image: img.is_some(),
-                        fm_bar: kind == blocks::LineKind::Frontmatter && !editing,
+                        fm_bar,
                     });
                 }
                 line_y += adv + config::line_spacing();

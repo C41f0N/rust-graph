@@ -136,6 +136,18 @@ fn next_word_boundary(line: &str, x: usize) -> usize {
     i
 }
 
+// Either Control key is Ctrl: shortcuts must not care which side of the
+// keyboard the user reaches for (same for Shift in the Ctrl+Shift combos).
+fn ctrl_down(rl: &RaylibHandle) -> bool {
+    rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+        || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL)
+}
+
+fn shift_down(rl: &RaylibHandle) -> bool {
+    rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+        || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
+}
+
 pub fn handle_input(rl: &mut RaylibHandle) {
     // Keep a trailing empty line reachable before any navigation this frame.
     buffer::ensure_trailing_newline();
@@ -683,7 +695,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + C = copy
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) && rl.is_key_pressed(KeyboardKey::KEY_C) {
+    if ctrl_down(rl) && rl.is_key_pressed(KeyboardKey::KEY_C) {
         if let Some((sy, sx, ey, ex)) = sel {
             let text = if sy == ey {
                 buffer[sy][sx..ex].to_string()
@@ -711,7 +723,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + X = cut
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) && rl.is_key_pressed(KeyboardKey::KEY_X) {
+    if ctrl_down(rl) && rl.is_key_pressed(KeyboardKey::KEY_X) {
         if let Some((sy, sx, ey, ex)) = sel {
             history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
             let text = if sy == ey {
@@ -745,7 +757,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + V = paste
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) && rl.is_key_pressed(KeyboardKey::KEY_V) {
+    if ctrl_down(rl) && rl.is_key_pressed(KeyboardKey::KEY_V) {
         history::snapshot(&buffer, (*cursor_y, *cursor_x), history::EditKind::Other, edit_now_ms);
         // Delete selection first if active
         if let Some((sy, sx, ey, ex)) = sel {
@@ -805,7 +817,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + A = select all
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL) && rl.is_key_pressed(KeyboardKey::KEY_A) {
+    if ctrl_down(rl) && rl.is_key_pressed(KeyboardKey::KEY_A) {
         *anchor_x = 0;
         *anchor_y = 0;
         let last = buffer.len() - 1;
@@ -819,10 +831,8 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // ------------------------------------------------------------
 
     {
-        let ctrl = rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
-            || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL);
-        let shift = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
-            || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+        let ctrl = ctrl_down(rl);
+        let shift = shift_down(rl);
         let z = rl.is_key_pressed(KeyboardKey::KEY_Z);
         let y = rl.is_key_pressed(KeyboardKey::KEY_Y);
 
@@ -1205,7 +1215,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + Backspace = delete previous word
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+    if ctrl_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_BACKSPACE))
     {
@@ -1242,7 +1252,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + Delete = delete next word
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+    if ctrl_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_DELETE)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_DELETE))
     {
@@ -1275,8 +1285,8 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + Shift + Left = select previous word
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
-        && rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+    if ctrl_down(rl)
+        && shift_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_LEFT)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_LEFT))
     {
@@ -1296,8 +1306,8 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + Shift + Right = select next word
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
-        && rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+    if ctrl_down(rl)
+        && shift_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_RIGHT)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_RIGHT))
     {
@@ -1317,7 +1327,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + Left = previous word
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+    if ctrl_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_LEFT)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_LEFT))
     {
@@ -1340,7 +1350,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Ctrl + Right = next word
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+    if ctrl_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_RIGHT)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_RIGHT))
     {
