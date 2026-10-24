@@ -198,6 +198,29 @@ fn word_range_at(line: &str, x: usize) -> (usize, usize) {
     }
 }
 
+// Navigation mode selects whole source lines. `visual_lines` has one entry per
+// wrapped row, so walk past every row of the current line to find the nearest
+// visible source line above or below. Folded lines are absent from the list,
+// which makes this skip them for free.
+fn nav_adjacent_source_line(
+    visual_lines: &[buffer::VisualLine],
+    current_line: usize,
+    up: bool,
+) -> Option<usize> {
+    if up {
+        visual_lines
+            .iter()
+            .rev()
+            .find(|vl| vl.line < current_line)
+            .map(|vl| vl.line)
+    } else {
+        visual_lines
+            .iter()
+            .find(|vl| vl.line > current_line)
+            .map(|vl| vl.line)
+    }
+}
+
 // Either Control key is Ctrl: shortcuts must not care which side of the
 // keyboard the user reaches for (same for Shift in the Ctrl+Shift combos).
 fn ctrl_down(rl: &RaylibHandle) -> bool {
@@ -409,28 +432,21 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             return;
         }
         if rl.is_key_pressed(KeyboardKey::KEY_UP) || rl.is_key_pressed_repeat(KeyboardKey::KEY_UP) {
-            if let Some(current) = current_visual {
-                if current > 0 {
-                    let from = &visual_lines[current];
-                    let to = &visual_lines[current - 1];
-                    let offset = *cursor_x as usize - from.start;
-                    *cursor_y = to.line as i32;
-                    *cursor_x = (to.start + offset).min(to.end) as i32;
-                }
+            // One press = one source line, not one wrapped visual row.
+            if let Some(line) = nav_adjacent_source_line(&visual_lines, *cursor_y as usize, true) {
+                *cursor_y = line as i32;
+                *cursor_x = (*cursor_x).min(buffer[line].len() as i32);
             }
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
             return;
         }
-        if rl.is_key_pressed(KeyboardKey::KEY_DOWN) || rl.is_key_pressed_repeat(KeyboardKey::KEY_DOWN) {
-            if let Some(current) = current_visual {
-                if current + 1 < visual_lines.len() {
-                    let from = &visual_lines[current];
-                    let to = &visual_lines[current + 1];
-                    let offset = *cursor_x as usize - from.start;
-                    *cursor_y = to.line as i32;
-                    *cursor_x = (to.start + offset).min(to.end) as i32;
-                }
+        if rl.is_key_pressed(KeyboardKey::KEY_DOWN)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_DOWN)
+        {
+            if let Some(line) = nav_adjacent_source_line(&visual_lines, *cursor_y as usize, false) {
+                *cursor_y = line as i32;
+                *cursor_x = (*cursor_x).min(buffer[line].len() as i32);
             }
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
@@ -1809,5 +1825,51 @@ mod word_motion_tests {
         assert_eq!(next_word_boundary(line, 6), n); // skip "-", end of "wörld"
         assert_eq!(prev_word_boundary(line, n), 7); // start of "wörld"
         assert_eq!(prev_word_boundary(line, 7), 0);
+    }
+}
+
+#[cfg(test)]
+mod nav_line_tests {
+    use super::nav_adjacent_source_line;
+    use crate::editor::buffer::VisualLine;
+
+    fn vl(line: usize, start: usize, end: usize) -> VisualLine {
+        VisualLine {
+            start,
+            end,
+            line,
+            indent: 0,
+        }
+    }
+
+    #[test]
+    fn nav_up_down_steps_whole_source_lines() {
+        // Source line 1 wraps into two visual rows; both must be crossed in
+        // one Up/Down press.
+        let lines = [
+            vl(0, 0, 10),
+            vl(1, 0, 20),
+            vl(1, 20, 40),
+            vl(2, 0, 5),
+        ];
+        assert_eq!(nav_adjacent_source_line(&lines, 1, true), Some(0));
+        assert_eq!(nav_adjacent_source_line(&lines, 1, false), Some(2));
+        assert_eq!(nav_adjacent_source_line(&lines, 0, false), Some(1));
+        assert_eq!(nav_adjacent_source_line(&lines, 2, true), Some(1));
+    }
+
+    #[test]
+    fn nav_up_down_stops_at_document_edges() {
+        let lines = [vl(0, 0, 10), vl(1, 0, 5)];
+        assert_eq!(nav_adjacent_source_line(&lines, 0, true), None);
+        assert_eq!(nav_adjacent_source_line(&lines, 1, false), None);
+    }
+
+    #[test]
+    fn nav_up_down_skips_folded_lines() {
+        // Lines 1..=2 are folded, so the visual list jumps 0 -> 3.
+        let lines = [vl(0, 0, 10), vl(3, 0, 10)];
+        assert_eq!(nav_adjacent_source_line(&lines, 0, false), Some(3));
+        assert_eq!(nav_adjacent_source_line(&lines, 3, true), Some(0));
     }
 }

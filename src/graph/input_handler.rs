@@ -1002,8 +1002,8 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
     // ------------------------------------------------------------
     // Keyboard navigation: a reticle pinned to the centre of the view stands
-    // in for the pointer. W/A/S/D pan the graph under it, holding C zooms out
-    // and Shift+C zooms in (continuous, anchored on the reticle), and Space /
+    // in for the pointer. W/A/S/D pan the graph under it, holding C zooms in
+    // and Shift+C zooms out (continuous, anchored on the reticle), and Space /
     // V / R act on the node under it. Esc or any real mouse motion hands the
     // pointer back and hides the reticle.
     // ------------------------------------------------------------
@@ -1163,7 +1163,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             // Continuous: advance the log band per frame of frame time while
             // the key is held, re-anchoring so the reticle's node stays put.
             let world = reticle_world(&camera);
-            let dir = if shift_held { 1.0 } else { -1.0 };
+            let dir = if shift_held { -1.0 } else { 1.0 };
             camera.zoom = zoomed_continuously(camera.zoom, dir, rl.get_frame_time());
             camera.target = target_for_center(world, &camera);
         }

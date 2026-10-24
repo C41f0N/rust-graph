@@ -263,7 +263,7 @@ fn shortcuts_note() -> &'static str {
      together.\n\
      \n\
      **Graph**\n\
-     - WASD - move; C / Shift+C - zoom out / in (hold to glide)\n\
+     - WASD - move; C / Shift+C - zoom in / out (hold to glide)\n\
      - Space - open the hovered node\n\
      - V - dive into the hovered node's sub-graph\n\
      - R - node context menu\n\
@@ -297,7 +297,7 @@ fn try_this_note() -> &'static str {
      for the fold demo.\n\
      \n\
      1. Open [[Fold me]] and read how its demo works.\n\
-     2. Hold C, then Shift+C: the view zooms out, then in, smoothly.\n\
+     2. Hold C, then Shift+C: the view zooms in, then out, smoothly.\n\
      3. Right-click [[Fold me]] and choose Fold: its children vanish into\n\
         a disc right in front of you. Unwrap spills them back out, then\n\
         Fold again - the round trip is the whole demo in ten seconds.\n\

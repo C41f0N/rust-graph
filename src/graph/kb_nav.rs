@@ -1,6 +1,6 @@
 // Keyboard graph navigation: a reticle pinned to the centre of the view stands
 // in for the mouse while the user drives the graph from the keys. W/A/S/D pan
-// the camera under the reticle, holding C zooms out and Shift+C zooms in
+// the camera under the reticle, holding C zooms in and Shift+C zooms out
 // (continuous, anchored on the reticle), and Space / V / R act on the node
 // under it (open, enter its sub-graph, context menu). Any real mouse motion
 // (or Esc) hands the pointer back to the mouse, so the two never fight over
@@ -26,7 +26,7 @@ pub const RETICLE_HANDOFF_PX: f32 = 3.0;
 pub const PAN_PX_PER_SEC: f32 = 560.0;
 
 // Continuous keyboard zoom speed: the fraction of the log zoom band crossed
-// per second while C (out) / Shift+C (in) is held. Applied per frame with
+// per second while C (in) / Shift+C (out) is held. Applied per frame with
 // frame time, the zoom glides smoothly like the wheel instead of jumping in
 // key-repeat steps.
 pub const KB_ZOOM_T_PER_SEC: f32 = 0.6;

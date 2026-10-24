@@ -147,7 +147,7 @@ fn resolve_from(f: &StateFlags) -> HelpContext {
 // root, so it only appears once a stack exists (GRAPH_BASE_FULL).
 const GRAPH_BASE: &[Chip] = &[
     ("WASD", "move"),
-    ("C/Shift+C", "zoom out/in"),
+    ("C/Shift+C", "zoom in/out"),
     ("Space", "open"),
     ("V", "subgraph"),
     ("R", "menu"),
@@ -161,7 +161,7 @@ const GRAPH_BASE: &[Chip] = &[
 
 const GRAPH_BASE_FULL: &[Chip] = &[
     ("WASD", "move"),
-    ("C/Shift+C", "zoom out/in"),
+    ("C/Shift+C", "zoom in/out"),
     ("Space", "open"),
     ("V", "subgraph"),
     ("R", "menu"),
