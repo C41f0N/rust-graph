@@ -54,86 +54,148 @@ fn remove_indent(line: &mut String, tab_width: usize) -> usize {
     }
 }
 
-fn prev_word_boundary(line: &str, x: usize) -> usize {
-    let bytes = line.as_bytes();
-    let mut i = x.min(bytes.len());
+// Word motion classes. Punctuation is a separator, not a word: Ctrl+Right on
+// "foo-bar" stops after "foo" and after "bar", never on the "-". Underscore
+// stays a word character so identifiers move as one token.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharClass {
+    Space,
+    Word,
+    Punct,
+}
 
-    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+fn class_of(c: char) -> CharClass {
+    if c.is_whitespace() {
+        CharClass::Space
+    } else if c.is_alphanumeric() || c == '_' {
+        CharClass::Word
+    } else {
+        CharClass::Punct
+    }
+}
+
+// Cursor offsets come from the buffer and are always char boundaries, but a
+// click or a stale index must never slice a multi-byte glyph in half.
+fn clamp_boundary(line: &str, x: usize) -> usize {
+    let mut i = x.min(line.len());
+    while i > 0 && !line.is_char_boundary(i) {
         i -= 1;
     }
-
-    while i > 0 && !bytes[i - 1].is_ascii_whitespace() {
-        i -= 1;
-    }
-
     i
 }
 
-fn is_word_char(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || c == b'_'
+fn char_at(line: &str, i: usize) -> Option<char> {
+    line.get(i..)?.chars().next()
 }
 
-fn prev_word_start(line: &str, x: usize) -> usize {
-    let bytes = line.as_bytes();
-    let mut i = x.min(bytes.len());
-    if i == 0 {
-        return 0;
-    }
-    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
-        i -= 1;
-    }
-    if i == 0 {
-        return 0;
-    }
-    if is_word_char(bytes[i - 1]) {
-        while i > 0 && is_word_char(bytes[i - 1]) {
-            i -= 1;
+fn char_before(line: &str, i: usize) -> Option<char> {
+    line.get(..i)?.chars().next_back()
+}
+
+fn skip_word_forward(line: &str, mut i: usize) -> usize {
+    while let Some(c) = char_at(line, i) {
+        if class_of(c) != CharClass::Word {
+            break;
         }
-        return i;
-    }
-    while i > 0 && !is_word_char(bytes[i - 1]) && !bytes[i - 1].is_ascii_whitespace() {
-        i -= 1;
+        i += c.len_utf8();
     }
     i
 }
 
-fn next_word_end(line: &str, x: usize) -> usize {
-    let bytes = line.as_bytes();
-    let mut i = x.min(bytes.len());
-    if i >= bytes.len() {
-        return bytes.len();
-    }
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    if i >= bytes.len() {
-        return bytes.len();
-    }
-    if is_word_char(bytes[i]) {
-        while i < bytes.len() && is_word_char(bytes[i]) {
-            i += 1;
+fn skip_word_backward(line: &str, mut i: usize) -> usize {
+    while let Some(c) = char_before(line, i) {
+        if class_of(c) != CharClass::Word {
+            break;
         }
-        return i;
-    }
-    while i < bytes.len() && !is_word_char(bytes[i]) && !bytes[i].is_ascii_whitespace() {
-        i += 1;
+        i -= c.len_utf8();
     }
     i
 }
 
+// Spaces and punctuation are both separators for word motion.
+fn skip_separators_forward(line: &str, mut i: usize) -> usize {
+    while let Some(c) = char_at(line, i) {
+        if class_of(c) == CharClass::Word {
+            break;
+        }
+        i += c.len_utf8();
+    }
+    i
+}
+
+fn skip_separators_backward(line: &str, mut i: usize) -> usize {
+    while let Some(c) = char_before(line, i) {
+        if class_of(c) == CharClass::Word {
+            break;
+        }
+        i -= c.len_utf8();
+    }
+    i
+}
+
+// Ctrl+Right: finish the current word, or skip separators and finish the next
+// one. Punctuation runs are crossed in the same move as the following word.
 fn next_word_boundary(line: &str, x: usize) -> usize {
-    let bytes = line.as_bytes();
-    let mut i = x.min(bytes.len());
+    let i = clamp_boundary(line, x);
+    if char_at(line, i).is_some_and(|c| class_of(c) == CharClass::Word) {
+        return skip_word_forward(line, i);
+    }
+    let i = skip_separators_forward(line, i);
+    skip_word_forward(line, i)
+}
 
-    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-        i += 1;
+// Ctrl+Left: mirror of the above. Starting at a word's first character skips
+// the separators behind it and lands at the start of the previous word.
+fn prev_word_boundary(line: &str, x: usize) -> usize {
+    let i = clamp_boundary(line, x);
+    if i > 0 && char_before(line, i).is_some_and(|c| class_of(c) == CharClass::Word) {
+        return skip_word_backward(line, i);
+    }
+    let i = skip_separators_backward(line, i);
+    skip_word_backward(line, i)
+}
+
+// Double-click range: expand over the word or punctuation run under the
+// caret. On whitespace or end-of-line, select the word before it when one
+// exists, otherwise the next word.
+fn word_range_at(line: &str, x: usize) -> (usize, usize) {
+    let i = clamp_boundary(line, x);
+    if let Some(c) = char_at(line, i) {
+        let cls = class_of(c);
+        if cls != CharClass::Space {
+            let mut start = i;
+            while let Some(prev) = char_before(line, start) {
+                if class_of(prev) != cls {
+                    break;
+                }
+                start -= prev.len_utf8();
+            }
+            let mut end = i;
+            while let Some(next) = char_at(line, end) {
+                if class_of(next) != cls {
+                    break;
+                }
+                end += next.len_utf8();
+            }
+            return (start, end);
+        }
     }
 
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
+    let before = skip_separators_backward(line, i);
+    if before > 0 {
+        let start = skip_word_backward(line, before);
+        if start < before {
+            return (start, before);
+        }
     }
 
-    i
+    let start = skip_separators_forward(line, i);
+    let end = skip_word_forward(line, start);
+    if end > start {
+        (start, end)
+    } else {
+        (i, i)
+    }
 }
 
 // Either Control key is Ctrl: shortcuts must not care which side of the
@@ -603,8 +665,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
                                 // Double-click: select the word at the caret.
                                 let line = &buffer[row.line];
                                 let byte = off as usize;
-                                let start = prev_word_start(line, byte);
-                                let end = next_word_end(line, byte);
+                                let (start, end) = word_range_at(line, byte);
                                 *anchor_x = start as i32;
                                 *anchor_y = row.line as i32;
                                 *cursor_x = end as i32;
@@ -1231,7 +1292,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
             let x = *cursor_x as usize;
 
             if x > 0 {
-                let new_x = prev_word_start(&buffer[y], x);
+                let new_x = prev_word_boundary(&buffer[y], x);
                 buffer[y].drain(new_x..x);
                 *cursor_x = new_x as i32;
             } else if y > 0 {
@@ -1268,7 +1329,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
             let x = *cursor_x as usize;
 
             if x < buffer[y].len() {
-                let new_x = next_word_end(&buffer[y], x);
+                let new_x = next_word_boundary(&buffer[y], x);
                 buffer[y].drain(x..new_x);
             } else if y < buffer.len() - 1 {
                 let next_line = buffer.remove(y + 1);
@@ -1671,5 +1732,82 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // ------------------------------------------------------------
     if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
         crate::editor::NAV_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod word_motion_tests {
+    use super::{next_word_boundary, prev_word_boundary, word_range_at};
+
+    #[test]
+    fn punctuation_is_a_separator() {
+        let line = "foo-bar baz";
+        assert_eq!(next_word_boundary(line, 0), 3); // end of "foo"
+        assert_eq!(next_word_boundary(line, 3), 7); // skip "-", end of "bar"
+        assert_eq!(next_word_boundary(line, 4), 7);
+        assert_eq!(next_word_boundary(line, 7), 11); // skip space, end of "baz"
+
+        assert_eq!(prev_word_boundary(line, 11), 8); // start of "baz"
+        assert_eq!(prev_word_boundary(line, 8), 4); // skip space, start of "bar"
+        assert_eq!(prev_word_boundary(line, 4), 0); // skip "-", start of "foo"
+        assert_eq!(prev_word_boundary(line, 3), 0);
+    }
+
+    #[test]
+    fn mixed_punctuation_and_spaces() {
+        let line = "a.b,c";
+        assert_eq!(next_word_boundary(line, 0), 1);
+        assert_eq!(next_word_boundary(line, 1), 3); // skip ".", end of "b"
+        assert_eq!(next_word_boundary(line, 3), 5); // skip ",", end of "c"
+        assert_eq!(prev_word_boundary(line, 5), 4);
+        assert_eq!(prev_word_boundary(line, 4), 2);
+        assert_eq!(prev_word_boundary(line, 2), 0);
+    }
+
+    #[test]
+    fn underscore_stays_in_words() {
+        let line = "snake_case";
+        assert_eq!(next_word_boundary(line, 0), 10);
+        assert_eq!(prev_word_boundary(line, 10), 0);
+        assert_eq!(word_range_at(line, 4), (0, 10));
+    }
+
+    #[test]
+    fn leading_and_trailing_whitespace() {
+        let line = "  foo  ";
+        assert_eq!(next_word_boundary(line, 0), 5);
+        assert_eq!(prev_word_boundary(line, 7), 2);
+        assert_eq!(word_range_at(line, 0), (2, 5));
+        assert_eq!(word_range_at(line, 7), (2, 5));
+    }
+
+    #[test]
+    fn double_click_selects_word_or_punctuation_run() {
+        let line = "foo-bar";
+        assert_eq!(word_range_at(line, 0), (0, 3));
+        assert_eq!(word_range_at(line, 2), (0, 3));
+        assert_eq!(word_range_at(line, 3), (3, 4));
+        assert_eq!(word_range_at(line, 4), (4, 7));
+        assert_eq!(word_range_at(line, 7), (4, 7));
+    }
+
+    #[test]
+    fn multibyte_text_never_splits_a_char() {
+        let line = "héllo-wörld";
+        let n = line.len();
+        for x in 0..=n {
+            for i in [
+                next_word_boundary(line, x),
+                prev_word_boundary(line, x),
+                word_range_at(line, x).0,
+                word_range_at(line, x).1,
+            ] {
+                assert!(line.is_char_boundary(i), "offset {i} split {line:?}");
+            }
+        }
+        assert_eq!(next_word_boundary(line, 0), 6); // end of "héllo"
+        assert_eq!(next_word_boundary(line, 6), n); // skip "-", end of "wörld"
+        assert_eq!(prev_word_boundary(line, n), 7); // start of "wörld"
+        assert_eq!(prev_word_boundary(line, 7), 0);
     }
 }

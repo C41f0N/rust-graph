@@ -93,6 +93,20 @@ fn line_layout(
     (line_font_size, advance, image)
 }
 
+// The in-content filename title opens the scrollable document. It owns the
+// top 20% of the editor panel (the whole window in fullscreen) and scrolls
+// away with the text; it is deliberately not a sticky header.
+fn title_height(editor_height: i32) -> i32 {
+    ((editor_height.max(1) as f32) * 0.20).round() as i32
+}
+
+// Rules use the same glyph frame as text (`padding/2` below the band top), so
+// they read as having equal air above and below instead of hugging the line
+// above and leaving the next line's gap below.
+fn horizontal_rule_y(draw_top: i32, font_size: i32, padding: i32) -> i32 {
+    draw_top + padding / 2 + font_size / 2
+}
+
 // Whether a visual line renders as editable raw source. Normally that is
 // "the cursor is on this line"; a frontmatter line is also raw whenever the
 // cursor sits anywhere inside the block, so the header edits as one unit.
@@ -232,76 +246,15 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             Color::new(30, 30, 35, 200),
         );
 
-        // Note name on the left. Click it to rename the open file: while renaming
-        // the draft is drawn with an editing caret, otherwise a hover underline
-        // hints at the affordance.
-        let renaming = editor::TITLE_RENAME_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
-        let note_name = crate::editor::tabs::active_name().unwrap_or_default();
-        // A dated journal note reads as "19th Aug 2025"; the rename draft is
-        // user text and never reformatted.
-        let shown_name = if renaming {
-            editor::TITLE_RENAME_DRAFT.read().unwrap().clone()
-        } else {
-            crate::journal::pretty_name(&note_name)
-        };
-        let name_y = editor_y + (header_h - config::EDITOR_FONT_SIZE) / 2;
-        let name_color = if renaming {
-            config::EDITOR_LINK_COLOR
-        } else {
-            config::EDITOR_FONT_COLOR
-        };
-        text::draw(
-            d,
-            &shown_name,
-            editor_x + padding,
-            name_y,
-            config::EDITOR_FONT_SIZE,
-            name_color,
-        );
-        let name_w = text::measure(&d, &shown_name, config::EDITOR_FONT_SIZE);
-        let name_hover = {
-            let m = d.get_mouse_position();
-            m.y as i32 >= editor_y
-                && m.y as i32 <= editor_y + header_h
-                && m.x as i32 >= editor_x + padding - 2
-                && m.x as i32 <= editor_x + padding + name_w + 2
-        };
-        if renaming {
-            let blink = ((d.get_time() * 2.0) as i32) % 2 == 0;
-            if blink {
-                d.draw_rectangle(
-                    editor_x + padding + name_w + 3,
-                    name_y + 3,
-                    2,
-                    config::EDITOR_FONT_SIZE - 5,
-                    Color::WHITE,
-                );
-            }
-        } else if name_hover {
-            d.draw_line(
-                editor_x + padding,
-                name_y + config::EDITOR_FONT_SIZE + 2,
-                editor_x + padding + name_w,
-                name_y + config::EDITOR_FONT_SIZE + 2,
-                Color::new(150, 180, 240, 220),
-            );
-            if d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
-                editor::TITLE_RENAME_DRAFT
-                    .write()
-                    .unwrap()
-                    .clone_from(&note_name);
-                editor::TITLE_RENAME_ACTIVE.store(
-                    true,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
-        }
+        // Header text baseline for the right-side controls. The filename no
+        // longer lives up here: it opens the document as an in-content title.
+        let header_text_y = editor_y + (header_h - config::EDITOR_FONT_SIZE) / 2;
 
         // Close X button on the right
         let x_label = "X";
         let x_w = text::measure(&d, x_label, config::EDITOR_FONT_SIZE);
         let x_x = editor_x + editor_width - padding - x_w;
-        let x_y = name_y;
+        let x_y = header_text_y;
 
         // Fullscreen toggle just left of the X: an outlined box, with a nested
         // box while active. Drawing it means it does not depend on the font
@@ -347,7 +300,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             let sg_label = ">>";
             let sg_w = text::measure(&d, sg_label, config::EDITOR_FONT_SIZE);
             let sg_x = fs_x - sg_w - 10;
-            let sg_y = name_y;
+            let sg_y = header_text_y;
             let over_sg = {
                 let m = d.get_mouse_position();
                 m.x as i32 >= sg_x
@@ -483,6 +436,20 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // --- Content area (shifted down by header + tab bar) ---
         let content_y = editor_y + header_h + crate::editor::tabs::TABS_H;
 
+        // The filename title is the first thing in the scrollable document.
+        // Its height counts toward the content, so the scrollbar and cursor
+        // follow treat it like any other block above the first text line.
+        let title_h = title_height(editor_height);
+        let renaming = editor::TITLE_RENAME_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
+        let note_name = crate::editor::tabs::active_name().unwrap_or_default();
+        // A dated journal note reads as "19th Aug 2025"; the rename draft is
+        // user text and never reformatted.
+        let shown_name = if renaming {
+            editor::TITLE_RENAME_DRAFT.read().unwrap().clone()
+        } else {
+            crate::journal::pretty_name(&note_name)
+        };
+
         let kinds = blocks::classify(&buf);
         let fm_range = frontmatter::line_range(&buf);
 
@@ -511,7 +478,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // draw, scrollbar, viewport and hit-test can never disagree.
         let mut layouts: Vec<(i32, i32, i32, Option<(PathBuf, i32, i32)>)> =
             Vec::with_capacity(vlines.len());
-        let mut total_h: i32 = 0;
+        let mut total_h: i32 = title_h;
         // Per source line: pixel top of its first visual line and pixel bottom
         // (advance end) of its last, so a fenced block spanning several source
         // lines can be bracketed by one panel.
@@ -519,7 +486,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         let mut line_bottom: std::collections::HashMap<usize, i32> = std::collections::HashMap::new();
         {
             let mut prev_src: Option<usize> = None;
-            let mut y: i32 = 0;
+            let mut y: i32 = title_h;
             for vl in vlines.iter() {
                 let editing = line_editing(vl, fm_range, *cursor_y);
                 let kind = kinds
@@ -586,7 +553,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // visible glyphs and lower-half clicks land on the next line.
         {
             let mut hits = Vec::with_capacity(vlines.len());
-            let mut line_y: i32 = 0;
+            let mut line_y: i32 = title_h;
             for (vi, vl) in vlines.iter().enumerate() {
                 let (fsz, adv, gap, ref img) = layouts[vi];
                 line_y += gap;
@@ -644,7 +611,8 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         hit_test::LINK_HITS.lock().unwrap().clear();
 
         // Clamp the scroll offset to the real content height.
-        let viewport_h = (editor_height - header_h - crate::editor::tabs::TABS_H - padding).max(1);
+        let content_view_h = editor_height - header_h - crate::editor::tabs::TABS_H;
+        let viewport_h = (content_view_h - padding).max(1);
         let max_scroll = (total_h - viewport_h).max(0);
         let mut scroll = (*buffer::SCROLL_Y.read().unwrap()).clamp(0, max_scroll);
 
@@ -655,7 +623,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         {
             let mut min_line = usize::MAX;
             let mut max_line = 0usize;
-            let mut line_y: i32 = 0;
+            let mut line_y: i32 = title_h;
             for (vi, vl) in vlines.iter().enumerate() {
                 let advance = layouts[vi].1;
                 line_y += layouts[vi].2;
@@ -720,8 +688,8 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
 
         // Clip all content drawing to the area below the heading bar and
         // translate it up by the scroll offset.
-        d.draw_scissor_mode(content_x0, content_y, content_w, editor_height - header_h - crate::editor::tabs::TABS_H, |mut s| {
-            let mut line_y = 0;
+        d.draw_scissor_mode(content_x0, content_y, content_w, content_view_h, |mut s| {
+            let mut line_y = title_h;
             // Left-gutter chrome (nav-mode selection bar + fold carets): the
             // caret hovers just left of the text start with a little air,
             // while the selection bar rides left of the caret so the two
@@ -738,6 +706,88 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             // source line, even when that line is a heading or indented prose
             // whose first slice starts past offset 0.
             let mut prev_source_line = usize::MAX;
+
+            // --- In-content title ---
+            // The filename opens the document: a band 20% of the editor's
+            // height, scrolled with the text (never sticky). It is drawn
+            // inside the content scissor so it clips under the header as it
+            // scrolls away. Clicking it starts the same inline rename the
+            // header used to own.
+            let title_top = content_y - scroll;
+            if title_h > 0 && title_top + title_h > content_y {
+                let mut title_font = config::editor_scaled_size(config::EDITOR_HEADING_SIZE[0])
+                    .min((title_h - padding).max(16));
+                while title_font > 16 && text::measure(&mut s, &shown_name, title_font) > max_width
+                {
+                    title_font -= 1;
+                }
+                let title_w = text::measure(&mut s, &shown_name, title_font);
+                let title_x = content_x0 + padding;
+                let title_y = title_top + (title_h - title_font) / 2;
+                let title_color = if renaming {
+                    config::EDITOR_LINK_COLOR
+                } else {
+                    config::EDITOR_FONT_COLOR
+                };
+                text::draw(
+                    &mut s,
+                    &shown_name,
+                    title_x,
+                    title_y,
+                    title_font,
+                    title_color,
+                );
+
+                let m = s.get_mouse_position();
+                let visible_top = title_top.max(content_y);
+                let visible_bottom = (title_top + title_h).min(content_y + content_view_h);
+                let over_band = (m.y as i32) >= visible_top
+                    && (m.y as i32) < visible_bottom
+                    && (m.x as i32) >= content_x0
+                    && (m.x as i32) <= content_x0 + content_w
+                    // The scrollbar owns the right gutter even inside the
+                    // title band; clicking it must scroll, not rename.
+                    && (m.x as i32) < bar_x - 4;
+                let over_text = over_band
+                    && (m.x as i32) >= title_x
+                    && (m.x as i32) <= title_x + title_w
+                    && (m.y as i32) >= title_y
+                    && (m.y as i32) <= title_y + title_font;
+
+                if renaming {
+                    let blink = ((s.get_time() * 2.0) as i32) % 2 == 0;
+                    if blink {
+                        s.draw_rectangle(
+                            title_x + title_w + 3,
+                            title_y + 3,
+                            2,
+                            (title_font - 5).max(2),
+                            Color::WHITE,
+                        );
+                    }
+                } else if over_text {
+                    s.draw_line(
+                        title_x,
+                        title_y + title_font + 2,
+                        title_x + title_w,
+                        title_y + title_font + 2,
+                        Color::new(150, 180, 240, 220),
+                    );
+                }
+                if !renaming
+                    && over_band
+                    && s.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+                {
+                    editor::TITLE_RENAME_DRAFT
+                        .write()
+                        .unwrap()
+                        .clone_from(&note_name);
+                    editor::TITLE_RENAME_ACTIVE.store(
+                        true,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            }
 
             for (vi, line) in vlines.iter().enumerate() {
                 let first_vl_of_line = line.line != prev_source_line;
@@ -941,9 +991,12 @@ guide_runs.retain(|r| {
                     fold_markers.push((cx, cy, cw, ch, line.line));
                 }
 
-                // Horizontal rule: draw a line instead of text.
+                // Horizontal rule: draw a line instead of text. It uses the
+                // same glyph frame as text (`padding/2` below the band top),
+                // otherwise the rule sits 12px high and reads as having no
+                // padding above it while the next line leaves a large gap.
                 if !editing_line && matches!(kind, blocks::LineKind::HorizontalRule) {
-                    let y_mid = draw_top + line_font_size / 2;
+                    let y_mid = horizontal_rule_y(draw_top, line_font_size, padding);
                     s.draw_line(
                         content_x0 + padding,
                         y_mid,
@@ -1529,6 +1582,18 @@ guide_runs.retain(|r| {
 mod tests {
     use super::*;
     use blocks::LineKind;
+
+    #[test]
+    fn title_owns_twenty_percent_of_editor_height() {
+        assert_eq!(title_height(1000), 200);
+        assert_eq!(title_height(800), 160);
+        assert_eq!(title_height(1), 0);
+    }
+
+    #[test]
+    fn horizontal_rule_sits_on_the_glyph_frame() {
+        assert_eq!(horizontal_rule_y(100, 20, 24), 122);
+    }
 
     #[test]
     fn block_gaps_separate_blocks_but_not_their_own_rows() {
