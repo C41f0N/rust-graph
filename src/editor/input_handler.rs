@@ -272,7 +272,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                 crate::editor::CREATING_NODE.store(false, std::sync::atomic::Ordering::Relaxed);
 
                 let dir = crate::graph::processing::DIR_PATH.read().unwrap().clone();
-                crate::editor::tabs::create_and_open(&dir, &stem);
+                let _ = crate::editor::tabs::create_and_open(&dir, &stem);
             }
             if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
                 *crate::editor::NEW_NODE_NAME.write().unwrap() = String::new();
@@ -380,6 +380,16 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         || rl.is_key_pressed(KeyboardKey::KEY_DELETE)
         || rl.is_key_pressed_repeat(KeyboardKey::KEY_DELETE);
 
+    // Ctrl+Shift+T closes the active tab. Deferred: tabs::close swaps the
+    // buffer globals, so main performs it after this handler releases its
+    // locks (same pattern as CLOSE_REQUESTED). Checked after the typed-char
+    // queue is drained so a character event from the shortcut cannot leak
+    // into the next frame.
+    if ctrl_down(rl) && shift_down(rl) && rl.is_key_pressed(KeyboardKey::KEY_T) {
+        crate::editor::CLOSE_TAB_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
+
     let current_visual = visual_lines.iter().position(|vl| {
         vl.line == *cursor_y as usize
             && *cursor_x as usize >= vl.start
@@ -393,9 +403,22 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     let edit_now_ms = (rl.get_time() * 1000.0) as u64;
 
     // Mouse wheel scrolls the content viewport. The renderer clamps the
-    // offset to the real content height each frame, so we just nudge it.
+    // offset to the real content height each frame, so we just nudge it. On a
+    // read-only preview page, a wheel at the top/bottom asks main for the
+    // previous/next chunk instead of doing nothing.
     let wheel = rl.get_mouse_wheel_move();
     if wheel != 0.0 {
+        if crate::editor::tabs::active_is_preview() {
+            let scroll = *buffer::SCROLL_Y.read().unwrap();
+            let max_scroll = buffer::SCROLL_MAX.load(std::sync::atomic::Ordering::Relaxed);
+            if wheel > 0.0 && scroll <= 0 {
+                crate::editor::PREVIEW_PAGE_REQUEST
+                    .store(-1, std::sync::atomic::Ordering::Relaxed);
+            } else if wheel < 0.0 && scroll >= max_scroll {
+                crate::editor::PREVIEW_PAGE_REQUEST
+                    .store(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         let step = config::editor_scaled_size(config::EDITOR_FONT_SIZE) as f32 * 3.0;
         let mut scroll = buffer::SCROLL_Y.write().unwrap();
         let delta = (wheel * step) as i32;
@@ -407,22 +430,68 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     // ------------------------------------------------------------
     // Navigation mode: the caret is detached from the text (every line
     // renders as formatted view-source) and the cursor line is only
-    // *selected*, highlighted by a bar. Arrow keys move the selection across
-    // source lines; Enter/e re-enter edit mode on the selected line; g closes
-    // the editor into the graph; q toggles editor maximization; Esc closes
-    // the editor as well. J opens today's journal note and, when the open
-    // note is a dated journal entry, [ / ] step a day backward/forward. A
+    // *selected*, highlighted by a bar. Arrow keys or W/S move the selection
+    // across source lines (Up/W on the first line scrolls to the top, bringing
+    // the filename title back into view); Enter/e re-enter edit mode on the
+    // selected line; g closes the editor into the graph; q toggles editor
+    // maximization; Esc closes the editor as well. J opens today's journal
+    // note and, when the open note is a dated journal entry, [ / ] step a
+    // day backward/forward. A
     // left-click inside the content selects the clicked line and drops
     // straight back into editing (the normal mouse block below places the
     // caret). Everything else is ignored here; the typed queue was already
     // drained above so a shortcut can never type itself.
     // ------------------------------------------------------------
     if crate::editor::NAV_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-        if rl.is_key_pressed(KeyboardKey::KEY_ENTER) || rl.is_key_pressed(KeyboardKey::KEY_E) {
+        let preview = crate::editor::tabs::active_is_preview();
+        if preview {
+            // Page keys behave like a pager: one screenful at a time inside
+            // the current chunk, then step to the adjacent chunk at an edge.
+            // (A chunk holds 500 lines / 128 KiB, far more than one screen.)
+            let page_down = rl.is_key_pressed(KeyboardKey::KEY_PAGE_DOWN)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_PAGE_DOWN);
+            let page_up = rl.is_key_pressed(KeyboardKey::KEY_PAGE_UP)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_PAGE_UP);
+            if page_down || page_up {
+                let (_ex, _ey, _ew, eh) = crate::editor::content_bounds();
+                let content_h = eh
+                    - config::EDITOR_HEADER_HEIGHT
+                    - crate::editor::tabs::TABS_H
+                    - crate::editor::preview_banner_height();
+                let step = (content_h - config::scaled_size(config::editor_padding())).max(1);
+                let scroll = *buffer::SCROLL_Y.read().unwrap();
+                let max_scroll = buffer::SCROLL_MAX.load(std::sync::atomic::Ordering::Relaxed);
+                if page_down && scroll < max_scroll {
+                    let mut scroll = buffer::SCROLL_Y.write().unwrap();
+                    *scroll = (*scroll).saturating_add(step).min(max_scroll);
+                } else if page_up && scroll > 0 {
+                    let mut scroll = buffer::SCROLL_Y.write().unwrap();
+                    *scroll = (*scroll).saturating_sub(step);
+                } else if page_down {
+                    crate::editor::PREVIEW_PAGE_REQUEST
+                        .store(1, std::sync::atomic::Ordering::Relaxed);
+                } else {
+                    crate::editor::PREVIEW_PAGE_REQUEST
+                        .store(-1, std::sync::atomic::Ordering::Relaxed);
+                }
+                return;
+            }
+        }
+        if !preview
+            && (rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+                || rl.is_key_pressed(KeyboardKey::KEY_E))
+        {
             crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        if rl.is_key_pressed(KeyboardKey::KEY_G) || rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+        if rl.is_key_pressed(KeyboardKey::KEY_G) {
+            // Remember that this G was the editor's "back to graph" key so the
+            // graph handler does not treat the same press as "open editor".
+            crate::editor::G_TO_GRAPH_LATCH.store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::editor::CLOSE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
             crate::editor::CLOSE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
             return;
         }
@@ -431,19 +500,31 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             crate::editor::FULLSCREEN.store(!fs, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        if rl.is_key_pressed(KeyboardKey::KEY_UP) || rl.is_key_pressed_repeat(KeyboardKey::KEY_UP) {
+        let nav_up = rl.is_key_pressed(KeyboardKey::KEY_UP)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_UP)
+            || rl.is_key_pressed(KeyboardKey::KEY_W)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_W);
+        if nav_up {
             // One press = one source line, not one wrapped visual row.
-            if let Some(line) = nav_adjacent_source_line(&visual_lines, *cursor_y as usize, true) {
-                *cursor_y = line as i32;
-                *cursor_x = (*cursor_x).min(buffer[line].len() as i32);
+            match nav_adjacent_source_line(&visual_lines, *cursor_y as usize, true) {
+                Some(line) => {
+                    *cursor_y = line as i32;
+                    *cursor_x = (*cursor_x).min(buffer[line].len() as i32);
+                }
+                // Already on the top line: reveal the in-content filename
+                // title, which lives above the first text line and is
+                // otherwise only reachable by wheel-scrolling up.
+                None => *buffer::SCROLL_Y.write().unwrap() = 0,
             }
             *anchor_x = *cursor_x;
             *anchor_y = *cursor_y;
             return;
         }
-        if rl.is_key_pressed(KeyboardKey::KEY_DOWN)
+        let nav_down = rl.is_key_pressed(KeyboardKey::KEY_DOWN)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_DOWN)
-        {
+            || rl.is_key_pressed(KeyboardKey::KEY_S)
+            || rl.is_key_pressed_repeat(KeyboardKey::KEY_S);
+        if nav_down {
             if let Some(line) = nav_adjacent_source_line(&visual_lines, *cursor_y as usize, false) {
                 *cursor_y = line as i32;
                 *cursor_x = (*cursor_x).min(buffer[line].len() as i32);
@@ -472,14 +553,16 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         // from whichever dated journal note is open. The tab switch is
         // deferred through OPEN_NOTE_REQUESTED because BUFFER's write lock
         // is held for this whole run; only the file/node ensure happens here.
-        if rl.is_key_pressed(KeyboardKey::KEY_J) {
+        if !preview && rl.is_key_pressed(KeyboardKey::KEY_J) {
             crate::journal::open_today_requested();
             return;
         }
-        let prev = rl.is_key_pressed(KeyboardKey::KEY_LEFT_BRACKET)
-            || rl.is_key_pressed_repeat(KeyboardKey::KEY_LEFT_BRACKET);
-        let next = rl.is_key_pressed(KeyboardKey::KEY_RIGHT_BRACKET)
-            || rl.is_key_pressed_repeat(KeyboardKey::KEY_RIGHT_BRACKET);
+        let prev = !preview
+            && (rl.is_key_pressed(KeyboardKey::KEY_LEFT_BRACKET)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_LEFT_BRACKET));
+        let next = !preview
+            && (rl.is_key_pressed(KeyboardKey::KEY_RIGHT_BRACKET)
+                || rl.is_key_pressed_repeat(KeyboardKey::KEY_RIGHT_BRACKET));
         if prev || next {
             // A non-journal tab makes the step a no-op; either way the key
             // is consumed so it never reaches the caret below.
@@ -488,10 +571,21 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         }
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
             let m = rl.get_mouse_position();
-let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
-            let content_top = ey + config::EDITOR_HEADER_HEIGHT + crate::editor::tabs::TABS_H;
-            let content_h = eh - config::EDITOR_HEADER_HEIGHT - crate::editor::tabs::TABS_H;
+            let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
+            let content_top = ey
+                + config::EDITOR_HEADER_HEIGHT
+                + crate::editor::tabs::TABS_H
+                + crate::editor::preview_banner_height();
+            let content_h = eh
+                - config::EDITOR_HEADER_HEIGHT
+                - crate::editor::tabs::TABS_H
+                - crate::editor::preview_banner_height();
             if (m.y as i32) >= content_top && (m.y as i32) < content_top + content_h {
+                // A preview page is read-only: a click may not re-enter edit
+                // mode or place an editable caret.
+                if preview {
+                    return;
+                }
                 // Select the clicked line and re-enter edit mode; the normal
                 // mouse block below places the caret this same frame.
                 crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -514,8 +608,14 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     {
         let (ex, ey, ew, eh) = crate::editor::content_bounds();
         let header_h = config::EDITOR_HEADER_HEIGHT;
-        let content_top = ey + header_h + crate::editor::tabs::TABS_H;
-        let content_h = eh - header_h - crate::editor::tabs::TABS_H;
+        let content_top = ey
+            + header_h
+            + crate::editor::tabs::TABS_H
+            + crate::editor::preview_banner_height();
+        let content_h = eh
+            - header_h
+            - crate::editor::tabs::TABS_H
+            - crate::editor::preview_banner_height();
         let bar_w = 6;
         let bar_x = ex + ew - bar_w - config::scaled_size(config::EDITOR_SCROLLBAR_GAP);
 
@@ -1450,7 +1550,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Shift + Left = select left
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+    if shift_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_LEFT)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_LEFT))
     {
@@ -1471,7 +1571,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Shift + Right = select right
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+    if shift_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_RIGHT)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_RIGHT))
     {
@@ -1492,7 +1592,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Shift + Up = select up
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+    if shift_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_UP)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_UP))
     {
@@ -1516,7 +1616,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Shift + Down = select down
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+    if shift_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_DOWN)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_DOWN))
     {
@@ -1540,7 +1640,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Shift + Home = select to line start
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+    if shift_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_HOME)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_HOME))
     {
@@ -1556,7 +1656,7 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
     // Shift + End = select to line end
     // ------------------------------------------------------------
 
-    if rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+    if shift_down(rl)
         && (rl.is_key_pressed(KeyboardKey::KEY_END)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_END))
     {
@@ -1717,6 +1817,11 @@ let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
                 let offset = *cursor_x as usize - from.start;
                 *cursor_y = to.line as i32;
                 *cursor_x = (to.start + offset).min(to.end) as i32;
+            } else {
+                // Already on the first visual row: pressing Up reveals the
+                // in-content filename title above the text instead of doing
+                // nothing. W stays a typed character in edit mode.
+                *buffer::SCROLL_Y.write().unwrap() = 0;
             }
         }
         *anchor_x = *cursor_x;

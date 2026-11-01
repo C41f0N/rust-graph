@@ -1024,6 +1024,65 @@ pub fn project_root() -> PathBuf {
         .unwrap_or_else(|| DIR_PATH.read().unwrap().clone())
 }
 
+// Point the graph view at a note chosen outside the graph (Ctrl+K): select the
+// matching node and centre the camera on it. If the note lives in a sub-graph
+// level the current view does not show, navigate there first so the node is
+// actually present.
+pub fn focus_note_in_graph(note: &Path) -> bool {
+    if let Some(idx) = node_index_by_path(note) {
+        focus_node(idx);
+        return true;
+    }
+
+    let root = project_root();
+    let Some(parent) = note.parent() else {
+        return false;
+    };
+    if !parent.starts_with(&root) {
+        return false;
+    }
+    let current = DIR_PATH.read().unwrap().clone();
+    if parent != current {
+        save_current_view();
+        // NAV_STACK holds every ancestor from the project root down to the
+        // current level's parent (the root is in the stack whenever the view
+        // sits below it).
+        let mut stack: Vec<PathBuf> = parent
+            .ancestors()
+            .skip(1)
+            .take_while(|p| p.starts_with(&root))
+            .map(|p| p.to_path_buf())
+            .collect();
+        stack.reverse();
+        *NAV_STACK.write().unwrap() = stack;
+        *DIR_PATH.write().unwrap() = parent.to_path_buf();
+        generate_nodes_from_directory(parent);
+    }
+
+    if let Some(idx) = node_index_by_path(note) {
+        focus_node(idx);
+        true
+    } else {
+        false
+    }
+}
+
+fn node_index_by_path(path: &Path) -> Option<usize> {
+    NODES.read().unwrap().iter().position(|n| n.path == path)
+}
+
+fn focus_node(idx: usize) {
+    let position = NODES.read().unwrap().get(idx).map(|n| n.position);
+    let Some(position) = position else {
+        return;
+    };
+    *SELECTED_NODE.write().unwrap() = Some(idx);
+    *CONTEXT_NODE.write().unwrap() = None;
+    *CONTEXT_EMPTY.write().unwrap() = false;
+    *DELETE_PENDING.write().unwrap() = false;
+    crate::graph::renderer::CAMERA.write().unwrap().target = position;
+}
+
 // Resolve a node header target (stored relative to a directory, e.g.
 // "assets/name.png") to an absolute path on disk. The note's own directory is
 // tried first: a fold packs the note's assets into the sub-graph's own
@@ -3450,6 +3509,74 @@ mod tests {
             assert_eq!(camera.target.y, 47.0);
         }
 
+        NAV_STACK.write().unwrap().clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn focus_note_selects_and_centers_current_level_node() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_focus_current_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("a.md"), "# A\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let (idx, pos) = {
+            let nodes = NODES.read().unwrap();
+            let idx = nodes.iter().position(|n| n.name == "b").unwrap();
+            (idx, nodes[idx].position)
+        };
+        *SELECTED_NODE.write().unwrap() = None;
+        {
+            let mut camera = crate::graph::renderer::CAMERA.write().unwrap();
+            camera.target = Vector2::zero();
+        }
+
+        assert!(focus_note_in_graph(&dir.join("b.md")));
+        assert_eq!(*SELECTED_NODE.read().unwrap(), Some(idx));
+        {
+            let camera = crate::graph::renderer::CAMERA.read().unwrap();
+            assert_eq!(camera.target.x, pos.x);
+            assert_eq!(camera.target.y, pos.y);
+        }
+
+        *SELECTED_NODE.write().unwrap() = None;
+        NAV_STACK.write().unwrap().clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn focus_note_navigates_to_nested_level() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_focus_nested_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::create_dir(&dir.join("alpha"));
+        filesystem::write_file(&dir.join("alpha").join("alpha.md"), "# Alpha\n");
+        filesystem::write_file(&dir.join("alpha").join("child.md"), "# Child\n");
+        filesystem::write_file(&dir.join("root.md"), "# Root\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let child = dir.join("alpha").join("child.md");
+        assert!(focus_note_in_graph(&child));
+        assert_eq!(*DIR_PATH.read().unwrap(), dir.join("alpha"));
+        assert_eq!(*NAV_STACK.read().unwrap(), vec![dir.clone()]);
+
+        let idx = {
+            let nodes = NODES.read().unwrap();
+            nodes.iter().position(|n| n.path == child).unwrap()
+        };
+        assert_eq!(*SELECTED_NODE.read().unwrap(), Some(idx));
+
+        *SELECTED_NODE.write().unwrap() = None;
         NAV_STACK.write().unwrap().clear();
         let _ = std::fs::remove_dir_all(&dir);
     }

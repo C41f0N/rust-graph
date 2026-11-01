@@ -11,6 +11,7 @@ mod global_palette;
 mod graph;
 mod helpbar;
 mod journal;
+mod notice;
 mod sidebar;
 mod startup;
 
@@ -232,15 +233,35 @@ fn main() {
             // A click on a rendered [[wikilink]] only queued the target while
             // the editor input handler held the buffer lock; the tab actually
             // opens here, once the lock is released.
+            let mut deferred_open_ok = true;
             if let Some((path, name)) = editor::OPEN_NOTE_REQUESTED.write().unwrap().take() {
-                editor::tabs::open(&path, &name);
+                deferred_open_ok = editor::tabs::open(&path, &name).is_ok();
             }
 
             // A deferred journal open that found no file asked to start a
             // fresh entry: the open above loaded it in nav mode, so drop
-            // straight into edit mode for a brand-new date.
-            if editor::NAV_EDIT_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            // straight into edit mode for a brand-new date. A refused open
+            // must not flip the still-active document into edit mode.
+            if editor::NAV_EDIT_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed)
+                && deferred_open_ok
+            {
                 editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            // Preview paging is deferred for the same reason as a deferred
+            // open: the editor input handler still holds the buffer lock.
+            let preview_page =
+                editor::PREVIEW_PAGE_REQUEST.swap(0, std::sync::atomic::Ordering::Relaxed);
+            if preview_page != 0 {
+                editor::tabs::preview_step(preview_page);
+            }
+
+            // Ctrl+Shift+T: close the active tab. Closing the last tab exits
+            // the editor view, exactly like its X button.
+            if editor::CLOSE_TAB_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                if editor::tabs::close_active() {
+                    editor_open = false;
+                }
             }
 
             // Close button in the editor heading bar
@@ -374,8 +395,10 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
     }
 }
 
-        // Ctrl+S = save the open editor buffer immediately
+        // Ctrl+S = save the open editor buffer immediately. A read-only
+        // preview page has no save path at all.
         if editor_open
+            && !editor::tabs::active_is_preview()
             && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
                 || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
             && rl.is_key_pressed(KeyboardKey::KEY_S)
@@ -493,6 +516,10 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
 
         // The Ctrl+K palette overlays everything, dimming both views.
         global_palette::draw(&mut d);
+
+        // Refusals/errors are shown above every view (including the graph, so
+        // a refused open from the graph is not swallowed by a closed editor).
+        notice::draw(&mut d);
     }
 
     // The window closed mid-edit: flush every tab so anything typed within the

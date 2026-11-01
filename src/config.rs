@@ -134,6 +134,25 @@ pub const EDITOR_FRONTMATTER_HEIGHT: i32 = 16;
 pub const EDITOR_FRONTMATTER_BG: Color = Color::new(60, 60, 72, 160);
 pub const EDITOR_FRONTMATTER_COLOR: Color = Color::new(150, 158, 190, 255);
 
+// --- Large-file policy ------------------------------------------------------
+// The editor keeps small notes fully editable. Anything above the edit limits
+// opens as a bounded, read-only preview read from disk in chunks; anything
+// above the preview limit is refused outright. The limits are intentionally
+// conservative: the renderer lays out every line it holds, so an unbounded
+// buffer is both a memory and a frame-time hazard.
+pub const EDITOR_MAX_EDIT_BYTES: u64 = 512 * 1024;
+pub const EDITOR_MAX_EDIT_LINES: usize = 5_000;
+pub const EDITOR_MAX_EDIT_LINE_BYTES: usize = 16 * 1024;
+pub const EDITOR_MAX_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;
+// One preview page: bounded enough that a chunk can be laid out in one frame.
+pub const EDITOR_PREVIEW_CHUNK_LINES: usize = 500;
+pub const EDITOR_PREVIEW_CHUNK_BYTES: u64 = 128 * 1024;
+// A single overlong line (minified JSON, logs) is clipped per page instead of
+// being wrapped, which would make the layout cost quadratic.
+pub const EDITOR_PREVIEW_LINE_BYTES: usize = 16 * 1024;
+// Sticky read-only banner shown above a preview page.
+pub const EDITOR_PREVIEW_BANNER_H: i32 = 28;
+
 // Body text is pure white per the current theme choice; headings and the body
 // still separate via weight and the selector colors below.
 pub const EDITOR_FONT_COLOR: Color = Color::WHITE;

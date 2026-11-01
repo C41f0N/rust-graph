@@ -29,6 +29,7 @@ pub enum HelpContext {
     EditorCreatingNode,
     EditorPlaceholder,
     EditorTitleRename,
+    EditorPreview,
     EditorNav,
     CommandPalette,
     Autocomplete,
@@ -43,6 +44,7 @@ pub struct StateFlags {
     pub palette_open: bool,
     pub editor_open: bool,
     pub has_node: bool,
+    pub preview_mode: bool,
     pub creating_node: bool,
     pub title_rename_active: bool,
     pub nav_mode: bool,
@@ -61,6 +63,7 @@ fn current(editor_open: bool) -> StateFlags {
         palette_open: crate::global_palette::STATE.read().unwrap().open,
         editor_open,
         has_node: crate::editor::tabs::has_any(),
+        preview_mode: crate::editor::tabs::active_is_preview(),
         creating_node: crate::editor::CREATING_NODE.load(std::sync::atomic::Ordering::Relaxed),
         title_rename_active: crate::editor::TITLE_RENAME_ACTIVE
             .load(std::sync::atomic::Ordering::Relaxed),
@@ -131,6 +134,9 @@ fn resolve_from(f: &StateFlags) -> HelpContext {
     if f.title_rename_active {
         return HelpContext::EditorTitleRename;
     }
+    if f.preview_mode {
+        return HelpContext::EditorPreview;
+    }
     if f.nav_mode {
         return HelpContext::EditorNav;
     }
@@ -147,7 +153,8 @@ fn resolve_from(f: &StateFlags) -> HelpContext {
 // root, so it only appears once a stack exists (GRAPH_BASE_FULL).
 const GRAPH_BASE: &[Chip] = &[
     ("WASD", "move"),
-    ("C/Shift+C", "zoom in/out"),
+    ("Q/E", "zoom in/out"),
+    ("G", "to editor"),
     ("Space", "open"),
     ("V", "subgraph"),
     ("R", "menu"),
@@ -161,7 +168,8 @@ const GRAPH_BASE: &[Chip] = &[
 
 const GRAPH_BASE_FULL: &[Chip] = &[
     ("WASD", "move"),
-    ("C/Shift+C", "zoom in/out"),
+    ("Q/E", "zoom in/out"),
+    ("G", "to editor"),
     ("Space", "open"),
     ("V", "subgraph"),
     ("R", "menu"),
@@ -182,7 +190,8 @@ const EDITOR_NAV_JOURNAL: &[Chip] = &[
     ("Q", "fullscreen"),
     ("J", "today"),
     ("[ / ]", "prev/next"),
-    ("Up/Down/Home/End", "move"),
+    ("W/S/Up/Down", "move"),
+    ("Ctrl+Shift+T", "close tab"),
 ];
 
 // The keycap/action rows for each state. Keys are ASCII: the SDF fonts the UI
@@ -221,12 +230,21 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
         ],
         HelpContext::EditorPlaceholder => &[("Ctrl+K", "open note")],
         HelpContext::EditorTitleRename => &[("Enter", "commit"), ("Esc", "cancel")],
+        HelpContext::EditorPreview => &[
+            ("PgUp/PgDn", "page"),
+            ("W/S/Up/Down", "move"),
+            ("G", "to graph"),
+            ("Q", "fullscreen"),
+            ("Ctrl+Shift+T", "close tab"),
+            ("Esc", "close"),
+        ],
         HelpContext::EditorNav => &[
             ("Enter/E", "edit"),
             ("G", "to graph"),
             ("Q", "fullscreen"),
             ("J", "journal"),
-            ("Up/Down/Home/End", "move"),
+            ("W/S/Up/Down", "move"),
+            ("Ctrl+Shift+T", "close tab"),
         ],
         HelpContext::CommandPalette => &[
             ("Up/Down/Tab", "select"),
@@ -243,6 +261,7 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
             ("Ctrl+S", "save"),
             ("Ctrl+Z", "undo"),
             ("Ctrl+Y", "redo"),
+            ("Ctrl+Shift+T", "close tab"),
         ],
     }
 }
@@ -375,6 +394,10 @@ mod tests {
         assert_eq!(resolve_from(&f), HelpContext::EditorTitleRename);
 
         f.title_rename_active = false;
+        f.preview_mode = true;
+        assert_eq!(resolve_from(&f), HelpContext::EditorPreview);
+
+        f.preview_mode = false;
         assert_eq!(resolve_from(&f), HelpContext::EditorNav);
 
         f.nav_mode = false;

@@ -73,6 +73,13 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         return;
     }
 
+    // The editor's G was a "back to graph" request and main has already
+    // closed the editor this frame. Consume the latch so the graph's own G
+    // binding does not immediately reopen it with the same key press.
+    if crate::editor::G_TO_GRAPH_LATCH.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+
     // ------------------------------------------------------------
     // Vertical zoom scale: hover state is refreshed every frame (including
     // modal overlays like delete prompts) so the fade-out can never strand it
@@ -449,13 +456,16 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         drop(rename_name);
         drop(dir_path);
         drop(context_empty);
-        let pending = crate::journal::open_today();
-        // A brand-new day has no file yet: leave the read/nav default and
-        // start typing at once, like creating a note.
-        if pending {
-            crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+        // A refused journal open leaves the view exactly where it was (the
+        // refusal toast is drawn over the graph); only a real open switches.
+        if let Some(pending) = crate::journal::open_today() {
+            // A brand-new day has no file yet: leave the read/nav default and
+            // start typing at once, like creating a note.
+            if pending {
+                crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            *editor_open = true;
         }
-        *editor_open = true;
         *crate::graph::processing::CONTEXT_NODE.write().unwrap() = None;
         return;
     }
@@ -523,6 +533,32 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     if (context_node.is_some() || *context_empty) && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
         *context_node = None;
         *context_empty = false;
+        return;
+    }
+
+    // G toggles to the editor view: reopen the last active tab, or the
+    // selected node when no tab exists yet. Mirrors the sidebar editor button.
+    // Ctrl+G is left alone, and an open context menu owns the keyboard.
+    if rl.is_key_pressed(KeyboardKey::KEY_G)
+        && !ctrl
+        && context_node.is_none()
+        && !*context_empty
+    {
+        drop(nodes);
+        drop(dragging_node);
+        drop(hover_node);
+        drop(selected_node);
+        drop(delete_pending);
+        drop(editing_node);
+        drop(adding_note);
+        drop(adding_name);
+        drop(context_node);
+        drop(context_pos);
+        drop(renaming);
+        drop(rename_name);
+        drop(dir_path);
+        drop(context_empty);
+        crate::sidebar::open_editor(editor_open);
         return;
     }
 
@@ -953,8 +989,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                     let n = &nodes[i];
                     (n.path.clone(), n.name.clone())
                 };
-                *editor_open = true;
-                crate::editor::tabs::open(&path, &name);
+                if crate::editor::tabs::open(&path, &name).is_ok() {
+                    *editor_open = true;
+                }
                 *context_node = None;
                 LAST_CLICK_NODE.set(None);
             } else {
@@ -1002,19 +1039,21 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
     // ------------------------------------------------------------
     // Keyboard navigation: a reticle pinned to the centre of the view stands
-    // in for the pointer. W/A/S/D pan the graph under it, holding C zooms in
-    // and Shift+C zooms out (continuous, anchored on the reticle), and Space /
-    // V / R act on the node under it. Esc or any real mouse motion hands the
-    // pointer back and hides the reticle.
+    // in for the pointer. W/A/S/D pan the graph under it, holding Q zooms in
+    // and E zooms out (continuous, anchored on the reticle), and Space / V / R
+    // act on the node under it. Esc or any real mouse motion hands the pointer
+    // back and hides the reticle.
     // ------------------------------------------------------------
 
     let nav_x =
         rl.is_key_down(KeyboardKey::KEY_D) as i32 - rl.is_key_down(KeyboardKey::KEY_A) as i32;
     let nav_y =
         rl.is_key_down(KeyboardKey::KEY_S) as i32 - rl.is_key_down(KeyboardKey::KEY_W) as i32;
-    let zoom_held = !ctrl && rl.is_key_down(KeyboardKey::KEY_C);
-    let shift_held = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
-        || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+    // Q zooms in, E zooms out. Both held cancels out.
+    let zoom_dir =
+        (rl.is_key_down(KeyboardKey::KEY_Q) as i32 - rl.is_key_down(KeyboardKey::KEY_E) as i32)
+            as f32;
+    let zoom_held = !ctrl && zoom_dir != 0.0;
 
     {
         let mut reticle = RETICLE_ACTIVE.write().unwrap();
@@ -1064,8 +1103,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                     let n = &nodes[i];
                     (n.path.clone(), n.name.clone())
                 };
-                *editor_open = true;
-                crate::editor::tabs::open(&path, &name);
+                if crate::editor::tabs::open(&path, &name).is_ok() {
+                    *editor_open = true;
+                }
                 *context_node = None;
             }
             return;
@@ -1163,8 +1203,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             // Continuous: advance the log band per frame of frame time while
             // the key is held, re-anchoring so the reticle's node stays put.
             let world = reticle_world(&camera);
-            let dir = if shift_held { -1.0 } else { 1.0 };
-            camera.zoom = zoomed_continuously(camera.zoom, dir, rl.get_frame_time());
+            camera.zoom = zoomed_continuously(camera.zoom, zoom_dir, rl.get_frame_time());
             camera.target = target_for_center(world, &camera);
         }
     }

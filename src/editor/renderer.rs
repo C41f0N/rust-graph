@@ -95,7 +95,8 @@ fn line_layout(
 
 // The in-content filename title opens the scrollable document. It owns the
 // top 20% of the editor panel (the whole window in fullscreen) and scrolls
-// away with the text; it is deliberately not a sticky header.
+// away with the text; it is deliberately not a sticky header. A divider marks
+// its bottom edge so it reads as a separate widget above the document body.
 fn title_height(editor_height: i32) -> i32 {
     ((editor_height.max(1) as f32) * 0.20).round() as i32
 }
@@ -433,8 +434,70 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             return;
         }
 
-        // --- Content area (shifted down by header + tab bar) ---
-        let content_y = editor_y + header_h + crate::editor::tabs::TABS_H;
+        // --- Content area (shifted down by header + tab bar + preview banner) ---
+        let preview = crate::editor::tabs::active_preview_view();
+        let preview_h = if preview.is_some() {
+            config::scaled_size(config::EDITOR_PREVIEW_BANNER_H)
+        } else {
+            0
+        };
+        let content_y = editor_y + header_h + crate::editor::tabs::TABS_H + preview_h;
+
+        // Read-only preview banner: it is sticky (outside the scissor) and
+        // states both the page and why editing is unavailable.
+        if let Some(view) = &preview {
+            let banner_y = editor_y + header_h + crate::editor::tabs::TABS_H;
+            d.draw_rectangle(
+                editor_x,
+                banner_y,
+                editor_width,
+                preview_h,
+                Color::new(38, 42, 52, 235),
+            );
+            d.draw_line(
+                editor_x,
+                banner_y + preview_h,
+                editor_x + editor_width,
+                banner_y + preview_h,
+                Color::new(255, 255, 255, 34),
+            );
+            let last_line = view.first_line + view.line_count.saturating_sub(1);
+            let label = if view.line_count == 0 {
+                "Large file preview - read-only".to_string()
+            } else {
+                format!(
+                    "Large file preview - read-only - lines {}-{}",
+                    view.first_line + 1,
+                    last_line + 1
+                )
+            };
+            let fs = config::scaled_size(13);
+            let ty = banner_y + (preview_h - fs) / 2;
+            let label_w = text::measure(d, &label, fs);
+            text::draw(
+                &mut *d,
+                &label,
+                editor_x + padding,
+                ty,
+                fs,
+                Color::new(220, 224, 232, 255),
+            );
+
+            let mut hint = format!(
+                "{} - PgUp/PgDn page",
+                crate::editor::document::human_bytes(view.file_bytes)
+            );
+            if view.truncated {
+                hint.push_str(" - long lines clipped");
+            }
+            let hw = text::measure(d, &hint, fs);
+            let hx = (editor_x + editor_width - padding - hw).max(editor_x + padding);
+            // Narrow panels drop the right-hand hint rather than drawing it
+            // through the page label.
+            if hx > editor_x + padding + label_w + config::scaled_size(12) {
+                text::draw(&mut *d, &hint, hx, ty, fs, Color::new(156, 162, 176, 255));
+            }
+        }
 
         // The filename title is the first thing in the scrollable document.
         // Its height counts toward the content, so the scrollbar and cursor
@@ -611,10 +674,14 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         hit_test::LINK_HITS.lock().unwrap().clear();
 
         // Clamp the scroll offset to the real content height.
-        let content_view_h = editor_height - header_h - crate::editor::tabs::TABS_H;
+        let content_view_h = editor_height
+            - header_h
+            - crate::editor::tabs::TABS_H
+            - preview_h;
         let viewport_h = (content_view_h - padding).max(1);
         let max_scroll = (total_h - viewport_h).max(0);
         let mut scroll = (*buffer::SCROLL_Y.read().unwrap()).clamp(0, max_scroll);
+        buffer::SCROLL_MAX.store(max_scroll, std::sync::atomic::Ordering::Relaxed);
 
         // Record which source lines fall inside the scrolled viewport so the
         // main loop's image preload only decodes what the user can see. The
@@ -775,6 +842,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     );
                 }
                 if !renaming
+                    && preview.is_none()
                     && over_band
                     && s.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
                 {
@@ -787,6 +855,20 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         std::sync::atomic::Ordering::Relaxed,
                     );
                 }
+            }
+
+            // Divider under the in-content filename title. It scrolls (and
+            // clips) with the title band, so the filename reads as its own
+            // widget above the document body rather than floating in it.
+            if title_h > 0 {
+                let divider_y = title_top + title_h;
+                s.draw_line(
+                    content_x0 + padding,
+                    divider_y,
+                    content_x0 + content_w - padding,
+                    divider_y,
+                    Color::new(255, 255, 255, 40),
+                );
             }
 
             for (vi, line) in vlines.iter().enumerate() {

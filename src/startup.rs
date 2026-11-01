@@ -263,7 +263,8 @@ fn shortcuts_note() -> &'static str {
      together.\n\
      \n\
      **Graph**\n\
-     - WASD - move; C / Shift+C - zoom in / out (hold to glide)\n\
+     - WASD - move; Q / E - zoom in / out (hold to glide)\n\
+     - G - open the editor view\n\
      - Space - open the hovered node\n\
      - V - dive into the hovered node's sub-graph\n\
      - R - node context menu\n\
@@ -274,6 +275,8 @@ fn shortcuts_note() -> &'static str {
      \n\
      **Editor, navigation mode**\n\
      - Enter / E - start editing the selected line\n\
+     - W / S or Up / Down - move the selected line\n\
+     - Up / W on the first line - reveal the filename title\n\
      - Esc - back to navigation mode\n\
      - G - close the editor and return to the graph\n\
      - Q - toggle editor fullscreen\n\
@@ -283,6 +286,7 @@ fn shortcuts_note() -> &'static str {
      **Editor, edit mode**\n\
      - Ctrl+S - save (autosave also fires after a typing pause)\n\
      - Ctrl+Z / Ctrl+Y - undo / redo\n\
+     - Ctrl+Shift+T - close the active tab\n\
      - Esc - back to navigation mode\n\
      \n\
      **Everywhere** - Ctrl+K opens any note by name; Ctrl+= and Ctrl+-\n\
@@ -297,7 +301,7 @@ fn try_this_note() -> &'static str {
      for the fold demo.\n\
      \n\
      1. Open [[Fold me]] and read how its demo works.\n\
-     2. Hold C, then Shift+C: the view zooms in, then out, smoothly.\n\
+     2. Hold Q, then E: the view zooms in, then out, smoothly.\n\
      3. Right-click [[Fold me]] and choose Fold: its children vanish into\n\
         a disc right in front of you. Unwrap spills them back out, then\n\
         Fold again - the round trip is the whole demo in ten seconds.\n\

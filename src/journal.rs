@@ -142,17 +142,18 @@ pub fn step_date(d: Date, delta: i32) -> Date {
 // Open a journal note without touching the disk: an existing day's note
 // opens like any other (nav mode), while one that doesn't exist yet opens
 // as a blank *pending* document that only materializes on its first save
-// (see materialize_if_pending). Returns true when the note is pending, so
-// callers can drop straight into edit mode for a fresh entry. The caller
+// (see materialize_if_pending). Returns `Some(true)` when the note is pending
+// (callers drop straight into edit mode), `Some(false)` for an existing note,
+// and `None` when the open was refused (the tab set is unchanged). The caller
 // must not be holding NODES or BUFFER.
-pub fn open_date(d: Date) -> bool {
+pub fn open_date(d: Date) -> Option<bool> {
     let stem = date_to_stem(d);
     let filename = format!("{stem}.md");
     let dir = crate::graph::processing::DIR_PATH.read().unwrap().clone();
     let path = dir.join(&filename);
     let pending = !path.is_file();
-    crate::editor::tabs::open(&path, &stem);
-    pending
+    crate::editor::tabs::open(&path, &stem).ok()?;
+    Some(pending)
 }
 
 // Same rule, deferred through OPEN_NOTE_REQUESTED because the editor input
@@ -173,7 +174,7 @@ pub fn open_date_requested(d: Date) -> bool {
     pending
 }
 
-pub fn open_today() -> bool {
+pub fn open_today() -> Option<bool> {
     open_date(local_date())
 }
 

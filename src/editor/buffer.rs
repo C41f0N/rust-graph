@@ -4,6 +4,7 @@ use crate::editor::text;
 use crate::filesystem;
 use raylib::prelude::*;
 use std::path::Path;
+use std::sync::atomic::AtomicI32;
 use std::sync::Mutex;
 use std::sync::RwLock;
 
@@ -27,6 +28,11 @@ pub static ANCHOR_Y: RwLock<i32> = RwLock::new(0);
 // the renderer each frame to the actual content height, so the input handler
 // can nudge it freely (e.g. mouse wheel).
 pub static SCROLL_Y: RwLock<i32> = RwLock::new(0);
+
+// Largest valid scroll offset for the content just laid out, published by the
+// renderer. The input handler uses it to turn a wheel at the bottom of a
+// preview page into a "next page" request.
+pub static SCROLL_MAX: AtomicI32 = AtomicI32::new(0);
 
 // Inclusive range of source-line indices that were on screen in the last
 // rendered frame, set by the editor renderer. The main loop preloads only the
@@ -486,6 +492,25 @@ fn wrap_line(
 
 pub fn load_from_file(path: &Path) {
     let content = filesystem::read_file(path);
+    load_from_text(&content);
+}
+
+// Install a document's raw text. Shared by the normal editable open path and
+// the preflight path; callers must not hold a BUFFER lock.
+pub fn load_from_text(content: &str) {
+    let lines = if content.is_empty() {
+        vec![String::new()]
+    } else {
+        content.lines().map(str::to_string).collect()
+    };
+    load_lines(lines);
+}
+
+// Install an already-split editable document. Used by the open preflight so a
+// file that passed the size checks is not read twice; `lines` follows the same
+// semantics as `str::lines()` (no extra entry for a trailing newline). The
+// trailing empty line the editor moves into is added here.
+pub fn load_lines(mut lines: Vec<String>) {
     let mut buffer = BUFFER.write().unwrap();
     let mut cursor_x = CURSOR_X.write().unwrap();
     let mut cursor_y = CURSOR_Y.write().unwrap();
@@ -501,16 +526,13 @@ pub fn load_from_file(path: &Path) {
     crate::editor::FOLDED_LINES.write().unwrap().clear();
 
     buffer.clear();
+    buffer.append(&mut lines);
+    if buffer.is_empty() {
+        buffer.push(String::new());
+    }
     // Force a follow on the first rendered frame after opening: the cursor is
     // about to move to the end of the (possibly new) file.
     *LAST_CURSOR.write().unwrap() = (i32::MIN, i32::MIN);
-    if content.is_empty() {
-        buffer.push(String::new());
-    } else {
-        for line in content.lines() {
-            buffer.push(line.to_string());
-        }
-    }
     // Place the cursor at the end of the file
     *cursor_y = (buffer.len() - 1) as i32;
     *cursor_x = buffer.last().map_or(0, |l| l.len() as i32);
@@ -524,6 +546,48 @@ pub fn load_from_file(path: &Path) {
     // user can type immediately.
     crate::editor::NAV_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
     ensure_trailing_newline_locked(&mut buffer);
+    crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::editor::LAST_EDIT_MILLIS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+// Install one bounded, read-only preview page. The buffer only ever holds that
+// page, so the renderer's whole-buffer layout stays cheap; paging replaces the
+// contents instead of appending. `anchor_end` puts the caret and scroll at the
+// bottom, used when stepping backwards to keep the page visually contiguous.
+pub fn load_preview_lines(lines: Vec<String>, anchor_end: bool) {
+    let mut buffer = BUFFER.write().unwrap();
+    let mut cursor_x = CURSOR_X.write().unwrap();
+    let mut cursor_y = CURSOR_Y.write().unwrap();
+    let mut anchor_x = ANCHOR_X.write().unwrap();
+    let mut anchor_y = ANCHOR_Y.write().unwrap();
+
+    crate::editor::hit_test::reset_click_state();
+    crate::editor::history::clear();
+    crate::editor::FOLDED_LINES.write().unwrap().clear();
+    crate::editor::TITLE_RENAME_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::editor::TITLE_RENAME_DRAFT.write().unwrap().clear();
+
+    buffer.clear();
+    buffer.extend(lines);
+    if buffer.is_empty() {
+        buffer.push(String::new());
+    }
+    ensure_trailing_newline_locked(&mut buffer);
+
+    if anchor_end {
+        let last = buffer.len() - 1;
+        *cursor_y = last as i32;
+        *cursor_x = buffer[last].len() as i32;
+        *SCROLL_Y.write().unwrap() = i32::MAX;
+    } else {
+        *cursor_y = 0;
+        *cursor_x = 0;
+        *SCROLL_Y.write().unwrap() = 0;
+    }
+    *anchor_x = *cursor_x;
+    *anchor_y = *cursor_y;
+    *LAST_CURSOR.write().unwrap() = (i32::MIN, i32::MIN);
+    crate::editor::NAV_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::editor::DIRTY.store(false, std::sync::atomic::Ordering::Relaxed);
     crate::editor::LAST_EDIT_MILLIS.store(0, std::sync::atomic::Ordering::Relaxed);
 }

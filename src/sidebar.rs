@@ -67,6 +67,30 @@ fn hit_bar(m: Vector2) -> bool {
         && m.y as i32 <= by + bh
 }
 
+// Open the editor view. Open tabs persist across view switches, so reopening
+// is enough. With no tabs yet, fall back to the currently selected graph node
+// so the editor always has something to show.
+pub fn open_editor(editor_open: &mut bool) {
+    if !*editor_open && !crate::editor::tabs::has_any() {
+        let selected = *crate::graph::processing::SELECTED_NODE.read().unwrap();
+        if let Some(i) = selected {
+            let opened = {
+                let nodes = crate::graph::processing::NODES.read().unwrap();
+                nodes.get(i).map(|n| (n.path.clone(), n.name.clone()))
+            };
+            if let Some((path, name)) = opened {
+                // A refused open must not switch views: the notice is drawn
+                // over the graph and the editor keeps whatever document it
+                // had.
+                if crate::editor::tabs::open(&path, &name).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+    *editor_open = true;
+}
+
 // Handles clicks on the strip. Returns true when the press landed on the bar
 // (consumed: nothing behind it gets the click this frame). Switching views only
 // toggles editor_open; main.rs's existing open/close transitions load and save
@@ -83,24 +107,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
         if id == GRAPH_BUTTON {
             *editor_open = false;
         } else {
-            // Editor button: open the editor view. Open tabs persist across
-            // view switches, so just reopening is enough. With no tabs yet,
-            // fall back to the currently selected graph node so the button
-            // always has something to show.
-            if !*editor_open {
-                if !crate::editor::tabs::has_any() {
-                    let selected = *crate::graph::processing::SELECTED_NODE.read().unwrap();
-                    if let Some(i) = selected {
-                        let (path, name) = {
-                            let nodes = crate::graph::processing::NODES.read().unwrap();
-                            let n = &nodes[i];
-                            (n.path.clone(), n.name.clone())
-                        };
-                        crate::editor::tabs::open(&path, &name);
-                    }
-                }
-            }
-            *editor_open = true;
+            open_editor(editor_open);
         }
     }
     true

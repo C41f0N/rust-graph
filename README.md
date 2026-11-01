@@ -48,6 +48,13 @@ notes are still exactly what they were before you started.
 - **Autocomplete** for `[[wikilinks]]` as you type, a **command palette**
   ("Add asset"), and image import via a native file picker (`rfd`).
 - **Autosave** on a typing pause, plus `Ctrl+S` to force-save immediately.
+- **Large files stay usable**: notes within the editing budget (512 KiB /
+  5,000 lines / 16 KiB per line) open normally. Larger files open as a
+  read-only, chunked preview with a sticky banner, screen-at-a-time
+  `PgUp`/`PgDn`, and automatic page changes when the wheel hits a chunk edge.
+  Files over 64 MiB are refused with a non-blocking toast instead of freezing
+  the UI, and invalid UTF-8 is refused rather than rendered as replacement
+  text.
 - Custom system fonts, text zoom (`Ctrl + =` / `Ctrl + -`), and a settings
   dialog that persists everything it changes.
 
@@ -109,6 +116,7 @@ hand-rolled layouts of different densities for trying the app out:
 | Force-tuning panel            | `F` (closes with `Esc`)                |
 | Text zoom                     | `Ctrl + =` / `Ctrl + -`                |
 | Save                          | `Ctrl+S`                               |
+| Page a large-file preview     | `PgUp` / `PgDn`, or wheel at chunk edge |
 | Switch graph / editor view    | far-left icon dock                     |
 
 ## Building and running
@@ -133,6 +141,7 @@ src/
   filesystem.rs          file scanning, Markdown link parsing, CRUD
   frontmatter.rs         frontmatter (header:) parsing and updates
   sidebar.rs             graph/editor view-switcher dock
+  notice.rs              non-blocking toast overlay
   graph.rs               module wiring for the graph sub-modules
   graph/
     processing.rs        nodes/edges, forces, alpha cooling, layout, persistence
@@ -141,6 +150,7 @@ src/
     settings.rs          settings dialog / font picker
   editor/
     buffer.rs            document model, undo-friendly edits
+    document.rs          large-file policy + bounded chunk readers
     input_handler.rs     editing commands and shortcuts
     renderer.rs          Markdown renderer
     tabs.rs              multi-document tabs + per-document state
@@ -156,6 +166,7 @@ src/
 cargo test
 ```
 
-140 tests cover the interesting-isolated parts — grid-vs-brute-force repulsion,
-the alpha-cooling rest guarantee, edge/radius updates on note edits, link
-renaming, and the shared hit-test geometry of the force panel.
+The test suite covers the interesting-isolated parts — grid-vs-brute-force
+repulsion, the alpha-cooling rest guarantee, edge/radius updates on note edits,
+link renaming, the shared hit-test geometry of the force panel, and the
+large-file policy/bounded readers.

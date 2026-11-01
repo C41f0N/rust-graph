@@ -53,6 +53,9 @@ pub struct PaletteState {
     // is exactly a calendar date (in either separator), even when no such
     // note exists yet. Journal rows precede the note matches.
     pub show_journal: bool,
+    // Last note whose graph node was focused, so typing that keeps the same
+    // match selected does not re-centre the graph every keystroke.
+    pub last_focused: Option<PathBuf>,
 }
 
 pub static STATE: RwLock<PaletteState> = RwLock::new(PaletteState {
@@ -63,6 +66,7 @@ pub static STATE: RwLock<PaletteState> = RwLock::new(PaletteState {
     matches: Vec::new(),
     show_create: false,
     show_journal: false,
+    last_focused: None,
 });
 
 fn stem(path: &Path) -> String {
@@ -174,6 +178,38 @@ fn recompute(st: &mut PaletteState) {
     st.selected = if total == 0 { 0 } else { st.selected.min(total - 1) };
 }
 
+// The note row currently under the palette highlight, if any. The journal row
+// sits at index 0 when shown and the create row trails the matches, so both
+// are skipped here.
+fn selected_note_path(st: &PaletteState) -> Option<PathBuf> {
+    let m = st.selected.checked_sub(st.show_journal as usize)?;
+    if m < st.matches.len() {
+        let idx = st.matches[m];
+        st.index.get(idx).map(|e| e.path.clone())
+    } else {
+        None
+    }
+}
+
+// Point the graph at the highlighted note row. Called after every filter or
+// selection change so the graph location follows typing and Up/Down, not just
+// the final Enter. The last-focused path suppresses redundant re-centring when
+// the same match stays selected across keystrokes.
+fn sync_graph_to_selection() {
+    let path = {
+        let mut st = STATE.write().unwrap();
+        let Some(path) = selected_note_path(&st) else {
+            return;
+        };
+        if st.last_focused.as_deref() == Some(path.as_path()) {
+            return;
+        }
+        st.last_focused = Some(path.clone());
+        path
+    };
+    crate::graph::processing::focus_note_in_graph(&path);
+}
+
 pub fn open() {
     let root = crate::graph::processing::project_root();
     let index = build_index(&root);
@@ -182,6 +218,7 @@ pub fn open() {
     st.filter.clear();
     st.selected = 0;
     st.index = index;
+    st.last_focused = None;
     recompute(&mut st);
 }
 
@@ -210,6 +247,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
             close();
         } else {
             open();
+            sync_graph_to_selection();
         }
         return true;
     }
@@ -224,39 +262,58 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE) {
-        let mut st = STATE.write().unwrap();
-        if !st.filter.is_empty() {
-            st.filter.pop();
-            recompute(&mut st);
+        let changed = {
+            let mut st = STATE.write().unwrap();
+            if st.filter.is_empty() {
+                false
+            } else {
+                st.filter.pop();
+                recompute(&mut st);
+                true
+            }
+        };
+        if changed {
+            sync_graph_to_selection();
         }
         return true;
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_DOWN) || rl.is_key_pressed(KeyboardKey::KEY_TAB) {
-        let mut st = STATE.write().unwrap();
-        let total = st.matches.len() + st.show_create as usize + st.show_journal as usize;
-        if total > 0 {
-            st.selected = (st.selected + 1) % total;
+        {
+            let mut st = STATE.write().unwrap();
+            let total = st.matches.len() + st.show_create as usize + st.show_journal as usize;
+            if total > 0 {
+                st.selected = (st.selected + 1) % total;
+            }
         }
+        sync_graph_to_selection();
         return true;
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_UP) {
-        let mut st = STATE.write().unwrap();
-        let total = st.matches.len() + st.show_create as usize + st.show_journal as usize;
-        if total > 0 {
-            st.selected = (st.selected + total - 1) % total;
+        {
+            let mut st = STATE.write().unwrap();
+            let total = st.matches.len() + st.show_create as usize + st.show_journal as usize;
+            if total > 0 {
+                st.selected = (st.selected + total - 1) % total;
+            }
         }
+        sync_graph_to_selection();
         return true;
     }
 
+    let mut typed_any = false;
     while let Some(code) = rl.get_char_pressed() {
         let ch = char::from_u32(code as u32).unwrap_or(' ');
         if !ch.is_control() {
             let mut st = STATE.write().unwrap();
             st.filter.push(ch);
             recompute(&mut st);
+            typed_any = true;
         }
+    }
+    if typed_any {
+        sync_graph_to_selection();
     }
 
     if rl.is_key_pressed(KeyboardKey::KEY_ENTER) || rl.is_key_pressed(KeyboardKey::KEY_KP_ENTER) {
@@ -287,22 +344,33 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
             }
         };
         let acted = action.is_some();
+        let mut opened_editor = false;
         match action {
             Some(Action::Open(path, name)) => {
-                crate::editor::tabs::open(&path, &name);
+                if crate::editor::tabs::open(&path, &name).is_ok() {
+                    // Also point the graph at the chosen note, so switching
+                    // back to the graph view lands on it instead of wherever
+                    // the camera happened to be.
+                    crate::graph::processing::focus_note_in_graph(&path);
+                    opened_editor = true;
+                }
             }
             Some(Action::Create(name)) => {
                 let dir = crate::graph::processing::DIR_PATH.read().unwrap().clone();
-                crate::editor::tabs::create_and_open(&dir, &name);
+                opened_editor = crate::editor::tabs::create_and_open(&dir, &name).is_some();
             }
             Some(Action::Journal(d)) => {
-                if crate::journal::open_date(d) {
-                    crate::editor::NAV_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+                if let Some(pending) = crate::journal::open_date(d) {
+                    if pending {
+                        crate::editor::NAV_MODE
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    opened_editor = true;
                 }
             }
             None => {}
         }
-        if acted {
+        if acted && opened_editor {
             *editor_open = true;
         }
         close();
@@ -496,9 +564,30 @@ mod tests {
             matches: Vec::new(),
             show_create: false,
             show_journal: false,
+            last_focused: None,
         };
         recompute(&mut st);
         st
+    }
+
+    #[test]
+    fn selected_note_path_skips_journal_and_create_rows() {
+        let mut st = state("", &["a", "b"]);
+        assert_eq!(selected_note_path(&st), Some(PathBuf::from("/n0.md")));
+
+        // The journal row occupies index 0 when offered.
+        st.show_journal = true;
+        st.selected = 0;
+        assert_eq!(selected_note_path(&st), None);
+        st.selected = 1;
+        assert_eq!(selected_note_path(&st), Some(PathBuf::from("/n0.md")));
+        st.selected = 2;
+        assert_eq!(selected_note_path(&st), Some(PathBuf::from("/n1.md")));
+
+        // The create row trails every match.
+        st.show_create = true;
+        st.selected = 3;
+        assert_eq!(selected_note_path(&st), None);
     }
 
     #[test]

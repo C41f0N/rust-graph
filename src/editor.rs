@@ -1,11 +1,22 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
 use std::sync::RwLock;
 
 use crate::config;
 
 // Set by the X close button to request the editor close.
 pub static CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+// Set by Ctrl+Shift+T to request closing the active tab. Deferred to main
+// because tabs::close swaps the buffer globals and must run after the editor
+// input handler releases its locks.
+pub static CLOSE_TAB_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+// Set when navigation-mode `G` asks to return to the graph. Main closes the
+// editor before the graph handler runs in the same frame, so without this
+// latch the graph's own `G` binding would immediately reopen the editor and
+// the key would appear to do nothing. The graph handler consumes it once.
+pub static G_TO_GRAPH_LATCH: AtomicBool = AtomicBool::new(false);
 
 // Set by the input handler when a rendered [[wikilink]] is clicked. It only
 // records path+name and returns: the input handler holds BUFFER's write lock
@@ -22,8 +33,8 @@ pub static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 // Navigation mode: the cursor is detached from the text (everything renders
 // as formatted view-mode) and the line under the cursor is only *selected*,
 // highlighted by a bar. Esc enters it, Enter/e re-enter edit mode, g/q/esc
-// navigate away. Reset whenever a file loads so a document always opens in
-// edit mode.
+// navigate away. A file opens in navigation mode; read-only preview pages stay
+// there for their whole lifetime.
 pub static NAV_MODE: AtomicBool = AtomicBool::new(false);
 
 // A deferred journal open (through OPEN_NOTE_REQUESTED) that found no file
@@ -67,6 +78,12 @@ pub static NEW_NODE_BUTTON: RwLock<Option<(i32, i32, i32, i32)>> = RwLock::new(N
 // edit, used to autosave after a typing pause (no edits for a while).
 pub static LAST_EDIT_MILLIS: AtomicU64 = AtomicU64::new(0);
 
+// Deferred preview paging. The editor input handler runs while holding the
+// BUFFER write lock, so it cannot reload a chunk there; it records -1/+1 here
+// and main performs the switch once the lock is released (same pattern as
+// OPEN_NOTE_REQUESTED).
+pub static PREVIEW_PAGE_REQUEST: AtomicI32 = AtomicI32::new(0);
+
 // Bounds of the editor panel for the current fullscreen state. Single source
 // of truth for the panel geometry: the graph handler's "click inside/outside
 // the editor" test, the editor's own input geometry and main's per-frame panel
@@ -96,10 +113,22 @@ pub fn content_bounds() -> (i32, i32, i32, i32) {
     }
 }
 
+// Height of the read-only preview banner for the active document, in screen
+// pixels. Zero for ordinary editable tabs. Renderer and input handler both use
+// this so their content origins can never disagree.
+pub fn preview_banner_height() -> i32 {
+    if tabs::active_is_preview() {
+        config::scaled_size(config::EDITOR_PREVIEW_BANNER_H)
+    } else {
+        0
+    }
+}
+
 pub mod autocomplete;
 pub mod blocks;
 pub mod buffer;
 pub mod command;
+pub mod document;
 pub mod history;
 pub mod hit_test;
 pub mod images;
