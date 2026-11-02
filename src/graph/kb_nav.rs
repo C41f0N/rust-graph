@@ -1,10 +1,10 @@
 // Keyboard graph navigation: a reticle pinned to the centre of the view stands
 // in for the mouse while the user drives the graph from the keys. W/A/S/D pan
-// the camera under the reticle, holding Q zooms in and E zooms out
-// (continuous, anchored on the reticle), and Space / V / R act on the node
-// under it (open, enter its sub-graph, context menu). Any real mouse motion
-// (or Esc) hands the pointer back to the mouse, so the two never fight over
-// the hover target.
+// the camera under the reticle with a short acceleration ramp, holding Q zooms
+// in and E zooms out (also eased, anchored on the reticle), and Space / V / R
+// act on the node under it (open, enter its sub-graph, context menu). Any real
+// mouse motion (or Esc) hands the pointer back to the mouse, so the two never
+// fight over the hover target.
 
 use crate::config;
 use crate::graph::renderer::{t_to_zoom, zoom_to_t};
@@ -20,22 +20,99 @@ pub static RETICLE_ACTIVE: RwLock<bool> = RwLock::new(false);
 // to it, so reaching for the mouse always wins over a latched reticle.
 pub const RETICLE_HANDOFF_PX: f32 = 3.0;
 
-// On-screen pan speed for W/A/S/D, in pixels per second. The camera target
-// advances by pan_px / zoom world units, so the view glides at a constant rate
+// On-screen pan speed cap for W/A/S/D, in pixels per second. The camera target
+// advances by pan_px / zoom world units, so the view moves at a constant rate
 // on screen no matter how far the camera is zoomed in or out.
 pub const PAN_PX_PER_SEC: f32 = 560.0;
 
-// Continuous keyboard zoom speed: the fraction of the log zoom band crossed
-// per second while Q (in) / E (out) is held. Applied per frame with frame
-// time, the zoom glides smoothly like the wheel instead of jumping in
-// key-repeat steps.
+// How quickly the pan velocity ramps toward PAN_PX_PER_SEC (and back to zero
+// on release), in pixels per second squared. The short ramp (~90 ms) keeps the
+// middle of a held key at the cap while making the start and stop feel soft
+// instead of snapping between 0 and full speed.
+pub const PAN_ACCEL_PX_PER_SEC2: f32 = 6400.0;
+
+// Continuous keyboard zoom speed cap: the fraction of the log zoom band
+// crossed per second at full tilt while Q (in) / E (out) is held. The velocity
+// eases up to this cap and back down to zero.
 pub const KB_ZOOM_T_PER_SEC: f32 = 0.6;
 
-// Advance the log zoom band by `dir` (+1 in, -1 out) for `dt` seconds from
-// `z`, clamped to the same 0.1..10 limits the wheel and zoom scale use.
-pub fn zoomed_continuously(z: f32, dir: f32, dt: f32) -> f32 {
-    let t = (zoom_to_t(z) + dir * KB_ZOOM_T_PER_SEC * dt).clamp(0.0, 1.0);
-    t_to_zoom(t)
+// Zoom acceleration in log-band units per second squared. ~100 ms to reach the
+// cap, mirroring the pan ramp.
+pub const KB_ZOOM_ACCEL_T_PER_SEC2: f32 = 6.0;
+
+// Longest frame step the motion integrator accepts. A window drag or
+// breakpoint can otherwise produce a huge dt and teleport the camera.
+pub const MAX_FRAME_DT: f32 = 0.05;
+
+// Live camera velocities, in screen pixels/s and log-zoom units/s. They persist
+// across frames so releasing a key glides to a stop instead of stopping dead.
+pub static PAN_VELOCITY: RwLock<Vector2> = RwLock::new(Vector2 { x: 0.0, y: 0.0 });
+pub static ZOOM_VELOCITY: RwLock<f32> = RwLock::new(0.0);
+
+// Clamp a frame step so a hitch cannot inject a huge velocity change.
+pub fn frame_dt(dt: f32) -> f32 {
+    dt.clamp(0.0, MAX_FRAME_DT)
+}
+
+// Move a scalar toward `target` by at most `max_delta` (no overshoot).
+fn approach(current: f32, target: f32, max_delta: f32) -> f32 {
+    if current < target {
+        (current + max_delta).min(target)
+    } else {
+        (current - max_delta).max(target)
+    }
+}
+
+// Vector form of `approach`: change the velocity by at most `max_delta` in
+// magnitude, so diagonals accelerate as one vector instead of per axis.
+fn approach_vec(current: Vector2, target: Vector2, max_delta: f32) -> Vector2 {
+    let diff = target - current;
+    let len = diff.length();
+    if len <= max_delta || len == 0.0 {
+        target
+    } else {
+        current + diff * (max_delta / len)
+    }
+}
+
+// Advance one frame of pan velocity toward the capped input direction.
+// `direction` need not be normalized; (0, 0) means "no key held" and lets the
+// current velocity coast down to zero.
+pub fn pan_velocity_step(current: Vector2, direction: Vector2, dt: f32) -> Vector2 {
+    let len = direction.length();
+    let target = if len > 0.0 {
+        direction * (PAN_PX_PER_SEC / len)
+    } else {
+        Vector2::zero()
+    };
+    approach_vec(current, target, PAN_ACCEL_PX_PER_SEC2 * frame_dt(dt))
+}
+
+// Advance one frame of zoom velocity toward the capped Q/E direction (+1 in,
+// -1 out, 0 = coast to a stop).
+pub fn zoom_velocity_step(current: f32, direction: f32, dt: f32) -> f32 {
+    let target = if direction == 0.0 {
+        0.0
+    } else {
+        direction.signum() * KB_ZOOM_T_PER_SEC
+    };
+    approach(current, target, KB_ZOOM_ACCEL_T_PER_SEC2 * frame_dt(dt))
+}
+
+// Apply `velocity` (log-band units/s) for one frame. Returns the new zoom and
+// whether the band limit stopped it, so the caller can zero the velocity
+// instead of leaning on the clamp.
+pub fn advance_zoom(zoom: f32, velocity: f32, dt: f32) -> (f32, bool) {
+    let raw = zoom_to_t(zoom) + velocity * frame_dt(dt);
+    let clamped = raw.clamp(0.0, 1.0);
+    (t_to_zoom(clamped), (raw - clamped).abs() > f32::EPSILON)
+}
+
+// Drop any residual glide. Called when the camera is reframed or another input
+// source takes over.
+pub fn reset_motion() {
+    *PAN_VELOCITY.write().unwrap() = Vector2::zero();
+    *ZOOM_VELOCITY.write().unwrap() = 0.0;
 }
 
 // The centre of the viewport, where the reticle sits.
@@ -113,22 +190,83 @@ mod tests {
     }
 
     #[test]
-    fn continuous_zoom_glides_and_round_trips() {
-        // Holding in raises the zoom, holding out lowers it.
-        let up = zoomed_continuously(0.7, 1.0, 0.3);
-        assert!(up > 0.7);
-        let back = zoomed_continuously(up, -1.0, 0.3);
-        assert!((back - 0.7).abs() < 1e-3, "round-trip drift to {back}");
-        // Zero elapsed time changes nothing.
-        assert!((zoomed_continuously(1.0, 1.0, 0.0) - 1.0).abs() < 1e-6);
+    fn pan_velocity_ramps_to_the_cap_and_glides_to_a_stop() {
+        let dir = Vector2::new(1.0, 0.0);
+        let dt = 1.0 / 60.0;
+        let mut v = Vector2::zero();
+
+        // The first frame is a small step, not an instant jump to full speed.
+        v = pan_velocity_step(v, dir, dt);
+        assert!(v.x > 0.0 && v.x < PAN_PX_PER_SEC);
+
+        for _ in 0..30 {
+            v = pan_velocity_step(v, dir, dt);
+            assert!(v.length() <= PAN_PX_PER_SEC + 1e-3);
+        }
+        assert!((v.x - PAN_PX_PER_SEC).abs() < 1e-3);
+        assert!(v.y.abs() < 1e-6);
+
+        // Releasing the key decelerates monotonically to rest.
+        for _ in 0..30 {
+            let before = v.x;
+            v = pan_velocity_step(v, Vector2::zero(), dt);
+            assert!(v.x >= -1e-6 && v.x <= before);
+        }
+        assert!(v.length() < 1e-3);
     }
 
     #[test]
-    fn continuous_zoom_clamps_at_the_band_limits() {
-        // A long hold saturates at the wheel's own 0.1..10 bounds.
+    fn diagonal_pan_is_capped_like_a_cardinal_one() {
+        let dt = 1.0 / 60.0;
+        let mut v = Vector2::zero();
+        for _ in 0..30 {
+            v = pan_velocity_step(v, Vector2::new(1.0, 1.0), dt);
+        }
+        assert!(v.length() <= PAN_PX_PER_SEC + 1e-3);
+        assert!((v.length() - PAN_PX_PER_SEC).abs() < 1e-3);
+        assert!((v.x - v.y).abs() < 1e-3);
+    }
+
+    #[test]
+    fn zoom_velocity_ramps_and_stops() {
+        let dt = 1.0 / 60.0;
+        let mut v = 0.0;
+        for _ in 0..30 {
+            v = zoom_velocity_step(v, 1.0, dt);
+        }
+        assert!((v - KB_ZOOM_T_PER_SEC).abs() < 1e-4);
+
+        for _ in 0..30 {
+            v = zoom_velocity_step(v, 0.0, dt);
+        }
+        assert!(v.abs() < 1e-5);
+    }
+
+    #[test]
+    fn zoom_advance_moves_in_log_space() {
+        let (next, hit) = advance_zoom(1.0, KB_ZOOM_T_PER_SEC, 1.0 / 60.0);
+        assert!(next > 1.0);
+        assert!(!hit);
+    }
+
+    #[test]
+    fn zoom_advance_clamps_at_the_band_limits() {
+        // A long hold saturates at the wheel's own 0.1..10 bounds and reports
+        // the limit so the caller can zero the velocity.
         let max = t_to_zoom(1.0);
         let min = t_to_zoom(0.0);
-        assert!((zoomed_continuously(max, 1.0, 10.0) - max).abs() < 1e-6);
-        assert!((zoomed_continuously(min, -1.0, 10.0) - min).abs() < 1e-6);
+        let (z, hit) = advance_zoom(max, KB_ZOOM_T_PER_SEC, 1.0);
+        assert!(hit);
+        assert!((z - max).abs() < 1e-6);
+        let (z, hit) = advance_zoom(min, -KB_ZOOM_T_PER_SEC, 1.0);
+        assert!(hit);
+        assert!((z - min).abs() < 1e-6);
+    }
+
+    #[test]
+    fn frame_dt_caps_long_hitches() {
+        assert_eq!(frame_dt(-1.0), 0.0);
+        assert_eq!(frame_dt(0.016), 0.016);
+        assert_eq!(frame_dt(5.0), MAX_FRAME_DT);
     }
 }

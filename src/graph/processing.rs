@@ -781,6 +781,9 @@ pub fn generate_nodes_from_directory(dir: &Path) {
                 Vector2::new(config::width() as f32 / 2.0, config::height() as f32 / 2.0);
         }
     }
+
+    // A reframed graph must not inherit a keyboard glide from the old view.
+    crate::graph::kb_nav::reset_motion();
 }
 
 // Fold/unwrap refresh: reconcile the in-memory node set with what the disk now
@@ -1081,6 +1084,8 @@ fn focus_node(idx: usize) {
     *CONTEXT_EMPTY.write().unwrap() = false;
     *DELETE_PENDING.write().unwrap() = false;
     crate::graph::renderer::CAMERA.write().unwrap().target = position;
+    // A jumped camera must not coast on velocity from the old view.
+    crate::graph::kb_nav::reset_motion();
 }
 
 // Resolve a node header target (stored relative to a directory, e.g.
