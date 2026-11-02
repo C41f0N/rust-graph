@@ -1,8 +1,8 @@
 use crate::config;
 use crate::graph::kb_nav::{
-    advance_zoom, frame_dt, pan_velocity_step, queue_wheel_zoom, reset_motion, reticle_world,
-    step_wheel_zoom, target_for_center, zoom_velocity_step, PAN_VELOCITY, RETICLE_ACTIVE,
-    SHIFT_SPEED_MULTIPLIER, ZOOM_TWEEN, ZOOM_VELOCITY,
+    advance_zoom, cancel_focus_pan, frame_dt, pan_velocity_step, queue_wheel_zoom, reset_motion,
+    reticle_world, step_wheel_zoom, target_for_center, zoom_velocity_step, PAN_VELOCITY,
+    RETICLE_ACTIVE, SHIFT_SPEED_MULTIPLIER, ZOOM_TWEEN, ZOOM_VELOCITY,
 };
 use crate::graph::processing::*;
 use crate::graph::renderer::*;
@@ -1233,6 +1233,11 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     let pan_velocity = *PAN_VELOCITY.read().unwrap();
 
     let mut camera = CAMERA.write().unwrap();
+
+    // Any manual camera input takes over from a Ctrl+K focus glide.
+    if camera_drag || wheel != 0.0 || nav_x != 0 || nav_y != 0 || zoom_held {
+        cancel_focus_pan();
+    }
 
     // Wheel zoom: one notch scales the destination by a fixed factor, and the
     // camera eases in-out to the cumulative destination. Starting from the live

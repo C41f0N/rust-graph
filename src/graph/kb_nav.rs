@@ -202,12 +202,81 @@ pub fn step_wheel_zoom(dt: f32) -> Option<f32> {
     Some(next)
 }
 
+// Ctrl+K focus glide: the camera pans to the highlighted node instead of
+// teleporting. `start` is where the target was when the row changed, so a new
+// selection retargets the glide from its current position.
+pub struct PanTween {
+    pub start: Vector2,
+    pub target: Vector2,
+    pub elapsed: f32,
+    pub duration: f32,
+}
+
+pub static PAN_TWEEN: RwLock<Option<PanTween>> = RwLock::new(None);
+
+// Glide timing. Duration scales with on-screen distance: short hops still get a
+// visible ease, while a jump across the graph stays well under half a second.
+const FOCUS_PAN_MIN_SECS: f32 = 0.14;
+const FOCUS_PAN_MAX_SECS: f32 = 0.45;
+const FOCUS_PAN_PX_PER_SEC: f32 = 1400.0;
+
+fn focus_pan_duration(from: Vector2, to: Vector2, zoom: f32) -> f32 {
+    let screen_px = (to - from).length() * zoom.max(0.0);
+    (screen_px / FOCUS_PAN_PX_PER_SEC).clamp(FOCUS_PAN_MIN_SECS, FOCUS_PAN_MAX_SECS)
+}
+
+// Camera target at `elapsed` seconds through a focus glide, plus whether it has
+// finished.
+pub fn focus_pan_at(
+    start: Vector2,
+    target: Vector2,
+    elapsed: f32,
+    duration: f32,
+) -> (Vector2, bool) {
+    let t = (elapsed / duration.max(f32::EPSILON)).clamp(0.0, 1.0);
+    (start + (target - start) * ease_in_out(t), t >= 1.0)
+}
+
+// Start gliding to `target` from the camera's current position. Any previous
+// glide is replaced, so holding Up/Down in the palette keeps the graph moving
+// smoothly toward each newly highlighted node.
+pub fn begin_focus_pan(from: Vector2, target: Vector2, zoom: f32) {
+    *PAN_TWEEN.write().unwrap() = Some(PanTween {
+        start: from,
+        target,
+        elapsed: 0.0,
+        duration: focus_pan_duration(from, target, zoom),
+    });
+}
+
+// Advance the glide by one frame and return the camera target it reached. The
+// caller applies it to CAMERA (main does this even while the Ctrl+K palette
+// owns the frame, so the graph moves behind the overlay).
+pub fn advance_focus_pan(dt: f32) -> Option<Vector2> {
+    let mut pending = PAN_TWEEN.write().unwrap();
+    let (next, done) = {
+        let tween = pending.as_mut()?;
+        tween.elapsed += frame_dt(dt);
+        focus_pan_at(tween.start, tween.target, tween.elapsed, tween.duration)
+    };
+    if done {
+        *pending = None;
+    }
+    Some(next)
+}
+
+// A manual camera input takes over from the focus glide.
+pub fn cancel_focus_pan() {
+    *PAN_TWEEN.write().unwrap() = None;
+}
+
 // Drop any residual glide. Called when the camera is reframed or another input
 // source takes over.
 pub fn reset_motion() {
     *PAN_VELOCITY.write().unwrap() = Vector2::zero();
     *ZOOM_VELOCITY.write().unwrap() = 0.0;
     *ZOOM_TWEEN.write().unwrap() = None;
+    *PAN_TWEEN.write().unwrap() = None;
 }
 
 // The centre of the viewport, where the reticle sits.
@@ -448,6 +517,39 @@ mod tests {
         // not the arithmetic mean (2.5).
         let (mid, _) = wheel_zoom_at(1.0, 4.0, 0.5, 1.0);
         assert!((mid - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn focus_glide_eases_to_the_node_without_overshoot() {
+        let start = Vector2::new(0.0, 0.0);
+        let target = Vector2::new(400.0, 300.0);
+        let distance = (target - start).length();
+        let duration = focus_pan_duration(start, target, 1.0);
+        assert!(duration >= FOCUS_PAN_MIN_SECS && duration <= FOCUS_PAN_MAX_SECS);
+
+        let mut previous = start;
+        let mut arrived = false;
+        for frame in 1..=120 {
+            let elapsed = frame as f32 / 60.0;
+            let (pos, done) = focus_pan_at(start, target, elapsed, duration);
+            assert!((pos - start).length() <= distance + 1e-3);
+            assert!((target - pos).length() <= (target - previous).length() + 1e-3);
+            previous = pos;
+            if done {
+                arrived = true;
+                break;
+            }
+        }
+        assert!(arrived, "focus glide did not settle");
+        assert!((previous - target).length() < 1e-4);
+    }
+
+    #[test]
+    fn focus_glide_duration_is_bounded() {
+        let near = focus_pan_duration(Vector2::zero(), Vector2::zero(), 1.0);
+        assert!((near - FOCUS_PAN_MIN_SECS).abs() < 1e-6);
+        let far = focus_pan_duration(Vector2::zero(), Vector2::new(100_000.0, 0.0), 1.0);
+        assert!((far - FOCUS_PAN_MAX_SECS).abs() < 1e-6);
     }
 
     #[test]

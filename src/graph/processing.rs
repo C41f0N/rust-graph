@@ -1032,8 +1032,19 @@ pub fn project_root() -> PathBuf {
 // level the current view does not show, navigate there first so the node is
 // actually present.
 pub fn focus_note_in_graph(note: &Path) -> bool {
+    focus_note_in_graph_with(note, false)
+}
+
+// Same as focus_note_in_graph, but the camera visibly glides to the node
+// instead of snapping. The Ctrl+K palette uses this while it previews the
+// highlighted row, so the graph behind the overlay follows the selection.
+pub fn glide_note_in_graph(note: &Path) -> bool {
+    focus_note_in_graph_with(note, true)
+}
+
+fn focus_note_in_graph_with(note: &Path, animate: bool) -> bool {
     if let Some(idx) = node_index_by_path(note) {
-        focus_node(idx);
+        focus_node(idx, animate);
         return true;
     }
 
@@ -1063,7 +1074,7 @@ pub fn focus_note_in_graph(note: &Path) -> bool {
     }
 
     if let Some(idx) = node_index_by_path(note) {
-        focus_node(idx);
+        focus_node(idx, animate);
         true
     } else {
         false
@@ -1074,7 +1085,7 @@ fn node_index_by_path(path: &Path) -> Option<usize> {
     NODES.read().unwrap().iter().position(|n| n.path == path)
 }
 
-fn focus_node(idx: usize) {
+fn focus_node(idx: usize, animate: bool) {
     let position = NODES.read().unwrap().get(idx).map(|n| n.position);
     let Some(position) = position else {
         return;
@@ -1083,9 +1094,17 @@ fn focus_node(idx: usize) {
     *CONTEXT_NODE.write().unwrap() = None;
     *CONTEXT_EMPTY.write().unwrap() = false;
     *DELETE_PENDING.write().unwrap() = false;
-    crate::graph::renderer::CAMERA.write().unwrap().target = position;
-    // A jumped camera must not coast on velocity from the old view.
+    let (from, zoom) = {
+        let camera = crate::graph::renderer::CAMERA.read().unwrap();
+        (camera.target, camera.zoom)
+    };
+    // A focus jump must not inherit a keyboard glide or a previous focus tween.
     crate::graph::kb_nav::reset_motion();
+    if animate {
+        crate::graph::kb_nav::begin_focus_pan(from, position, zoom);
+    } else {
+        crate::graph::renderer::CAMERA.write().unwrap().target = position;
+    }
 }
 
 // Resolve a node header target (stored relative to a directory, e.g.
@@ -3550,6 +3569,46 @@ mod tests {
             assert_eq!(camera.target.y, pos.y);
         }
 
+        *SELECTED_NODE.write().unwrap() = None;
+        NAV_STACK.write().unwrap().clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn glide_focus_animates_instead_of_snapping() {
+        let _guard = TEST_NAV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("rg_focus_glide_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        filesystem::create_dir(&dir);
+        filesystem::write_file(&dir.join("a.md"), "# A\n");
+        filesystem::write_file(&dir.join("b.md"), "# B\n");
+
+        *DIR_PATH.write().unwrap() = dir.clone();
+        NAV_STACK.write().unwrap().clear();
+        generate_nodes_from_directory(&dir);
+
+        let pos = {
+            let nodes = NODES.read().unwrap();
+            nodes.iter().find(|n| n.name == "b").unwrap().position
+        };
+        let start = Vector2::new(pos.x + 900.0, pos.y + 700.0);
+        crate::graph::renderer::CAMERA.write().unwrap().target = start;
+
+        assert!(glide_note_in_graph(&dir.join("b.md")));
+        // The glide is queued, so the live target has not jumped yet.
+        assert_eq!(crate::graph::renderer::CAMERA.read().unwrap().target, start);
+
+        let mut last = start;
+        let mut frames = 0;
+        while let Some(target) = crate::graph::kb_nav::advance_focus_pan(1.0 / 60.0) {
+            last = target;
+            frames += 1;
+            assert!(frames < 120, "focus glide did not settle");
+        }
+        assert!(frames > 2, "focus should animate, not snap ({frames} frames)");
+        assert!((last - pos).length() < 1e-4);
+
+        crate::graph::kb_nav::reset_motion();
         *SELECTED_NODE.write().unwrap() = None;
         NAV_STACK.write().unwrap().clear();
         let _ = std::fs::remove_dir_all(&dir);

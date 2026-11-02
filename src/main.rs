@@ -279,6 +279,13 @@ fn main() {
             graph::input_handler::handle_input(&mut rl, &mut editor_open);
         }
 
+        // The Ctrl+K palette consumes its frames, so advance the graph's focus
+        // glide here: the camera behind the overlay keeps moving while the
+        // highlighted row changes.
+        if let Some(target) = graph::kb_nav::advance_focus_pan(rl.get_frame_time()) {
+            graph::renderer::CAMERA.write().unwrap().target = target;
+        }
+
         // Ctrl + =/+ and Ctrl + - zoom the global text scale (editor body text
         // and the graph UI text share one factor, so the shortcut works in both
         // views). Ctrl+Shift + =/+ and + - zoom only the editor's document text:

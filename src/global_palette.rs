@@ -207,7 +207,7 @@ fn sync_graph_to_selection() {
         st.last_focused = Some(path.clone());
         path
     };
-    crate::graph::processing::focus_note_in_graph(&path);
+    crate::graph::processing::glide_note_in_graph(&path);
 }
 
 pub fn open() {
