@@ -281,6 +281,20 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             return;
         }
 
+        // With no note open there is no nav/edit mode to fall through to, so
+        // the graph keys still need to work from the placeholder: G goes back
+        // to the graph (and the latch stops the same press reopening the
+        // editor) and Esc closes it.
+        if rl.is_key_pressed(KeyboardKey::KEY_G) {
+            crate::editor::G_TO_GRAPH_LATCH.store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::editor::CLOSE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            crate::editor::CLOSE_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+
         // Placeholder: the only mouse affordance is the create button.
         if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
             let m = rl.get_mouse_position();

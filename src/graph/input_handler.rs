@@ -1,7 +1,8 @@
 use crate::config;
 use crate::graph::kb_nav::{
-    advance_zoom, frame_dt, pan_velocity_step, reset_motion, reticle_world, target_for_center,
-    zoom_velocity_step, PAN_VELOCITY, RETICLE_ACTIVE, RETICLE_HANDOFF_PX, ZOOM_VELOCITY,
+    advance_zoom, frame_dt, pan_velocity_step, queue_wheel_zoom, reset_motion, reticle_world,
+    step_wheel_zoom, target_for_center, zoom_velocity_step, PAN_VELOCITY, RETICLE_ACTIVE,
+    SHIFT_SPEED_MULTIPLIER, ZOOM_TWEEN, ZOOM_VELOCITY,
 };
 use crate::graph::processing::*;
 use crate::graph::renderer::*;
@@ -17,6 +18,10 @@ thread_local! {
     // (select/double-click-open) never wakes the settled layout.
     static PRESS_NODE: Cell<Option<usize>> = Cell::new(None);
     static PRESS_SCREEN_POS: Cell<Vector2> = Cell::new(Vector2::zero());
+    // True while a left-button drag that started on empty canvas is panning the
+    // camera. A press on a node or a UI widget never arms this, so node drags
+    // and the zoom scale keep their own gestures.
+    static LEFT_PAN_ARMED: Cell<bool> = Cell::new(false);
 }
 
 // Screen-pixel distance the pointer must travel after pressing a node before
@@ -1006,11 +1011,14 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 PRESS_SCREEN_POS.set(rl.get_mouse_position());
                 LAST_CLICK_TIME.set(current_time);
                 LAST_CLICK_NODE.set(Some(i));
+                LEFT_PAN_ARMED.set(false);
             }
         } else {
-            // Click on empty space: deselect
+            // Click on empty space: deselect and arm a canvas pan for as long
+            // as the button stays down.
             *selected_node = None;
             *delete_pending = false;
+            LEFT_PAN_ARMED.set(true);
         }
     }
 
@@ -1031,6 +1039,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     if rl.is_mouse_button_released(MouseButton::MOUSE_BUTTON_LEFT) {
         *dragging_node = None;
         PRESS_NODE.set(None);
+        LEFT_PAN_ARMED.set(false);
     }
 
     if let Some(i) = *dragging_node {
@@ -1042,8 +1051,8 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     // Keyboard navigation: a reticle pinned to the centre of the view stands
     // in for the pointer. W/A/S/D pan the graph under it, holding Q zooms in
     // and E zooms out (continuous, anchored on the reticle), and Space / V / R
-    // act on the node under it. Esc or any real mouse motion hands the pointer
-    // back and hides the reticle.
+    // act on the node under it. Esc or a mouse press hands the pointer back and
+    // hides the reticle; merely moving the mouse leaves keyboard navigation on.
     // ------------------------------------------------------------
 
     let nav_x =
@@ -1055,9 +1064,20 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         (rl.is_key_down(KeyboardKey::KEY_Q) as i32 - rl.is_key_down(KeyboardKey::KEY_E) as i32)
             as f32;
     let zoom_held = !ctrl && zoom_dir != 0.0;
+    // Shift doubles WASD and Q/E speed. The accel scales with it, so the ramp
+    // stays the same length and only the sustained speed changes.
+    let boost = if rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+        || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
+    {
+        SHIFT_SPEED_MULTIPLIER
+    } else {
+        1.0
+    };
 
+    // Only a deliberate click hands the pointer back. Moving the mouse no
+    // longer interrupts keyboard movement: the reticle stays put (and WASD/QE
+    // keep working) until a button is actually pressed.
     let handoff_input = rl.is_key_pressed(KeyboardKey::KEY_ESCAPE)
-        || rl.get_mouse_delta().length() > RETICLE_HANDOFF_PX
         || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
         || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)
         || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_MIDDLE);
@@ -1068,7 +1088,8 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             *reticle = true;
         }
         let was_active = *reticle;
-        // Esc, or any real mouse motion/press, hands the pointer back.
+        // Esc or a mouse press hands the pointer back. Passive mouse motion
+        // does not, so nudging the mouse never stops a WASD/QE glide.
         if handoff_input {
             *reticle = false;
         }
@@ -1189,9 +1210,14 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
     let wheel = rl.get_mouse_wheel_move();
     let dt = frame_dt(rl.get_frame_time());
+    // Both middle-drag and left-drag pan the camera. Left-drag only counts when
+    // it started on empty canvas, so dragging a node or a UI control still owns
+    // the gesture.
     let middle_pan = rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_MIDDLE);
+    let left_pan = rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) && LEFT_PAN_ARMED.get();
+    let camera_drag = middle_pan || left_pan;
 
-    // Ease the keyboard velocities toward the held direction (or zero on
+    // Ease the keyboard pan velocity toward the held direction (or zero on
     // release). This runs before the camera lock so a coasting camera keeps
     // moving for a few frames after the key lets go.
     let motion_allowed = reticle_on && !*editor_open;
@@ -1200,39 +1226,37 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     } else {
         Vector2::zero()
     };
-    let zoom_input = if motion_allowed { zoom_dir } else { 0.0 };
     {
         let mut pan = PAN_VELOCITY.write().unwrap();
-        *pan = pan_velocity_step(*pan, pan_dir, dt);
-        let mut zoom = ZOOM_VELOCITY.write().unwrap();
-        *zoom = zoom_velocity_step(*zoom, zoom_input, dt);
+        *pan = pan_velocity_step(*pan, pan_dir, dt, boost);
     }
     let pan_velocity = *PAN_VELOCITY.read().unwrap();
-    let mut zoom_velocity = *ZOOM_VELOCITY.read().unwrap();
 
     let mut camera = CAMERA.write().unwrap();
 
-    // Zoom (suppressed while the editor is open: the wheel belongs to the
-    // editor's scrollview then). The wheel is direct manipulation, so it also
-    // cancels any residual keyboard zoom instead of adding to it.
+    // Wheel zoom: one notch scales the destination by a fixed factor, and the
+    // camera eases in-out to the cumulative destination. Starting from the live
+    // zoom keeps the restart smooth when rapid notches retarget the tween.
     if wheel != 0.0 && !*editor_open {
-        camera.zoom = (camera.zoom + wheel * 0.1).clamp(0.1, 10.0);
-        zoom_velocity = 0.0;
-        *ZOOM_VELOCITY.write().unwrap() = 0.0;
+        queue_wheel_zoom(camera.zoom, wheel);
     }
 
-    // Keyboard pan + zoom, anchored on the reticle so the node under it stays
-    // put while the camera moves or rescales. The velocities carry a short
-    // glide after release, so this runs whenever they are non-zero.
-    if motion_allowed {
-        if !middle_pan {
-            camera.target.x += pan_velocity.x * dt / camera.zoom;
-            camera.target.y += pan_velocity.y * dt / camera.zoom;
-        } else {
-            // A middle-drag owns the pan; drop the keyboard glide.
-            *PAN_VELOCITY.write().unwrap() = Vector2::zero();
-        }
-        if zoom_velocity != 0.0 {
+    let zoom_input = if motion_allowed && zoom_held { zoom_dir } else { 0.0 };
+    // Holding Q/E takes over from a wheel glide.
+    if zoom_input != 0.0 {
+        *ZOOM_TWEEN.write().unwrap() = None;
+    }
+
+    if let Some(next_zoom) = step_wheel_zoom(dt) {
+        camera.zoom = next_zoom;
+    } else {
+        // Keyboard zoom (or its release glide), anchored on the reticle so the
+        // node under it stays put while the camera rescales.
+        let mut zoom = ZOOM_VELOCITY.write().unwrap();
+        *zoom = zoom_velocity_step(*zoom, zoom_input, dt, boost);
+        let zoom_velocity = *zoom;
+        drop(zoom);
+        if motion_allowed && zoom_velocity != 0.0 {
             let world = reticle_world(&camera);
             let (next_zoom, saturated) = advance_zoom(camera.zoom, zoom_velocity, dt);
             camera.zoom = next_zoom;
@@ -1243,8 +1267,20 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         }
     }
 
-    // Pan
-    if middle_pan {
+    // Keyboard pan, anchored on the reticle.
+    if motion_allowed {
+        if !camera_drag {
+            camera.target.x += pan_velocity.x * dt / camera.zoom;
+            camera.target.y += pan_velocity.y * dt / camera.zoom;
+        } else {
+            // A mouse drag owns the pan; drop the keyboard glide.
+            *PAN_VELOCITY.write().unwrap() = Vector2::zero();
+        }
+    }
+
+    // Mouse pan: middle-drag anywhere, or left-drag that started on empty
+    // canvas. Direct manipulation stays immediate (no easing).
+    if camera_drag {
         let delta = rl.get_mouse_delta();
 
         camera.target.x -= delta.x / camera.zoom;
@@ -1266,6 +1302,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         if *ZOOM_SCALE_DRAGGING.read().unwrap() {
             let t = 1.0 - ((m.y as i32 - ztop) as f32 / zh as f32).clamp(0.0, 1.0);
             camera.zoom = t_to_zoom(t);
+            *ZOOM_TWEEN.write().unwrap() = None;
             *ZOOM_VELOCITY.write().unwrap() = 0.0;
         }
     }
