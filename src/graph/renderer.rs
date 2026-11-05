@@ -102,7 +102,7 @@ pub fn circle_intersects_rect(center: Vector2, radius: f32, rect: Rectangle) -> 
     dx * dx + dy * dy <= radius * radius
 }
 
-pub fn draw(d: &mut RaylibDrawHandle) {
+pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
     let hover_node = HOVER_NODE.read().unwrap();
     let selected_node = SELECTED_NODE.read().unwrap();
     let delete_pending = DELETE_PENDING.read().unwrap();
@@ -279,6 +279,23 @@ pub fn draw(d: &mut RaylibDrawHandle) {
 
     drop(mode);
     drop(camera);
+
+    // Hover action popup (screen space). It follows the hovered node and lists
+    // that node's shortcuts as clickable rows. Hidden whenever another modal
+    // owns the screen or the graph is covered by the editor/palette.
+    let popup_modal = *crate::graph::processing::RENAMING.read().unwrap()
+        || *crate::graph::processing::ADDING_NOTE.read().unwrap()
+        || *delete_pending
+        || *crate::graph::processing::SHOW_FORCE_PANEL.read().unwrap()
+        || crate::graph::processing::CONTEXT_NODE
+            .read()
+            .unwrap()
+            .is_some()
+        || *crate::graph::processing::CONTEXT_EMPTY.read().unwrap()
+        || *crate::graph::settings::SETTINGS_OPEN.read().unwrap();
+    if !editor_open && !crate::global_palette::is_open() && !popup_modal {
+        crate::graph::hover_popup::draw(d, &nodes);
+    }
 
     // Draw delete confirmation prompt (outside camera mode, in screen space)
     if *delete_pending {
@@ -533,7 +550,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
         let step_font = config::scaled_size(16);
         text::draw(
             d,
-            "EDITOR",
+            "OPTIONS",
             px + 12,
             settings::options_top() + (settings::options_label_h() - section_font) / 2,
             section_font,
@@ -551,9 +568,11 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                 Color::WHITE,
             );
             // Value, right-aligned just left of the steppers, dimmed once the
-            // setting sits at a limit so a dead press reads as dead.
-            let at_limit = (value == min && min != max) || value == max;
-            let vlabel = format!("{value}px");
+            // setting sits at a limit so a dead press reads as dead. Toggle
+            // rows always show On/Off at full brightness.
+            let at_limit = !settings::option_is_toggle(row)
+                && ((value == min && min != max) || value == max);
+            let vlabel = settings::option_value_label(row);
             let vw = text::measure(d, &vlabel, section_font);
             let (minus, plus) = settings::stepper_rects(row);
             text::draw(

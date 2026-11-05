@@ -510,7 +510,7 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
 
         let mut d = rl.begin_drawing(&thread);
 
-        graph::renderer::draw(&mut d);
+        graph::renderer::draw(&mut d, editor_open);
 
         editor::renderer::draw(&mut d, editor_open, editor_dimentions);
 

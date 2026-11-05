@@ -1,3 +1,4 @@
+pub mod hover_popup;
 pub mod input_handler;
 pub mod kb_nav;
 pub mod processing;

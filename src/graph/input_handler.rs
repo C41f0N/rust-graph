@@ -4,6 +4,7 @@ use crate::graph::kb_nav::{
     reticle_world, step_wheel_zoom, target_for_center, zoom_velocity_step, PAN_VELOCITY,
     RETICLE_ACTIVE, SHIFT_SPEED_MULTIPLIER, ZOOM_TWEEN, ZOOM_VELOCITY,
 };
+use crate::graph::hover_popup::{self, HoverAction};
 use crate::graph::processing::*;
 use crate::graph::renderer::*;
 use crate::graph::settings;
@@ -49,6 +50,20 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
     drop(camera);
 
+    // Any modal overlay owns the frame and hides the hover popup. Clearing it
+    // here, before the early returns below, keeps a popup from reappearing
+    // stale the instant the modal closes.
+    let popup_modal = *renaming
+        || *adding_note
+        || *delete_pending
+        || context_node.is_some()
+        || *context_empty
+        || *settings::SETTINGS_OPEN.read().unwrap()
+        || *SHOW_FORCE_PANEL.read().unwrap();
+    if popup_modal {
+        hover_popup::clear();
+    }
+
     // ------------------------------------------------------------
     // While the editor is open the graph is inert: the editor owns all
     // keyboard, wheel and click input, so nothing behind it can be selected,
@@ -75,6 +90,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         *ZOOM_SCALE_DRAGGING.write().unwrap() = false;
         // The keyboard reticle belongs to the graph too.
         *RETICLE_ACTIVE.write().unwrap() = false;
+        hover_popup::clear();
         reset_motion();
         return;
     }
@@ -422,11 +438,19 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     // Delete key = start delete confirmation
     // ------------------------------------------------------------
 
+    // The hover popup advertises Del for the node under the pointer, so while
+    // it is open the hovered node is the delete target even though hovering
+    // does not select. Otherwise Del keeps acting on the selected node.
+    let delete_target = match hover_popup::visible_index(&nodes) {
+        Some(idx) => Some(idx),
+        None => *selected_node,
+    };
     if !*editor_open
-        && selected_node.is_some()
+        && delete_target.is_some()
         && (rl.is_key_pressed(KeyboardKey::KEY_DELETE)
             || rl.is_key_pressed_repeat(KeyboardKey::KEY_DELETE))
     {
+        *selected_node = delete_target;
         *delete_pending = true;
         return;
     }
@@ -535,6 +559,12 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         }
     }
 
+    // Escape dismisses the hover popup before the graph's other Esc behaviour.
+    if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) && hover_popup::is_visible(&nodes) {
+        hover_popup::clear();
+        return;
+    }
+
     // Escape dismisses an open context menu
     if (context_node.is_some() || *context_empty) && rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
         *context_node = None;
@@ -598,6 +628,112 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         }
         return;
     }
+
+    // ------------------------------------------------------------
+    // Hover action popup
+    // ------------------------------------------------------------
+
+    let popup_camera = *CAMERA.read().unwrap();
+    let popup_mouse = rl.get_mouse_position();
+    let popup_press = rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+        || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_RIGHT)
+        || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_MIDDLE);
+
+    if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+        if let Some((idx, action)) = hover_popup::hit_test(&nodes, &popup_camera, popup_mouse) {
+            let path = nodes[idx].path.clone();
+            let name = nodes[idx].name.clone();
+            let has_subgraph = nodes[idx].has_subgraph;
+            hover_popup::clear();
+            drop(nodes);
+            drop(dragging_node);
+            drop(hover_node);
+            drop(selected_node);
+            drop(delete_pending);
+            drop(editing_node);
+            drop(adding_note);
+            drop(adding_name);
+            drop(context_node);
+            drop(context_pos);
+            drop(renaming);
+            drop(rename_name);
+            drop(dir_path);
+            drop(context_empty);
+
+            // The popup is a button surface for the same actions the keyboard
+            // and context menu expose. Reuse their state changes instead of
+            // introducing a second implementation.
+            match action {
+                HoverAction::Open => {
+                    if crate::editor::tabs::open(&path, &name).is_ok() {
+                        *editor_open = true;
+                    }
+                    *CONTEXT_NODE.write().unwrap() = None;
+                }
+                HoverAction::OpenSubGraph => {
+                    if has_subgraph {
+                        navigate_into(&name);
+                        // Regenerate nodes/edges (also resets camera + zoom).
+                        generate_nodes_from_directory(&*DIR_PATH.read().unwrap());
+                    }
+                }
+                HoverAction::Delete => {
+                    // Arm the existing Y/N confirmation instead of deleting
+                    // straight from a click.
+                    *SELECTED_NODE.write().unwrap() = Some(idx);
+                    *DELETE_PENDING.write().unwrap() = true;
+                    *CONTEXT_NODE.write().unwrap() = None;
+                }
+                HoverAction::More => {
+                    // Hand off to the full context menu at the pointer.
+                    *SELECTED_NODE.write().unwrap() = Some(idx);
+                    *CONTEXT_NODE.write().unwrap() = Some(idx);
+                    *CONTEXT_POS
+                        .write()
+                        .unwrap() = (popup_mouse.x as i32, popup_mouse.y as i32);
+                    *RENAMING.write().unwrap() = false;
+                    *CONTEXT_EMPTY.write().unwrap() = false;
+                }
+            }
+            return;
+        }
+    }
+
+    // Any other press dismisses the popup but still reaches the graph, so one
+    // click both closes the menu and selects/pans as usual.
+    if popup_press {
+        hover_popup::clear();
+    }
+
+    let popup_reticle_on = *RETICLE_ACTIVE.read().unwrap();
+    let popup_candidate = if popup_reticle_on {
+        None
+    } else {
+        nodes
+            .iter()
+            .position(|n| (n.position - mouse_pos).length() <= n.radius)
+    };
+    let popup_suppressed = popup_modal
+        || popup_reticle_on
+        || dragging_node.is_some()
+        || rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT)
+        || rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_MIDDLE)
+        || rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_RIGHT)
+        || rl.get_mouse_wheel_move() != 0.0
+        || rl.is_key_down(KeyboardKey::KEY_W)
+        || rl.is_key_down(KeyboardKey::KEY_A)
+        || rl.is_key_down(KeyboardKey::KEY_S)
+        || rl.is_key_down(KeyboardKey::KEY_D)
+        || rl.is_key_down(KeyboardKey::KEY_Q)
+        || rl.is_key_down(KeyboardKey::KEY_E);
+    hover_popup::update(
+        &nodes,
+        &popup_camera,
+        popup_candidate,
+        popup_mouse,
+        popup_suppressed,
+        frame_dt(rl.get_frame_time()),
+    );
 
     // ------------------------------------------------------------
     // Mouse click handling
@@ -1121,7 +1257,12 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     // Reticle actions, aimed at the hovered note (else the selected one).
     // Skipped while a context menu is open — that menu owns the keyboard.
     let menu_open = context_node.is_some() || *context_empty;
-    let action_target = (*hover_node).or(*selected_node);
+    // While the popup is open its node stays the key target even if the
+    // pointer has moved onto the popup itself (where it is no longer over the
+    // disc). This keeps the advertised Space/V/R chips truthful.
+    let action_target = hover_popup::visible_index(&nodes)
+        .or(*hover_node)
+        .or(*selected_node);
     if !*editor_open && !menu_open {
         // Space opens the note in the editor, like a double-click.
         if rl.is_key_pressed(KeyboardKey::KEY_SPACE) {

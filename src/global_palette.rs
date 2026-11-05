@@ -226,7 +226,7 @@ pub fn close() {
     STATE.write().unwrap().open = false;
 }
 
-fn is_open() -> bool {
+pub(crate) fn is_open() -> bool {
     STATE.read().unwrap().open
 }
 

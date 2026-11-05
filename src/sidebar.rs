@@ -1,10 +1,24 @@
 use crate::config;
 use raylib::prelude::*;
+use std::sync::RwLock;
 
 // Per-view navigation bar: a small floating strip along the left edge,
 // vertically centered, that stays on top of every page so the user can switch
 // between the graph view and the editor view from anywhere. Minimal black and
 // white: no labels, just a line-graph icon and a document icon.
+
+// The strip is an opt-in mouse affordance: keyboard navigation (G between the
+// graph and editor, Ctrl+K for notes) always works, so the left edge stays
+// clear by default. Settings -> Options toggles it.
+pub static BAR_ENABLED: RwLock<bool> = RwLock::new(false);
+
+pub fn enabled() -> bool {
+    *BAR_ENABLED.read().unwrap()
+}
+
+pub fn set_enabled(v: bool) {
+    *BAR_ENABLED.write().unwrap() = v;
+}
 
 pub const BAR_W: i32 = 56;
 pub const BAR_MARGIN_X: i32 = 12;
@@ -96,6 +110,9 @@ pub fn open_editor(editor_open: &mut bool) {
 // toggles editor_open; main.rs's existing open/close transitions load and save
 // the buffer and (re)build edges.
 pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) -> bool {
+    if !enabled() {
+        return false;
+    }
     if !rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
         return false;
     }
@@ -137,6 +154,9 @@ fn icon_editor(d: &mut RaylibDrawHandle, cx: i32, cy: i32, c: Color) {
 }
 
 pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
+    if !enabled() {
+        return;
+    }
     let (bx, by, bw, bh) = bar_bounds();
     let screen_mouse = d.get_mouse_position();
     let over = hit_bar(screen_mouse);

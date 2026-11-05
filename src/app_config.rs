@@ -27,6 +27,7 @@ pub struct AppConfig {
     pub panel: bool,
     pub padding: i32,
     pub line_spacing: i32,
+    pub left_bar: bool,
 }
 
 impl AppConfig {
@@ -45,6 +46,7 @@ impl AppConfig {
             panel: *SHOW_FORCE_PANEL.read().unwrap(),
             padding: config::editor_padding(),
             line_spacing: config::line_spacing(),
+            left_bar: crate::sidebar::enabled(),
         }
     }
 
@@ -60,6 +62,7 @@ impl AppConfig {
         // layout out of range.
         config::set_editor_padding(self.padding);
         config::set_line_spacing(self.line_spacing);
+        crate::sidebar::set_enabled(self.left_bar);
         apply_font(self.font_name.clone());
     }
 }
@@ -220,6 +223,7 @@ pub fn serialize(cfg: &AppConfig) -> String {
     out.push_str(&format!("font_name={}\n", cfg.font_name));
     out.push_str(&format!("editor_padding={}\n", cfg.padding));
     out.push_str(&format!("editor_line_spacing={}\n", cfg.line_spacing));
+    out.push_str(&format!("left_bar={}\n", if cfg.left_bar { 1 } else { 0 }));
     out
 }
 
@@ -252,6 +256,11 @@ pub fn parse(text: &str, defaults: AppConfig) -> AppConfig {
     {
         cfg.line_spacing = v.clamp(config::EDITOR_LINE_SPACING_MIN, config::EDITOR_LINE_SPACING_MAX);
     }
+    if line_value(text, "left_bar") == Some("1") {
+        cfg.left_bar = true;
+    } else if line_value(text, "left_bar") == Some("0") {
+        cfg.left_bar = false;
+    }
     cfg
 }
 
@@ -270,6 +279,7 @@ mod tests {
             panel: true,
             padding: 24,
             line_spacing: 6,
+            left_bar: true,
         }
     }
 
@@ -287,6 +297,26 @@ mod tests {
         assert!(got.panel);
         assert_eq!(got.padding, 24);
         assert_eq!(got.line_spacing, 6);
+        assert!(got.left_bar);
+    }
+
+    #[test]
+    fn left_bar_defaults_off_and_round_trips() {
+        // An old config without the key keeps the built-in default (off).
+        let defaults = AppConfig {
+            left_bar: false,
+            ..base()
+        };
+        assert!(!parse("window_width=1280\n", defaults).left_bar);
+        // Both explicit values survive serialization.
+        for enabled in [false, true] {
+            let cfg = AppConfig {
+                left_bar: enabled,
+                ..base()
+            };
+            let got = parse(&serialize(&cfg), AppConfig::from_statics());
+            assert_eq!(got.left_bar, enabled);
+        }
     }
 
     #[test]

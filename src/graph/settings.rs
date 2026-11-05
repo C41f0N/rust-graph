@@ -82,8 +82,9 @@ pub fn panel_y() -> i32 {
 
 // The settings carried by the section, in display order. A row's index is its
 // identity for both painting and hit-testing.
-pub const OPTION_ROWS: usize = 2;
+pub const OPTION_ROWS: usize = 3;
 pub const OPTION_LINE_SPACING: usize = 1;
+pub const OPTION_LEFT_BAR: usize = 2;
 
 // Small square stepper button, and the gap between the two.
 const STEP_BTN: i32 = 22;
@@ -137,9 +138,14 @@ pub fn stepper_rects(row: usize) -> (Rectangle, Rectangle) {
 // it moves by 1; the padding is a coarse margin, 4 at a time.
 pub fn option_step(row: usize) -> i32 {
     match row {
-        OPTION_LINE_SPACING => 1,
+        OPTION_LINE_SPACING | OPTION_LEFT_BAR => 1,
         _ => config::EDITOR_PADDING_STEP,
     }
+}
+
+// Boolean rows render as a switch rather than a pixel value.
+pub fn option_is_toggle(row: usize) -> bool {
+    row == OPTION_LEFT_BAR
 }
 
 // Live value and bounds of one option row, so the dialog shows the same number
@@ -151,6 +157,7 @@ pub fn option_value(row: usize) -> (i32, i32, i32) {
             config::EDITOR_LINE_SPACING_MIN,
             config::EDITOR_LINE_SPACING_MAX,
         ),
+        OPTION_LEFT_BAR => (i32::from(crate::sidebar::enabled()), 0, 1),
         _ => (
             config::editor_padding(),
             config::EDITOR_PADDING_MIN,
@@ -163,7 +170,21 @@ pub fn option_value(row: usize) -> (i32, i32, i32) {
 pub fn option_label(row: usize) -> &'static str {
     match row {
         OPTION_LINE_SPACING => "Line Spacing",
+        OPTION_LEFT_BAR => "Left Bar",
         _ => "Horizontal Padding",
+    }
+}
+
+// Formatted value shown at the right of the row.
+pub fn option_value_label(row: usize) -> String {
+    if option_is_toggle(row) {
+        if crate::sidebar::enabled() {
+            "On".to_string()
+        } else {
+            "Off".to_string()
+        }
+    } else {
+        format!("{}px", option_value(row).0)
     }
 }
 
@@ -173,9 +194,13 @@ pub fn nudge_option(row: usize, up: bool) -> bool {
     let next = nudged_value(row, up);
     match next {
         Some(next) => {
-            match row {
-                OPTION_LINE_SPACING => config::set_line_spacing(next),
-                _ => config::set_editor_padding(next),
+            if option_is_toggle(row) {
+                crate::sidebar::set_enabled(next != 0);
+            } else {
+                match row {
+                    OPTION_LINE_SPACING => config::set_line_spacing(next),
+                    _ => config::set_editor_padding(next),
+                }
             }
             crate::app_config::save();
             true
