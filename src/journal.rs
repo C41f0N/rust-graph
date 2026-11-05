@@ -24,7 +24,16 @@ pub fn local_date() -> Date {
     unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
         let t: libc::time_t = now;
-        libc::localtime_r(&t, &mut tm);
+        #[cfg(unix)]
+        {
+            libc::localtime_r(&t, &mut tm);
+        }
+        #[cfg(windows)]
+        {
+            // MSVC names the thread-safe variant localtime_s and takes the
+            // destination first, returning an errno instead of a pointer.
+            libc::localtime_s(&mut tm, &t);
+        }
         (tm.tm_year + 1900, (tm.tm_mon + 1) as u32, tm.tm_mday as u32)
     }
 }
@@ -105,8 +114,7 @@ pub fn parse_date_stem(stem: &str) -> Option<Date> {
     if b.len() != 10 {
         return None;
     }
-    let sep_ok =
-        (b[4] == b'_' || b[4] == b'-') && (b[7] == b'_' || b[7] == b'-');
+    let sep_ok = (b[4] == b'_' || b[4] == b'-') && (b[7] == b'_' || b[7] == b'-');
     let digits_ok = b[0..4]
         .iter()
         .chain(&b[5..7])
@@ -293,3 +301,4 @@ mod tests {
         assert!(civil_from_days(days_from_civil(d.0 as i64, d.1, d.2)) == d);
     }
 }
+
