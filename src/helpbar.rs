@@ -152,15 +152,15 @@ fn resolve_from(f: &StateFlags) -> HelpContext {
 
 // The default (no sub-graph stack) graph view: "up level" is a no-op at the
 // root, so it only appears once a stack exists (GRAPH_BASE_FULL).
+//
+// Per-node actions (Space open, V subgraph, R menu, Del delete) are deliberately
+// absent: the hover popup already lists them next to the node, so repeating
+// them here would just crowd out the global bindings.
 const GRAPH_BASE: &[Chip] = &[
     ("WASD/Arrows", "move"),
     ("Q/E", "zoom in/out"),
     ("G", "to editor"),
-    ("Space", "open"),
-    ("V", "subgraph"),
-    ("R", "menu"),
     ("N", "new"),
-    ("Del", "delete"),
     ("Ctrl+C/V/X", "copy/cut/paste"),
     ("J", "journal"),
     ("F", "forces"),
@@ -171,11 +171,7 @@ const GRAPH_BASE_FULL: &[Chip] = &[
     ("WASD/Arrows", "move"),
     ("Q/E", "zoom in/out"),
     ("G", "to editor"),
-    ("Space", "open"),
-    ("V", "subgraph"),
-    ("R", "menu"),
     ("N", "new"),
-    ("Del", "delete"),
     ("Ctrl+C/V/X", "copy/cut/paste"),
     ("J", "journal"),
     ("F", "forces"),
@@ -471,6 +467,20 @@ mod tests {
                 .all(|(key, _)| *key != "Alt+Left")
         );
         assert!(GRAPH_BASE_FULL.iter().any(|(key, _)| *key == "Alt+Left"));
+    }
+
+    #[test]
+    fn graph_base_leaves_node_actions_to_the_hover_popup() {
+        // The hover popup already lists Space/V/R/Del next to the node, so the
+        // bottom bar must not repeat them.
+        for list in [GRAPH_BASE, GRAPH_BASE_FULL] {
+            for key in ["Space", "V", "R", "Del"] {
+                assert!(
+                    list.iter().all(|(k, _)| *k != key),
+                    "{key} belongs to the hover popup, not the helper bar"
+                );
+            }
+        }
     }
 
     // No state may show an empty bar: draw() breaks on an empty chip list
