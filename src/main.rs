@@ -257,8 +257,19 @@ fn main() {
                 editor::tabs::preview_step(preview_page);
             }
 
-            // Ctrl+Shift+T: close the active tab. Closing the last tab exits
-            // the editor view, exactly like its X button.
+            // Alt+1..9: switch to the tab at that position. Same deferral as
+            // the close above, and a no-op when the tab is already active so
+            // the live (possibly unsaved) buffer is never reloaded.
+            let requested_tab =
+                editor::ACTIVATE_TAB_REQUEST.swap(-1, std::sync::atomic::Ordering::Relaxed);
+            if requested_tab >= 0
+                && editor::tabs::active_index() != Some(requested_tab as usize)
+            {
+                editor::tabs::activate(requested_tab as usize, editor::panel_bounds().2);
+            }
+
+            // Ctrl+W / Ctrl+Shift+T: close the active tab. Closing the last
+            // tab exits the editor view, exactly like its X button.
             if editor::CLOSE_TAB_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) {
                 if editor::tabs::close_active() {
                     editor_open = false;

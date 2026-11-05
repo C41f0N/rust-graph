@@ -287,7 +287,8 @@ fn shortcuts_note() -> &'static str {
      **Editor, edit mode**\n\
      - Ctrl+S - save (autosave also fires after a typing pause)\n\
      - Ctrl+Z / Ctrl+Y - undo / redo\n\
-     - Ctrl+Shift+T - close the active tab\n\
+     - Ctrl+W (or Ctrl+Shift+T) - close the active tab\n\
+     - Alt+1..9 - jump to an open tab\n\
      - Esc - back to navigation mode\n\
      \n\
      **Everywhere** - Ctrl+K opens any note by name; Ctrl+= and Ctrl+-\n\

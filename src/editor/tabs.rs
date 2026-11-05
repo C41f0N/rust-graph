@@ -17,12 +17,38 @@ use std::sync::RwLock;
 // undo/redo stacks. Tabs live for the whole application run and survive the
 // editor closing (switching to the graph view and back).
 
+// Base metrics in UI pixels; every one is scaled through config::scaled_size
+// so the strip grows with the global text zoom like the rest of the chrome.
 pub const TAB_W: i32 = 130;
 pub const TABS_H: i32 = 30;
 const TAB_GAP: i32 = 2;
 const TAB_NAME_LEFT_PAD: i32 = 8;
 const CLOSE_W: i32 = 14;
 const CLOSE_RIGHT_PAD: i32 = 6;
+
+pub fn tab_w() -> i32 {
+    config::scaled_size(TAB_W)
+}
+
+pub fn tabs_h() -> i32 {
+    config::scaled_size(TABS_H)
+}
+
+fn tab_gap() -> i32 {
+    config::scaled_size(TAB_GAP)
+}
+
+fn name_left_pad() -> i32 {
+    config::scaled_size(TAB_NAME_LEFT_PAD)
+}
+
+fn close_w() -> i32 {
+    config::scaled_size(CLOSE_W)
+}
+
+fn close_right_pad() -> i32 {
+    config::scaled_size(CLOSE_RIGHT_PAD)
+}
 
 pub struct Tab {
     pub name: String,
@@ -86,7 +112,7 @@ static TAB_SCROLL: RwLock<i32> = RwLock::new(0);
 
 // Left edge of a tab relative to the bar's left edge (after scroll).
 pub fn tab_left(index: usize, scroll: i32) -> i32 {
-    (index as i32) * (TAB_W + TAB_GAP) - scroll
+    (index as i32) * (tab_w() + tab_gap()) - scroll
 }
 
 // Clamp a tab-bar scroll offset so the last tab's right edge and the bar's
@@ -95,22 +121,23 @@ pub fn clamp_scroll(scroll: i32, count: usize, view_w: i32) -> i32 {
     if count == 0 {
         return 0;
     }
-    let total = (count as i32) * (TAB_W + TAB_GAP) - TAB_GAP;
+    let total = (count as i32) * (tab_w() + tab_gap()) - tab_gap();
     let max_scroll = (total - view_w).max(0);
     scroll.clamp(0, max_scroll)
 }
 
 // The rectangle of tab `i` in screen space.
 pub fn tab_rect(index: usize, bar_x: i32, bar_y: i32, scroll: i32) -> (i32, i32, i32, i32) {
-    (bar_x + tab_left(index, scroll), bar_y, TAB_W, TABS_H)
+    (bar_x + tab_left(index, scroll), bar_y, tab_w(), tabs_h())
 }
 
 // The close-box rectangle within tab `i`, in screen space.
 pub fn close_rect(index: usize, bar_x: i32, bar_y: i32, scroll: i32) -> (i32, i32, i32, i32) {
     let (x, _, w, _) = tab_rect(index, bar_x, bar_y, scroll);
-    let cx = x + w - CLOSE_W - CLOSE_RIGHT_PAD;
-    let cy = bar_y + (TABS_H - CLOSE_W) / 2;
-    (cx, cy, CLOSE_W, CLOSE_W)
+    let cw = close_w();
+    let cx = x + w - cw - close_right_pad();
+    let cy = bar_y + (tabs_h() - cw) / 2;
+    (cx, cy, cw, cw)
 }
 
 fn panel_width() -> i32 {
@@ -306,6 +333,12 @@ fn load_active_globals(tab: &mut Tab, preloaded: Option<Vec<String>>) {
     history::put(undo, redo, run);
 }
 
+// The position of the active document, if any. Shortcuts use it to skip a
+// switch that would be a no-op (and would otherwise reload the file).
+pub fn active_index() -> Option<usize> {
+    *ACTIVE.read().unwrap()
+}
+
 // Make tab `idx` the active document. Saves the old tab first if it was
 // edited, preserves per-tab view + undo state. `view_w` is the tab bar width,
 // used to keep the freshly activated tab visible.
@@ -489,7 +522,7 @@ fn reveal_tab(idx: usize, view_w: i32) {
     let mut scroll = TAB_SCROLL.write().unwrap();
     let count = TABS.read().unwrap().len();
     let left = tab_left(idx, *scroll);
-    let right = left + TAB_W;
+    let right = left + tab_w();
     if left < 0 {
         *scroll = clamp_scroll(*scroll + left, count, view_w);
     } else if right > view_w.max(0) {
@@ -655,7 +688,7 @@ pub fn handle_bar_click(rl: &mut RaylibHandle, bar_x: i32, bar_y: i32, bar_w: i3
     let m = rl.get_mouse_position();
     let mx = m.x as i32;
     let my = m.y as i32;
-    if !(my >= bar_y && my < bar_y + TABS_H && mx >= bar_x && mx <= bar_x + bar_w) {
+    if !(my >= bar_y && my < bar_y + tabs_h() && mx >= bar_x && mx <= bar_x + bar_w) {
         return false;
     }
     let count = TABS.read().unwrap().len();
@@ -701,7 +734,7 @@ pub fn handle_bar_wheel(rl: &mut RaylibHandle, bar_x: i32, bar_y: i32, bar_w: i3
     let m = rl.get_mouse_position();
     let mx = m.x as i32;
     let my = m.y as i32;
-    if !(my >= bar_y && my < bar_y + TABS_H && mx >= bar_x && mx <= bar_x + bar_w) {
+    if !(my >= bar_y && my < bar_y + tabs_h() && mx >= bar_x && mx <= bar_x + bar_w) {
         return false;
     }
     let count = TABS.read().unwrap().len();
@@ -729,11 +762,16 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
 
     // Bar background + bottom separator, then tabs clipped to the row so the
     // horizontally scrolled content never bleeds outside it.
-    d.draw_rectangle(bar_x, bar_y, bar_w, TABS_H, ui::PANEL_SOLID);
-    d.draw_line(bar_x, bar_y + TABS_H, bar_x + bar_w, bar_y + TABS_H, ui::BORDER);
+    d.draw_rectangle(bar_x, bar_y, bar_w, tabs_h(), ui::PANEL_SOLID);
+    d.draw_line(bar_x, bar_y + tabs_h(), bar_x + bar_w, bar_y + tabs_h(), ui::BORDER);
 
     let mouse = d.get_mouse_position();
-    d.draw_scissor_mode(bar_x, bar_y, bar_w, TABS_H, |mut s| {
+    let fs = config::scaled_size(14);
+    let name_pad = name_left_pad();
+    let cw = close_w();
+    let accent_x = config::scaled_size(7);
+    let accent_h = config::scaled_size(2).max(1);
+    d.draw_scissor_mode(bar_x, bar_y, bar_w, tabs_h(), |mut s| {
         for (i, t) in tabs.iter().enumerate() {
             let (x, y, w, h) = tab_rect(i, bar_x, bar_y, scroll);
             if x + w <= bar_x || x >= bar_x + bar_w {
@@ -759,13 +797,14 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
             } else {
                 Color::new(0, 0, 0, 0)
             };
+            let cell_inset = config::scaled_size(2);
             if bg.a != 0 {
                 s.draw_rectangle_rounded(
                     Rectangle::new(
-                        (x + 1) as f32,
-                        (y + 2) as f32,
-                        (w - 2) as f32,
-                        (h - 4) as f32,
+                        (x + cell_inset / 2) as f32,
+                        (y + cell_inset) as f32,
+                        (w - cell_inset) as f32,
+                        (h - cell_inset * 2) as f32,
                     ),
                     0.24,
                     6,
@@ -774,22 +813,32 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
             }
             if is_active {
                 // Bottom accent bar marks the open document.
-                s.draw_rectangle(x + 7, y + h - 2, w - 15, 2, ui::ACCENT);
+                s.draw_rectangle(
+                    x + accent_x,
+                    y + h - accent_h,
+                    w - accent_x * 2 - 1,
+                    accent_h,
+                    ui::ACCENT,
+                );
             }
 
             // Name, pushed left by the close button room. A dated journal tab's
             // title renders as "19th Aug 2025"; the stored name stays the file
             // stem so activation/saving keeps working on the raw path.
             let display = crate::journal::pretty_name(&t.name);
-            let tw = text::measure(&s, &display, 14);
-            let name_x = x + TAB_NAME_LEFT_PAD + if t.dirty { 10 } else { 0 };
-            let max_name = (w - CLOSE_W - CLOSE_RIGHT_PAD - TAB_NAME_LEFT_PAD * 2).max(8);
+            let tw = text::measure(&s, &display, fs);
+            let dot_offset = if t.dirty { config::scaled_size(10) } else { 0 };
+            let name_x = x + name_pad + dot_offset;
+            let max_name =
+                (w - cw - close_right_pad() - name_pad * 2).max(config::scaled_size(8));
             let shown = if tw > max_name {
                 // Truncate with a trailing ellipsis.
                 let mut cut = display.clone();
                 loop {
                     cut.pop();
-                    if text::measure(&s, &format!("{}\u{2026}", cut), 14) <= max_name || cut.is_empty() {
+                    if text::measure(&s, &format!("{}\u{2026}", cut), fs) <= max_name
+                        || cut.is_empty()
+                    {
                         break;
                     }
                 }
@@ -802,13 +851,13 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
             } else {
                 ui::TEXT_SECONDARY
             };
-            text::draw(&mut s, &shown, name_x, y + (h - 14) / 2, 14, color);
+            text::draw(&mut s, &shown, name_x, y + (h - fs) / 2, fs, color);
 
             // Dirty dot: a small filled disc left of the name.
             if t.dirty {
                 s.draw_circle_v(
-                    Vector2::new((x + TAB_NAME_LEFT_PAD) as f32, (y + h / 2) as f32),
-                    2.5,
+                    Vector2::new((x + name_pad) as f32, (y + h / 2) as f32),
+                    (config::scaled_size(5) / 2) as f32,
                     ui::ACCENT,
                 );
             }
@@ -817,10 +866,10 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
             // on the active tab so its close affordance is discoverable).
             if over_close || is_active {
                 let (cx, cy, _, _) = close_rect(i, bar_x, bar_y, scroll);
-                let inset = 4;
+                let inset = config::scaled_size(4).max(1);
                 let gc = if over_close { ui::TEXT } else { ui::TEXT_MUTED };
-                s.draw_line(cx + inset, cy + inset, cx + CLOSE_W - inset, cy + CLOSE_W - inset, gc);
-                s.draw_line(cx + CLOSE_W - inset, cy + inset, cx + inset, cy + CLOSE_W - inset, gc);
+                s.draw_line(cx + inset, cy + inset, cx + cw - inset, cy + cw - inset, gc);
+                s.draw_line(cx + cw - inset, cy + inset, cx + inset, cy + cw - inset, gc);
             }
         }
     });
@@ -859,7 +908,7 @@ mod tests {
         // Wrapping: last tab's right edge aligns with the bar's right edge.
         let count = 10;
         let view_w = 500;
-        let total = (count as i32) * (TAB_W + TAB_GAP) - TAB_GAP;
+        let total = (count as i32) * (tab_w() + tab_gap()) - tab_gap();
         assert_eq!(clamp_scroll(9999, count, view_w), total - view_w);
         assert_eq!(clamp_scroll(-50, count, view_w), 0);
         assert_eq!(clamp_scroll(0, 0, 100), 0);
@@ -869,10 +918,10 @@ mod tests {
     fn tab_layout_is_contiguous_left_to_right() {
         for i in 0..5 {
             let left = tab_left(i, 0);
-            assert_eq!(left, (i as i32) * (TAB_W + TAB_GAP));
+            assert_eq!(left, (i as i32) * (tab_w() + tab_gap()));
         }
         // Scrolling shifts every tab by the same amount.
-        assert_eq!(tab_left(3, 100), 3 * (TAB_W + TAB_GAP) - 100);
+        assert_eq!(tab_left(3, 100), 3 * (tab_w() + tab_gap()) - 100);
     }
 
     #[test]

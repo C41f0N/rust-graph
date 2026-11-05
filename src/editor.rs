@@ -7,10 +7,14 @@ use crate::config;
 // Set by the X close button to request the editor close.
 pub static CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-// Set by Ctrl+Shift+T to request closing the active tab. Deferred to main
-// because tabs::close swaps the buffer globals and must run after the editor
-// input handler releases its locks.
+// Set by Ctrl+W (or Ctrl+Shift+T) to request closing the active tab.
+// Deferred to main because tabs::close swaps the buffer globals and must run
+// after the editor input handler releases its locks.
 pub static CLOSE_TAB_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+// Set by Alt+1..9 to request activating the tab at that zero-based index.
+// Deferred to main for the same reason as CLOSE_TAB_REQUESTED; -1 means none.
+pub static ACTIVATE_TAB_REQUEST: AtomicI32 = AtomicI32::new(-1);
 
 // Set when navigation-mode `G` asks to return to the graph. Main closes the
 // editor before the graph handler runs in the same frame, so without this

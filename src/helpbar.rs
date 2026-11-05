@@ -192,7 +192,7 @@ const EDITOR_NAV_JOURNAL: &[Chip] = &[
     ("J", "today"),
     ("[ / ]", "prev/next"),
     ("W/S/Up/Down", "move"),
-    ("Ctrl+Shift+T", "close tab"),
+    ("Ctrl+W", "close tab"),
 ];
 
 // The keycap/action rows for each state. Keys are ASCII: the SDF fonts the UI
@@ -241,7 +241,7 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
             ("W/S/Up/Down", "move"),
             ("G", "to graph"),
             ("Q", "fullscreen"),
-            ("Ctrl+Shift+T", "close tab"),
+            ("Ctrl+W", "close tab"),
             ("Esc", "close"),
         ],
         HelpContext::EditorNav => &[
@@ -250,7 +250,8 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
             ("Q", "fullscreen"),
             ("J", "journal"),
             ("W/S/Up/Down", "move"),
-            ("Ctrl+Shift+T", "close tab"),
+            ("Ctrl+W", "close tab"),
+            ("Alt+1-9", "switch tab"),
         ],
         HelpContext::CommandPalette => &[
             ("Up/Down/Tab", "select"),
@@ -267,7 +268,8 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
             ("Ctrl+S", "save"),
             ("Ctrl+Z", "undo"),
             ("Ctrl+Y", "redo"),
-            ("Ctrl+Shift+T", "close tab"),
+            ("Ctrl+W", "close tab"),
+            ("Alt+1-9", "switch tab"),
         ],
     }
 }
@@ -304,17 +306,29 @@ fn draw_chips(d: &mut RaylibDrawHandle, chip_list: &[Chip]) {
     let pad_x = config::scaled_size(7); // keycap horizontal padding
     let key_h = fs + config::scaled_size(6);
     let key_y = y + (h - key_h) / 2;
-    let max_x = w - inset;
 
-    let mut x = inset;
-    for (key, action) in chip_list {
-        let key_w = text::measure(d, key, fs);
-        let pill_w = key_w + pad_x * 2;
-        let total = pill_w + gap + text::measure(d, action, fs);
-        if x + total > max_x {
-            // Narrow window: drop the trailing chips rather than wrapping.
+    // Measure the whole row first so it can be centred in the bar. On a narrow
+    // window the trailing chips are dropped rather than wrapped.
+    let mut laid_out = Vec::new();
+    let mut total_w = 0;
+    for &(key, action) in chip_list {
+        let label_w = text::measure(d, action, fs);
+        let pill_w = text::measure(d, key, fs) + pad_x * 2;
+        let item_w = pill_w + gap + label_w;
+        let next = if laid_out.is_empty() {
+            item_w
+        } else {
+            total_w + entry_gap + item_w
+        };
+        if next + 2 * inset > w {
             break;
         }
+        laid_out.push((key, action, pill_w, label_w));
+        total_w = next;
+    }
+
+    let mut x = ((w - total_w) / 2).max(inset);
+    for (key, action, pill_w, label_w) in laid_out {
         ui::keycap(
             d,
             Rectangle::new(x as f32, key_y as f32, pill_w as f32, key_h as f32),
@@ -329,7 +343,7 @@ fn draw_chips(d: &mut RaylibDrawHandle, chip_list: &[Chip]) {
             fs,
             config::HELPBAR_ACTION_TEXT,
         );
-        x += total + entry_gap;
+        x += pill_w + gap + label_w + entry_gap;
     }
 }
 

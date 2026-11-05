@@ -233,6 +233,23 @@ fn shift_down(rl: &RaylibHandle) -> bool {
         || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
 }
 
+fn alt_down(rl: &RaylibHandle) -> bool {
+    rl.is_key_down(KeyboardKey::KEY_LEFT_ALT) || rl.is_key_down(KeyboardKey::KEY_RIGHT_ALT)
+}
+
+// Alt+1..9 maps to the corresponding open tab, in strip order.
+const TAB_DIGITS: [KeyboardKey; 9] = [
+    KeyboardKey::KEY_ONE,
+    KeyboardKey::KEY_TWO,
+    KeyboardKey::KEY_THREE,
+    KeyboardKey::KEY_FOUR,
+    KeyboardKey::KEY_FIVE,
+    KeyboardKey::KEY_SIX,
+    KeyboardKey::KEY_SEVEN,
+    KeyboardKey::KEY_EIGHT,
+    KeyboardKey::KEY_NINE,
+];
+
 pub fn handle_input(rl: &mut RaylibHandle) {
     // Keep a trailing empty line reachable before any navigation this frame.
     buffer::ensure_trailing_newline();
@@ -394,14 +411,29 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         || rl.is_key_pressed(KeyboardKey::KEY_DELETE)
         || rl.is_key_pressed_repeat(KeyboardKey::KEY_DELETE);
 
-    // Ctrl+Shift+T closes the active tab. Deferred: tabs::close swaps the
-    // buffer globals, so main performs it after this handler releases its
-    // locks (same pattern as CLOSE_REQUESTED). Checked after the typed-char
-    // queue is drained so a character event from the shortcut cannot leak
-    // into the next frame.
-    if ctrl_down(rl) && shift_down(rl) && rl.is_key_pressed(KeyboardKey::KEY_T) {
+    // Ctrl+W (and the original Ctrl+Shift+T) closes the active tab. Deferred:
+    // tabs::close swaps the buffer globals, so main performs it after this
+    // handler releases its locks (same pattern as CLOSE_REQUESTED). Checked
+    // after the typed-char queue is drained so a character event from the
+    // shortcut cannot leak into the next frame.
+    if ctrl_down(rl)
+        && (rl.is_key_pressed(KeyboardKey::KEY_W)
+            || (shift_down(rl) && rl.is_key_pressed(KeyboardKey::KEY_T)))
+    {
         crate::editor::CLOSE_TAB_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
         return;
+    }
+
+    // Alt+1..9 jumps straight to a tab. Deferred like the close above because
+    // activation also swaps the buffer globals.
+    if alt_down(rl) {
+        for (i, key) in TAB_DIGITS.iter().enumerate() {
+            if rl.is_key_pressed(*key) {
+                crate::editor::ACTIVATE_TAB_REQUEST
+                    .store(i as i32, std::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+        }
     }
 
     let current_visual = visual_lines.iter().position(|vl| {
@@ -470,7 +502,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
                 let (_ex, _ey, _ew, eh) = crate::editor::content_bounds();
                 let content_h = eh
                     - config::EDITOR_HEADER_HEIGHT
-                    - crate::editor::tabs::TABS_H
+                    - crate::editor::tabs::tabs_h()
                     - crate::editor::preview_banner_height();
                 let step = (content_h - config::scaled_size(config::editor_padding())).max(1);
                 let scroll = *buffer::SCROLL_Y.read().unwrap();
@@ -588,11 +620,11 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             let (_ex, ey, _ew, eh) = crate::editor::content_bounds();
             let content_top = ey
                 + config::EDITOR_HEADER_HEIGHT
-                + crate::editor::tabs::TABS_H
+                + crate::editor::tabs::tabs_h()
                 + crate::editor::preview_banner_height();
             let content_h = eh
                 - config::EDITOR_HEADER_HEIGHT
-                - crate::editor::tabs::TABS_H
+                - crate::editor::tabs::tabs_h()
                 - crate::editor::preview_banner_height();
             if (m.y as i32) >= content_top && (m.y as i32) < content_top + content_h {
                 // A preview page is read-only: a click may not re-enter edit
@@ -624,11 +656,11 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         let header_h = config::EDITOR_HEADER_HEIGHT;
         let content_top = ey
             + header_h
-            + crate::editor::tabs::TABS_H
+            + crate::editor::tabs::tabs_h()
             + crate::editor::preview_banner_height();
         let content_h = eh
             - header_h
-            - crate::editor::tabs::TABS_H
+            - crate::editor::tabs::tabs_h()
             - crate::editor::preview_banner_height();
         let bar_w = 6;
         let bar_x = ex + ew - bar_w - config::scaled_size(config::EDITOR_SCROLLBAR_GAP);

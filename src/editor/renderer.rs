@@ -536,12 +536,12 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         } else {
             0
         };
-        let content_y = editor_y + header_h + crate::editor::tabs::TABS_H + preview_h;
+        let content_y = editor_y + header_h + crate::editor::tabs::tabs_h() + preview_h;
 
         // Read-only preview banner: it is sticky (outside the scissor) and
         // states both the page and why editing is unavailable.
         if let Some(view) = &preview {
-            let banner_y = editor_y + header_h + crate::editor::tabs::TABS_H;
+            let banner_y = editor_y + header_h + crate::editor::tabs::tabs_h();
             d.draw_rectangle(
                 editor_x,
                 banner_y,
@@ -772,7 +772,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // Clamp the scroll offset to the real content height.
         let content_view_h = editor_height
             - header_h
-            - crate::editor::tabs::TABS_H
+            - crate::editor::tabs::tabs_h()
             - preview_h;
         let viewport_h = (content_view_h - padding).max(1);
         let max_scroll = (total_h - viewport_h).max(0);
