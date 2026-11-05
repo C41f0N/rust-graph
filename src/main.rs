@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 mod app_config;
 mod config;
+mod dialog;
 mod editor;
 mod filesystem;
 mod fonts;
@@ -539,6 +540,10 @@ if editor::command::ASSET_PICK_REQUEST.swap(false, std::sync::atomic::Ordering::
         // Refusals/errors are shown above every view (including the graph, so
         // a refused open from the graph is not swallowed by a closed editor).
         notice::draw(&mut d);
+
+        // Delete/create dialogs are modal and sit above every other surface,
+        // including notices, so their buttons can never be covered.
+        dialog::draw_active(&mut d);
     }
 
     // The window closed mid-edit: flush every tab so anything typed within the

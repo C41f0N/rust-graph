@@ -214,8 +214,7 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
         HelpContext::Settings => &[("Esc", "close")],
         HelpContext::ForcePanel => &[("F", "hide"), ("Esc", "dismiss")],
         HelpContext::GraphDeleteConfirm => &[
-            ("Y", "delete"),
-            ("N", "cancel"),
+            ("Enter", "delete"),
             ("Esc", "cancel"),
         ],
         HelpContext::GraphContextMenu => &[

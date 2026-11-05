@@ -108,6 +108,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
     let hover_node = HOVER_NODE.read().unwrap();
     let selected_node = SELECTED_NODE.read().unwrap();
     let delete_pending = DELETE_PENDING.read().unwrap();
+    let adding_note = *crate::graph::processing::ADDING_NOTE.read().unwrap();
     let nodes = NODES.read().unwrap();
     let edges = EDGES.read().unwrap();
     // Snapshot the visible world rect BEFORE taking the camera lock
@@ -288,7 +289,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
     // that node's shortcuts as clickable rows. Hidden whenever another modal
     // owns the screen or the graph is covered by the editor/palette.
     let popup_modal = *crate::graph::processing::RENAMING.read().unwrap()
-        || *crate::graph::processing::ADDING_NOTE.read().unwrap()
+        || adding_note
         || *delete_pending
         || *crate::graph::processing::SHOW_FORCE_PANEL.read().unwrap()
         || crate::graph::processing::CONTEXT_NODE
@@ -299,75 +300,6 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         || *crate::graph::settings::SETTINGS_OPEN.read().unwrap();
     if !editor_open && !crate::global_palette::is_open() && !popup_modal {
         crate::graph::hover_popup::draw(d, &nodes);
-    }
-
-    // Draw delete confirmation prompt (outside camera mode, in screen space)
-    if *delete_pending {
-        if let Some(idx) = *selected_node {
-            let name = &nodes[idx].name;
-            let prompt = format!("Delete '{}'? (Y/N)", name);
-            let fs = config::scaled_size(18);
-            let box_h = config::scaled_size(38);
-            let pad = config::scaled_size(16);
-            let text_width = text::measure(d, &prompt, fs);
-            let box_w = text_width + 2 * pad;
-            let x = (config::width() - box_w) / 2;
-            let y = config::scaled_size(12);
-            ui::panel(
-                d,
-                Rectangle::new(x as f32, y as f32, box_w as f32, box_h as f32),
-                0.32,
-            );
-            d.draw_rectangle_rounded(
-                Rectangle::new((x + 3) as f32, (y + 9) as f32, 3.0, (box_h - 18) as f32),
-                0.5,
-                4,
-                ui::DANGER,
-            );
-            text::draw(
-                d,
-                &prompt,
-                x + pad,
-                y + (box_h - fs) / 2,
-                fs,
-                ui::TEXT,
-            );
-        }
-    }
-
-    // Draw add-note name prompt (outside camera mode, in screen space)
-    let adding_note = *crate::graph::processing::ADDING_NOTE.read().unwrap();
-    if adding_note {
-        let adding_name = crate::graph::processing::ADDING_NAME.read().unwrap();
-        let prompt_base = "Filename: ";
-        let full = format!("{}{}", prompt_base, adding_name);
-        let fs = config::scaled_size(18);
-        let box_h = config::scaled_size(38);
-        let pad = config::scaled_size(16);
-        let label_width = text::measure(d, prompt_base, fs);
-        let text_width = text::measure(d, &full, fs);
-        let box_w = text_width + 2 * pad;
-        let x = (config::width() - box_w) / 2;
-        let y = config::scaled_size(12);
-        ui::panel(
-            d,
-            Rectangle::new(x as f32, y as f32, box_w as f32, box_h as f32),
-            0.32,
-        );
-        d.draw_rectangle_rounded(
-            Rectangle::new((x + 3) as f32, (y + 9) as f32, 3.0, (box_h - 18) as f32),
-            0.5,
-            4,
-            ui::ACCENT,
-        );
-        let ty = y + (box_h - fs) / 2;
-        text::draw(d, prompt_base, x + pad, ty, fs, ui::TEXT_SECONDARY);
-
-        // Draw the input content in the primary ink plus an accent cursor.
-        text::draw(d, &adding_name, x + pad + label_width, ty, fs, ui::TEXT);
-        let name_width = text::measure(d, &adding_name, fs);
-        let cursor_x = x + pad + label_width + name_width;
-        d.draw_rectangle(cursor_x, ty, 2, fs, ui::ACCENT);
     }
 
     // Right-click context menu (screen space)

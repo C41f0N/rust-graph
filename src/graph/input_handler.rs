@@ -185,7 +185,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     }
 
     // ------------------------------------------------------------
-    // Add-note name prompt mode
+    // Add-note name dialog
     // ------------------------------------------------------------
 
     if *adding_note && !*editor_open {
@@ -204,10 +204,20 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             adding_name.pop();
         }
 
-        // Enter confirms and creates the note
-        if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
-            || rl.is_key_pressed_repeat(KeyboardKey::KEY_ENTER)
-        {
+        let layout = crate::dialog::DialogLayout::input();
+        let clicked = if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            crate::dialog::action_at(&layout, rl.get_mouse_position())
+        } else {
+            None
+        };
+        let confirm = rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+            || rl.is_key_pressed(KeyboardKey::KEY_KP_ENTER)
+            || clicked == Some(crate::dialog::Action::Confirm);
+        let cancel = rl.is_key_pressed(KeyboardKey::KEY_ESCAPE)
+            || clicked == Some(crate::dialog::Action::Cancel);
+
+        // Create (Enter or the Create button)
+        if confirm {
             let name = adding_name.clone();
             let name = if name.trim().is_empty() {
                 "untitled".to_string()
@@ -233,8 +243,8 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             return;
         }
 
-        // Escape cancels the prompt
-        if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+        // Cancel (Esc, the Cancel button, or a click on the scrim)
+        if cancel {
             *adding_name = String::new();
             *adding_note = false;
         }
@@ -402,11 +412,25 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     }
 
     // ------------------------------------------------------------
-    // Delete confirmation keys
+    // Delete confirmation dialog
     // ------------------------------------------------------------
 
     if *delete_pending && !*editor_open {
-        if rl.is_key_pressed(KeyboardKey::KEY_Y) {
+        let layout = crate::dialog::DialogLayout::confirm();
+        let clicked = if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            crate::dialog::action_at(&layout, rl.get_mouse_position())
+        } else {
+            None
+        };
+        // Enter confirms; there is no more Y/N. A click on the white Delete
+        // button is the mouse equivalent, and Cancel/Esc/the scrim dismiss.
+        let confirm = rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+            || rl.is_key_pressed(KeyboardKey::KEY_KP_ENTER)
+            || clicked == Some(crate::dialog::Action::Confirm);
+        let cancel = rl.is_key_pressed(KeyboardKey::KEY_ESCAPE)
+            || clicked == Some(crate::dialog::Action::Cancel);
+
+        if confirm {
             if let Some(idx) = *selected_node {
                 drop(nodes);
                 drop(dragging_node);
@@ -426,9 +450,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             }
             *selected_node = None;
             *delete_pending = false;
-        } else if rl.is_key_pressed(KeyboardKey::KEY_N)
-            || rl.is_key_pressed(KeyboardKey::KEY_ESCAPE)
-        {
+        } else if cancel {
             *delete_pending = false;
         }
         return;

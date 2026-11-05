@@ -426,28 +426,10 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             let cy = body_top + body_h / 2;
 
             if crate::editor::CREATING_NODE.load(std::sync::atomic::Ordering::Relaxed) {
-                // Filename prompt, sharing the palette's floating-panel look.
-                let prompt = "Filename:";
-                let name = crate::editor::NEW_NODE_NAME.read().unwrap().clone();
-                let full = format!("{} {}", prompt, name);
-                let font = config::scaled_size(18);
-                let bw = text::measure(d, &full, font) + 32;
-                let bh = config::scaled_size(40);
-                let bx = cx - bw / 2;
-                let by = cy - bh / 2;
-                let panel = Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32);
-                ui::panel(d, panel, 0.3);
-                let pw = text::measure(d, &format!("{} ", prompt), font);
-                let ty = by + (bh - font) / 2;
-                text::draw(d, &full, bx + 16, ty, font, ui::TEXT);
-                let caret_x = bx + 16 + pw + text::measure(d, &name, font);
-                d.draw_rectangle(
-                    caret_x,
-                    ty,
-                    2,
-                    font,
-                    ui::ACCENT,
-                );
+                // The filename dialog is drawn by `dialog::draw_active` above
+                // every surface; keep the placeholder button disabled while it
+                // is open so a click cannot re-arm it.
+                *crate::editor::NEW_NODE_BUTTON.write().unwrap() = None;
             } else {
                 *crate::editor::NEW_NODE_BUTTON.write().unwrap() = None;
 

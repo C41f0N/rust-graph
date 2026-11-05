@@ -262,7 +262,8 @@ pub fn handle_input(rl: &mut RaylibHandle) {
     let has_node = crate::editor::tabs::has_any();
     if !has_node {
         if crate::editor::CREATING_NODE.load(std::sync::atomic::Ordering::Relaxed) {
-            // Filename prompt: type the name, Enter creates, Escape cancels.
+            // Filename dialog: type the name, Enter (or the Create button)
+            // creates, Esc (or Cancel, or a click on the scrim) dismisses.
             while let Some(ch) = rl.get_char_pressed() {
                 let c = char::from_u32(ch as u32).unwrap();
                 if !c.is_control() {
@@ -274,9 +275,20 @@ pub fn handle_input(rl: &mut RaylibHandle) {
             {
                 crate::editor::NEW_NODE_NAME.write().unwrap().pop();
             }
-            if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
-                || rl.is_key_pressed_repeat(KeyboardKey::KEY_ENTER)
-            {
+
+            let layout = crate::dialog::DialogLayout::input();
+            let clicked = if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+                crate::dialog::action_at(&layout, rl.get_mouse_position())
+            } else {
+                None
+            };
+            let confirm = rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+                || rl.is_key_pressed(KeyboardKey::KEY_KP_ENTER)
+                || clicked == Some(crate::dialog::Action::Confirm);
+            let cancel = rl.is_key_pressed(KeyboardKey::KEY_ESCAPE)
+                || clicked == Some(crate::dialog::Action::Cancel);
+
+            if confirm {
                 let stem = crate::editor::NEW_NODE_NAME.read().unwrap().clone();
                 let stem = if stem.trim().is_empty() {
                     "untitled".to_string()
@@ -290,8 +302,7 @@ pub fn handle_input(rl: &mut RaylibHandle) {
 
                 let dir = crate::graph::processing::DIR_PATH.read().unwrap().clone();
                 let _ = crate::editor::tabs::create_and_open(&dir, &stem);
-            }
-            if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
+            } else if cancel {
                 *crate::editor::NEW_NODE_NAME.write().unwrap() = String::new();
                 crate::editor::CREATING_NODE.store(false, std::sync::atomic::Ordering::Relaxed);
             }

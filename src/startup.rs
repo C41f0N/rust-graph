@@ -180,7 +180,7 @@ fn fold_hub_note() -> &'static str {
      \n\
      From the editor, Ctrl+K jumps to any note by name, N creates one,\n\
      and J is today's journal. When the tour is over, delete these notes\n\
-     (select, Del, confirm Y) and make the vault yours."
+     (select, Del, then Enter or the Delete button) and make the vault yours."
 }
 
 fn formatting_note() -> &'static str {
@@ -269,7 +269,7 @@ fn shortcuts_note() -> &'static str {
      - Space - open the hovered node\n\
      - V - dive into the hovered node's sub-graph\n\
      - R - node context menu\n\
-     - N - new note; Del - delete (Y confirms)\n\
+     - N - new note; Del - delete (Enter confirms)\n\
      - J - today's journal note\n\
      - F - force-simulation tweaks\n\
      - Alt+Left - climb out of a sub-graph\n\
@@ -315,7 +315,7 @@ fn try_this_note() -> &'static str {
      7. Press J for today's journal note.\n\
      8. Open [[Formatting]] and click the fold caret on its demo block.\n\
      9. Spend a minute in the Ctrl+K note palette, then delete these\n\
-        notes (select, Del, confirm Y) and start your own vault.\n\
+        notes (select, Del, then Enter or the Delete button) and start your own vault.\n\
      \n\
      You have now touched every major surface of the app."
 }
