@@ -327,6 +327,30 @@ pub fn generate_visual_lines(max_width: i32, d: &mut RaylibDrawHandle) {
     }
 }
 
+// Char spans that must not be split across visual lines: a wikilink
+// `[[target]]` (including any spaces inside its target). Wrapping at a space
+// inside one would leave `[[My` on one line and `Note]]` on the next, which
+// the markdown pass then draws as unformatted plain text.
+fn wikilink_spans(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i + 1 < chars.len() {
+        if chars[i] == '[' && chars[i + 1] == '[' {
+            let mut j = i + 2;
+            while j + 1 < chars.len() {
+                if chars[j] == ']' && chars[j + 1] == ']' {
+                    spans.push((i, j + 2));
+                    i = j + 1;
+                    break;
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    spans
+}
+
 // Wrap one buffer line into visual lines. `measure` is injected so the
 // logic is unit-testable; on-screen it is the raylib measure_text.
 // `base_indent` shifts the whole item (nested list depth, quote rail, prose
@@ -403,6 +427,10 @@ fn wrap_line(
     let list_indent = hang_indent;
     let mut emitted = false;
 
+    // Formatted lines must not break inside a wikilink; the span list is in
+    // char indices, like the wrap scan below.
+    let spans = if format { wikilink_spans(&chars) } else { Vec::new() };
+
     while start < chars.len() {
         // A list's first visual line starts at the left edge: the indent it
         // carries in the source is part of the displayed marker (e.g. "    *
@@ -455,34 +483,53 @@ fn wrap_line(
             break;
         }
 
-        if let Some(space) = last_space {
-            // Wrap at the last space.
-            out.push(VisualLine {
-                start: char_bytes[start],
-                end: char_bytes[space],
-                line: buf_index,
-                indent: cur_indent,
-            });
+        // Candidate break: the last space, or the overflow position when the
+        // segment has no spaces. If it would land inside a wikilink, move the
+        // whole link to the next visual line: the parser only recognises a
+        // link when both brackets and the target arrive together.
+        let mut break_at = last_space.unwrap_or(end);
+        let mut skip_space = last_space.is_some();
+        if let Some(&(span_start, span_end)) = spans
+            .iter()
+            .find(|&&(s, e)| s < break_at && break_at < e)
+        {
+            if let Some(space) = (start..span_start)
+                .rev()
+                .find(|&j| chars[j].is_whitespace())
+            {
+                break_at = space;
+                skip_space = true;
+            } else if span_start > start {
+                // No earlier space: start the next line at the link itself.
+                break_at = span_start;
+                skip_space = false;
+            } else if span_end <= end {
+                // The link began this line and is already complete; break
+                // after it rather than through it.
+                break_at = span_end;
+                skip_space = false;
+            }
+        }
+        // Never emit an empty visual line (a span that starts at `start` and
+        // is wider than the whole line still has to split somewhere).
+        if break_at <= start {
+            break_at = end.max(start + 1);
+            skip_space = false;
+        }
 
+        out.push(VisualLine {
+            start: char_bytes[start],
+            end: char_bytes[break_at],
+            line: buf_index,
+            indent: cur_indent,
+        });
+
+        start = break_at;
+        if skip_space {
             // Skip whitespace at the beginning of the next visual line.
-            start = space + 1;
             while start < chars.len() && chars[start].is_whitespace() {
                 start += 1;
             }
-        } else {
-            // No spaces in this segment (very long word).
-            if end == start {
-                end += 1;
-            }
-
-            out.push(VisualLine {
-                start: char_bytes[start],
-                end: char_bytes[end],
-                line: buf_index,
-                indent: cur_indent,
-            });
-
-            start = end;
         }
         emitted = true;
     }
@@ -727,6 +774,58 @@ mod tests {
             assert_eq!(vl.indent, 0);
         }
         assert_eq!(vls[0].start, 0, "raw editing keeps the leading whitespace");
+    }
+
+    #[test]
+    fn wikilink_moves_to_next_line_instead_of_splitting() {
+        // "[[My Note]]" is 11 chars (110px at 10px/char). With 120px lines the
+        // old wrap broke at the space inside the link ("see [[My" / "Note]]"),
+        // which the renderer then drew as plain text. The whole link must move
+        // to the next visual line.
+        let line = "see [[My Note]] here";
+        let vls = wrap_line(
+            line,
+            120,
+            0,
+            0,
+            0,
+            LineKind::Paragraph,
+            true,
+            0,
+            |t, s, _st| pix(t, s),
+        );
+        assert_eq!(
+            vls.len(),
+            2,
+            "{:?}",
+            vls.iter().map(|v| (&line[v.start..v.end])).collect::<Vec<_>>()
+        );
+        assert_eq!(&line[vls[0].start..vls[0].end], "see");
+        assert_eq!(&line[vls[1].start..vls[1].end], "[[My Note]] here");
+    }
+
+    #[test]
+    fn overlong_wikilink_still_terminates_and_covers_the_line() {
+        // A link that cannot fit on an empty line has to split somewhere, but
+        // the wrap must still make progress and cover every byte.
+        let line = "[[a-really-long-link-name]]";
+        let vls = wrap_line(
+            line,
+            80,
+            0,
+            0,
+            0,
+            LineKind::Paragraph,
+            true,
+            0,
+            |t, s, _st| pix(t, s),
+        );
+        assert!(vls.len() >= 2);
+        assert_eq!(vls[0].start, 0);
+        assert_eq!(vls.last().unwrap().end, line.len());
+        for pair in vls.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start);
+        }
     }
 
     #[test]
