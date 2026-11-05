@@ -8,6 +8,7 @@ use crate::editor::hit_test;
 use crate::editor::markdown;
 use crate::editor::text;
 use crate::frontmatter;
+use crate::ui;
 
 use std::path::PathBuf;
 
@@ -205,8 +206,16 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
 
         // The background: a rounded translucent panel normally, fully opaque
         // when the editor is fullscreen so nothing bleeds through behind it.
+        // The ink is deliberately dark: the graph ghosts through at the edges
+        // without stealing contrast from the text.
         if fullscreen {
-            d.draw_rectangle(0, 0, config::width(), config::height(), Color::new(0, 0, 0, 255));
+            d.draw_rectangle(
+                0,
+                0,
+                config::width(),
+                config::height(),
+                ui::PANEL_SOLID,
+            );
         } else {
             d.draw_rectangle_rounded(
                 Rectangle::new(
@@ -215,9 +224,9 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     config::width() as f32 * editor_dimentions.x,
                     config::height() as f32 * editor_dimentions.y,
                 ),
-                0.05,
-                0,
-                Color::BLACK.alpha(0.5),
+                0.035,
+                12,
+                config::EDITOR_PANEL_BG,
             );
         }
 
@@ -238,13 +247,30 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
         // --- Heading bar ---
         let header_h = config::EDITOR_HEADER_HEIGHT;
 
-        // Header background (slightly lighter than the editor bg)
+        // Header background (slightly lighter than the editor body). Its top
+        // corners follow the panel silhouette; the bottom rounding is squared
+        // off again so the tab strip below sits flush.
+        let panel_radius = (editor_width.min(editor_height) as f32 * 0.035)
+            .min(header_h as f32 / 2.0)
+            .max(1.0);
+        let header_rect = Rectangle::new(
+            editor_x as f32,
+            editor_y as f32,
+            editor_width as f32,
+            header_h as f32,
+        );
+        d.draw_rectangle_rounded(
+            header_rect,
+            panel_radius / header_h as f32,
+            8,
+            ui::SURFACE,
+        );
         d.draw_rectangle(
             editor_x,
-            editor_y,
+            editor_y + panel_radius as i32,
             editor_width,
-            header_h,
-            Color::new(30, 30, 35, 200),
+            header_h - panel_radius as i32,
+            ui::SURFACE,
         );
 
         // Header text baseline for the right-side controls. The filename no
@@ -271,11 +297,27 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 && m.y as i32 >= fs_y
                 && m.y as i32 <= fs_y + fs_side
         };
-        let fs_icon_color = if over_fs {
-            Color::WHITE
-        } else {
-            Color::new(180, 180, 180, 255)
+        let header_hover = |d: &mut RaylibDrawHandle, rect: Rectangle| {
+            if d.get_mouse_position().x >= rect.x
+                && d.get_mouse_position().x <= rect.x + rect.width
+                && d.get_mouse_position().y >= rect.y
+                && d.get_mouse_position().y <= rect.y + rect.height
+            {
+                ui::row_pill(d, rect, ui::SURFACE_HOVER);
+            }
         };
+        if over_fs {
+            header_hover(
+                d,
+                Rectangle::new(
+                    (fs_x - 3) as f32,
+                    (fs_y - 3) as f32,
+                    (fs_side + 6) as f32,
+                    (fs_side + 6) as f32,
+                ),
+            );
+        }
+        let fs_icon_color = if over_fs { ui::TEXT } else { ui::TEXT_SECONDARY };
         let fs_bw = fs_side - 2 * inset;
         let fs_bx = fs_x + inset;
         let fs_by = fs_y + inset;
@@ -309,12 +351,19 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     && m.y as i32 >= sg_y
                     && m.y as i32 <= sg_y + config::EDITOR_FONT_SIZE
             };
-            let sg_color = if over_sg {
-                Color::WHITE
-            } else {
-                Color::new(180, 180, 180, 255)
-            };
-            d.draw_rectangle(sg_x - 4, sg_y, sg_w + 8, config::EDITOR_FONT_SIZE, Color::new(40, 40, 46, 200));
+            let sg_color = if over_sg { ui::TEXT } else { ui::TEXT_SECONDARY };
+            let pill = Rectangle::new(
+                (sg_x - 7) as f32,
+                (sg_y - 3) as f32,
+                (sg_w + 14) as f32,
+                (config::EDITOR_FONT_SIZE + 6) as f32,
+            );
+            ui::surface(
+                d,
+                pill,
+                0.35,
+                if over_sg { ui::ACCENT_SOFT } else { ui::SURFACE_HOVER },
+            );
             text::draw(d, sg_label, sg_x, sg_y, config::EDITOR_FONT_SIZE, sg_color);
             if over_sg && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
                 editor::OPEN_SUBGRAPH_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -327,11 +376,18 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             && mouse.y as i32 >= x_y
             && mouse.y as i32 <= x_y + config::EDITOR_FONT_SIZE;
 
-        let x_color = if over_x {
-            Color::RED
-        } else {
-            Color::new(180, 180, 180, 255)
-        };
+        if over_x {
+            header_hover(
+                d,
+                Rectangle::new(
+                    (x_x - 7) as f32,
+                    (x_y - 3) as f32,
+                    (x_w + 14) as f32,
+                    (config::EDITOR_FONT_SIZE + 6) as f32,
+                ),
+            );
+        }
+        let x_color = if over_x { ui::DANGER } else { ui::TEXT_SECONDARY };
         text::draw(d, x_label, x_x, x_y, config::EDITOR_FONT_SIZE, x_color);
 
         if over_x && d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
@@ -351,7 +407,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             editor_y + header_h,
             editor_x + editor_width,
             editor_y + header_h,
-            Color::new(255, 255, 255, 40),
+            ui::BORDER_STRONG,
         );
 
         // --- Tab bar: horizontally scrollable strip of open documents, drawn
@@ -370,66 +426,105 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             let cy = body_top + body_h / 2;
 
             if crate::editor::CREATING_NODE.load(std::sync::atomic::Ordering::Relaxed) {
-                // Filename prompt (black/white, matches the placeholder).
+                // Filename prompt, sharing the palette's floating-panel look.
                 let prompt = "Filename:";
                 let name = crate::editor::NEW_NODE_NAME.read().unwrap().clone();
                 let full = format!("{} {}", prompt, name);
-                let bw = text::measure(d, &full, 20) + 28;
-                let bh = 34;
+                let font = config::scaled_size(18);
+                let bw = text::measure(d, &full, font) + 32;
+                let bh = config::scaled_size(40);
                 let bx = cx - bw / 2;
                 let by = cy - bh / 2;
-                d.draw_rectangle(bx, by, bw, bh, Color::new(18, 18, 18, 235));
-                d.draw_rectangle_lines_ex(
-                    Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32),
-                    1.0,
-                    Color::new(255, 255, 255, 90),
+                let panel = Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32);
+                ui::panel(d, panel, 0.3);
+                let pw = text::measure(d, &format!("{} ", prompt), font);
+                let ty = by + (bh - font) / 2;
+                text::draw(d, &full, bx + 16, ty, font, ui::TEXT);
+                let caret_x = bx + 16 + pw + text::measure(d, &name, font);
+                d.draw_rectangle(
+                    caret_x,
+                    ty,
+                    2,
+                    font,
+                    ui::ACCENT,
                 );
-                let pw = text::measure(d, &format!("{} ", prompt), 20);
-                text::draw(d, &full, bx + 14, by + (bh - 20) / 2, 20, Color::WHITE);
-                let caret_x = bx + 14 + pw + text::measure(d, &name, 20);
-                d.draw_rectangle(caret_x, by + (bh - 20) / 2, 2, 20, Color::WHITE);
             } else {
                 *crate::editor::NEW_NODE_BUTTON.write().unwrap() = None;
 
                 let msg = "No node open";
-                let msg_w = text::measure(d, msg, 24);
-                text::draw(d, msg, cx - msg_w / 2, cy - 64, 24, Color::new(255, 255, 255, 190));
+                let msg_font = config::scaled_size(24);
+                let msg_w = text::measure(d, msg, msg_font);
+                text::draw(
+                    d,
+                    msg,
+                    cx - msg_w / 2,
+                    cy - config::scaled_size(70),
+                    msg_font,
+                    ui::TEXT,
+                );
 
                 let hint = "Select a node on the graph, or create a new one";
-                let hint_w = text::measure(d, hint, 16);
-                text::draw(d, hint, cx - hint_w / 2, cy - 30, 16, Color::new(255, 255, 255, 110));
+                let hint_font = config::scaled_size(15);
+                let hint_w = text::measure(d, hint, hint_font);
+                text::draw(
+                    d,
+                    hint,
+                    cx - hint_w / 2,
+                    cy - config::scaled_size(34),
+                    hint_font,
+                    ui::TEXT_MUTED,
+                );
 
                 let blabel = "Create New Node";
-                let bfont = 18;
-                let bw = text::measure(d, blabel, bfont) + 32;
-                let bh = 36;
+                let bfont = config::scaled_size(17);
+                let bw = text::measure(d, blabel, bfont) + config::scaled_size(40);
+                let bh = config::scaled_size(40);
                 let bx = cx - bw / 2;
-                let by = cy + 6;
+                let by = cy + config::scaled_size(6);
                 let m = d.get_mouse_position();
                 let over = m.x as i32 >= bx
                     && m.x as i32 <= bx + bw
                     && m.y as i32 >= by
                     && m.y as i32 <= by + bh;
-                d.draw_rectangle_lines_ex(
-                    Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32),
-                    1.0,
+                let button = Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32);
+                ui::surface(
+                    d,
+                    button,
+                    0.32,
                     if over {
-                        Color::WHITE
+                        Color::new(104, 156, 242, 190)
                     } else {
-                        Color::new(255, 255, 255, 130)
+                        ui::ACCENT_SOFT
                     },
                 );
-                if over {
-                    d.draw_rectangle(bx + 1, by + 1, bw - 2, bh - 2, Color::new(255, 255, 255, 14));
-                }
+                ui::border(d, button, 0.32, ui::ACCENT_STRONG);
                 let lw = text::measure(d, blabel, bfont);
-                let lc = if over {
-                    Color::WHITE
-                } else {
-                    Color::new(255, 255, 255, 170)
-                };
-                text::draw(d, blabel, bx + (bw - lw) / 2, by + (bh - bfont) / 2, bfont, lc);
+                text::draw(
+                    d,
+                    blabel,
+                    bx + (bw - lw) / 2,
+                    by + (bh - bfont) / 2,
+                    bfont,
+                    ui::TEXT,
+                );
                 *crate::editor::NEW_NODE_BUTTON.write().unwrap() = Some((bx, by, bw, bh));
+            }
+
+            // Hairline frame, drawn last so the header and tab strip sit
+            // inside one continuous rounded surface.
+            if !fullscreen {
+                d.draw_rectangle_rounded_lines_ex(
+                    Rectangle::new(
+                        editor_x as f32,
+                        editor_y as f32,
+                        editor_width as f32,
+                        editor_height as f32,
+                    ),
+                    0.035,
+                    12,
+                    1.0,
+                    ui::BORDER_STRONG,
+                );
             }
             return;
         }
@@ -452,15 +547,16 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 banner_y,
                 editor_width,
                 preview_h,
-                Color::new(38, 42, 52, 235),
+                ui::SURFACE_RAISED,
             );
             d.draw_line(
                 editor_x,
                 banner_y + preview_h,
                 editor_x + editor_width,
                 banner_y + preview_h,
-                Color::new(255, 255, 255, 34),
+                ui::BORDER,
             );
+            d.draw_rectangle(editor_x, banner_y, config::scaled_size(3), preview_h, ui::ACCENT);
             let last_line = view.first_line + view.line_count.saturating_sub(1);
             let label = if view.line_count == 0 {
                 "Large file preview - read-only".to_string()
@@ -480,7 +576,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 editor_x + padding,
                 ty,
                 fs,
-                Color::new(220, 224, 232, 255),
+                ui::TEXT_SECONDARY,
             );
 
             let mut hint = format!(
@@ -495,7 +591,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
             // Narrow panels drop the right-hand hint rather than drawing it
             // through the page label.
             if hx > editor_x + padding + label_w + config::scaled_size(12) {
-                text::draw(&mut *d, &hint, hx, ty, fs, Color::new(156, 162, 176, 255));
+                text::draw(&mut *d, &hint, hx, ty, fs, ui::TEXT_MUTED);
             }
         }
 
@@ -723,17 +819,27 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                 dragging_bar = true;
             }
 
-            d.draw_rectangle(bar_x, content_y, bar_w, bar_h, Color::new(255, 255, 255, 18));
+            d.draw_rectangle_rounded(
+                Rectangle::new(bar_x as f32, content_y as f32, bar_w as f32, bar_h as f32),
+                0.5,
+                6,
+                Color::new(255, 255, 255, 14),
+            );
 
             let thumb_h = ((bar_h as f32 * (viewport_h as f32 / total_h as f32)).max(24.0)) as i32;
             let thumb_y = content_y
                 + ((scroll as f32 * (bar_h - thumb_h) as f32 / max_scroll as f32) as i32);
             let thumb_color = if over {
-                Color::new(200, 200, 200, 140)
+                ui::TEXT_SECONDARY
             } else {
-                Color::new(160, 160, 160, 80)
+                ui::TEXT_MUTED
             };
-            d.draw_rectangle(bar_x, thumb_y, bar_w, thumb_h, thumb_color);
+            d.draw_rectangle_rounded(
+                Rectangle::new(bar_x as f32, thumb_y as f32, bar_w as f32, thumb_h as f32),
+                0.5,
+                6,
+                thumb_color,
+            );
         }
 
         let sel = buffer::selection_range(*anchor_x, *anchor_y, *cursor_x, *cursor_y);
@@ -838,7 +944,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                         title_y + title_font + 2,
                         title_x + title_w,
                         title_y + title_font + 2,
-                        Color::new(150, 180, 240, 220),
+                        ui::ACCENT,
                     );
                 }
                 if !renaming
@@ -867,7 +973,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     divider_y,
                     content_x0 + content_w - padding,
                     divider_y,
-                    Color::new(255, 255, 255, 40),
+                    ui::BORDER,
                 );
             }
 
@@ -1103,17 +1209,14 @@ guide_runs.retain(|r| {
                 if first_vl_of_line && !editing_line {
                     if let Some(&(top, h)) = code_blocks.get(&line.line) {
                         let cpad = config::scaled_size(config::EDITOR_CODE_PANEL_PAD);
-                        s.draw_rectangle_rounded(
-                            Rectangle::new(
-                                (content_x0 + padding - cpad) as f32,
-                                (content_y + top - scroll - cpad + padding / 2) as f32,
-                                (max_width + 2 * cpad) as f32,
-                                (h + 2 * cpad) as f32,
-                            ),
-                            0.12,
-                            8,
-                            config::EDITOR_CODE_BG,
+                        let panel = Rectangle::new(
+                            (content_x0 + padding - cpad) as f32,
+                            (content_y + top - scroll - cpad + padding / 2) as f32,
+                            (max_width + 2 * cpad) as f32,
+                            (h + 2 * cpad) as f32,
                         );
+                        s.draw_rectangle_rounded(panel, 0.12, 8, config::EDITOR_CODE_BG);
+                        s.draw_rectangle_rounded_lines_ex(panel, 0.12, 8, 1.0, ui::BORDER);
                     }
                 }
 
@@ -1258,7 +1361,16 @@ guide_runs.retain(|r| {
 
                         *hit_test::AUTOCOMPLETE_RECT.lock().unwrap() = Some((pop_x, pop_y, box_w, box_h));
 
-                        s.draw_rectangle(pop_x, pop_y, box_w, box_h, config::AUTOCOMPLETE_BG);
+                        ui::panel(
+                            &mut *s,
+                            Rectangle::new(
+                                pop_x as f32,
+                                pop_y as f32,
+                                box_w as f32,
+                                box_h as f32,
+                            ),
+                            0.14,
+                        );
 
                         for (i, name) in autocomplete
                             .matches
@@ -1267,20 +1379,23 @@ guide_runs.retain(|r| {
                             .take(config::AUTOCOMPLETE_MAX_VISIBLE)
                         {
                             if i == autocomplete.selected {
-                                s.draw_rectangle(
-                                    pop_x,
-                                    pop_y + (i as i32) * item_h,
-                                    box_w,
-                                    item_h,
+                                ui::row_pill(
+                                    &mut *s,
+                                    Rectangle::new(
+                                        (pop_x + 3) as f32,
+                                        (pop_y + (i as i32) * item_h + 1) as f32,
+                                        (box_w - 6) as f32,
+                                        (item_h - 2) as f32,
+                                    ),
                                     config::AUTOCOMPLETE_SELECTED_BG,
                                 );
                             }
                             text::draw(&mut *s, 
                                 name,
-                                pop_x + 10,
+                                pop_x + 12,
                                 pop_y + (i as i32) * item_h + 2,
                                 line_font_size,
-                                Color::WHITE,
+                                ui::TEXT,
                             );
                         }
                     }
@@ -1319,7 +1434,16 @@ guide_runs.retain(|r| {
 
                         *hit_test::COMMAND_RECT.lock().unwrap() = Some((pop_x, pop_y, box_w, box_h));
 
-                        s.draw_rectangle(pop_x, pop_y, box_w, box_h, config::AUTOCOMPLETE_BG);
+                        ui::panel(
+                            &mut *s,
+                            Rectangle::new(
+                                pop_x as f32,
+                                pop_y as f32,
+                                box_w as f32,
+                                box_h as f32,
+                            ),
+                            0.14,
+                        );
 
                         for (i, (name, _)) in palette
                             .matches
@@ -1328,20 +1452,23 @@ guide_runs.retain(|r| {
                             .take(config::AUTOCOMPLETE_MAX_VISIBLE)
                         {
                             if i == palette.selected {
-                                s.draw_rectangle(
-                                    pop_x,
-                                    pop_y + (i as i32) * item_h,
-                                    box_w,
-                                    item_h,
+                                ui::row_pill(
+                                    &mut *s,
+                                    Rectangle::new(
+                                        (pop_x + 3) as f32,
+                                        (pop_y + (i as i32) * item_h + 1) as f32,
+                                        (box_w - 6) as f32,
+                                        (item_h - 2) as f32,
+                                    ),
                                     config::AUTOCOMPLETE_SELECTED_BG,
                                 );
                             }
                             text::draw(&mut *s,
                                 name,
-                                pop_x + 10,
+                                pop_x + 12,
                                 pop_y + (i as i32) * item_h + 2,
                                 line_font_size,
-                                Color::WHITE,
+                                ui::TEXT,
                             );
                         }
                     }
@@ -1657,6 +1784,23 @@ guide_runs.retain(|r| {
         }
         scroll = scroll.clamp(0, max_scroll);
         *buffer::SCROLL_Y.write().unwrap() = scroll;
+
+        // Hairline frame, drawn last so every strip and popup is enclosed by
+        // one continuous rounded surface.
+        if !fullscreen {
+            d.draw_rectangle_rounded_lines_ex(
+                Rectangle::new(
+                    editor_x as f32,
+                    editor_y as f32,
+                    editor_width as f32,
+                    editor_height as f32,
+                ),
+                0.035,
+                12,
+                1.0,
+                ui::BORDER_STRONG,
+            );
+        }
     }
 }
 

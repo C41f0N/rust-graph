@@ -13,6 +13,7 @@ use raylib::prelude::*;
 
 use crate::config;
 use crate::editor::text;
+use crate::ui;
 
 type Chip = (&'static str, &'static str);
 
@@ -297,11 +298,11 @@ fn draw_chips(d: &mut RaylibDrawHandle, chip_list: &[Chip]) {
     d.draw_line(0, y, w, y, config::HELPBAR_SEP);
 
     let fs = config::scaled_size(13);
-    let inset = config::scaled_size(12);
+    let inset = config::scaled_size(14);
     let gap = config::scaled_size(8); // keycap -> action label
-    let entry_gap = config::scaled_size(20); // chip -> chip
-    let pad_x = config::scaled_size(6); // keycap horizontal padding
-    let key_h = fs + config::scaled_size(2);
+    let entry_gap = config::scaled_size(22); // chip -> chip
+    let pad_x = config::scaled_size(7); // keycap horizontal padding
+    let key_h = fs + config::scaled_size(6);
     let key_y = y + (h - key_h) / 2;
     let max_x = w - inset;
 
@@ -314,9 +315,20 @@ fn draw_chips(d: &mut RaylibDrawHandle, chip_list: &[Chip]) {
             // Narrow window: drop the trailing chips rather than wrapping.
             break;
         }
-        d.draw_rectangle(x, key_y, pill_w, key_h, config::HELPBAR_KEY_BG);
-        text::draw(d, key, x + pad_x, key_y, fs, config::HELPBAR_KEY_TEXT);
-        text::draw(d, action, x + pill_w + gap, key_y, fs, config::HELPBAR_ACTION_TEXT);
+        ui::keycap(
+            d,
+            Rectangle::new(x as f32, key_y as f32, pill_w as f32, key_h as f32),
+            config::HELPBAR_KEY_BG,
+        );
+        text::draw(d, key, x + pad_x, key_y + (key_h - fs) / 2, fs, config::HELPBAR_KEY_TEXT);
+        text::draw(
+            d,
+            action,
+            x + pill_w + gap,
+            key_y + (key_h - fs) / 2,
+            fs,
+            config::HELPBAR_ACTION_TEXT,
+        );
         x += total + entry_gap;
     }
 }

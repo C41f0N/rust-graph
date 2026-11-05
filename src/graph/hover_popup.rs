@@ -2,6 +2,7 @@ use crate::config;
 use crate::editor::text;
 use crate::graph::processing::Node;
 use crate::graph::renderer::CAMERA;
+use crate::ui;
 use raylib::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -332,8 +333,8 @@ pub fn draw_menu(
     let right_inset = config::scaled_size(8);
     let focused = focused.filter(|i| *i < items.len());
 
-    d.draw_rectangle_rounded(panel, 0.16, 8, Color::new(20, 20, 20, 235));
-    d.draw_rectangle_rounded_lines_ex(panel, 0.16, 8, 1.0, Color::new(255, 255, 255, 36));
+    d.draw_rectangle_rounded(panel, 0.16, 8, ui::PANEL);
+    d.draw_rectangle_rounded_lines_ex(panel, 0.16, 8, 1.0, ui::BORDER_STRONG);
 
     for (index, item) in items.iter().enumerate() {
         let rect = item.rect;
@@ -344,7 +345,7 @@ pub fn draw_menu(
                 rect.y as i32,
                 (rect.x + rect.width) as i32,
                 rect.y as i32,
-                Color::new(255, 255, 255, 30),
+                ui::BORDER,
             );
         }
 
@@ -353,7 +354,7 @@ pub fn draw_menu(
             None => rect_contains(rect, mouse),
         };
         if highlighted {
-            d.draw_rectangle_rec(rect, item.hover_color);
+            ui::row_pill(d, rect, item.hover_color);
         }
 
         text::draw(
@@ -362,7 +363,7 @@ pub fn draw_menu(
             rect.x as i32 + label_inset,
             rect.y as i32 + (rect.height as i32 - font) / 2,
             font,
-            Color::WHITE,
+            ui::TEXT,
         );
 
         if let Some(key) = item.key {
@@ -375,14 +376,14 @@ pub fn draw_menu(
                 chip_w as f32,
                 chip_h as f32,
             );
-            d.draw_rectangle_rounded(chip, 0.3, 6, Color::new(255, 255, 255, 18));
+            ui::keycap(d, chip, Color::new(255, 255, 255, 14));
             text::draw(
                 d,
                 key,
                 chip.x as i32 + key_inset,
                 chip.y as i32 + (chip_h - key_font) / 2,
                 key_font,
-                Color::new(225, 228, 235, 230),
+                ui::TEXT_SECONDARY,
             );
         }
     }

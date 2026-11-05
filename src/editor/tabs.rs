@@ -3,6 +3,7 @@ use crate::editor::buffer;
 use crate::editor::document::{self, EditableLoad, OpenClass};
 use crate::editor::history;
 use crate::editor::text;
+use crate::ui;
 use raylib::prelude::*;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -728,8 +729,8 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
 
     // Bar background + bottom separator, then tabs clipped to the row so the
     // horizontally scrolled content never bleeds outside it.
-    d.draw_rectangle(bar_x, bar_y, bar_w, TABS_H, Color::new(10, 10, 12, 255));
-    d.draw_line(bar_x, bar_y + TABS_H, bar_x + bar_w, bar_y + TABS_H, Color::new(255, 255, 255, 40));
+    d.draw_rectangle(bar_x, bar_y, bar_w, TABS_H, ui::PANEL_SOLID);
+    d.draw_line(bar_x, bar_y + TABS_H, bar_x + bar_w, bar_y + TABS_H, ui::BORDER);
 
     let mouse = d.get_mouse_position();
     d.draw_scissor_mode(bar_x, bar_y, bar_w, TABS_H, |mut s| {
@@ -748,21 +749,32 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
                     && mouse.y as i32 <= cy + ch
             };
 
-            // Background tint: strongest on the active tab, faintest on a
-            // plain hover. Black/white theme keeps shapes, not color.
+            // Background tint: a rounded pill on the active tab and a faint
+            // wash on hover, so the strip reads as chrome rather than a row of
+            // boxes.
             let bg = if is_active {
-                Color::new(255, 255, 255, 10)
+                ui::SURFACE_RAISED
             } else if over {
-                Color::new(255, 255, 255, 5)
+                ui::SURFACE_HOVER
             } else {
                 Color::new(0, 0, 0, 0)
             };
             if bg.a != 0 {
-                s.draw_rectangle(x, y, w - 1, h, bg);
+                s.draw_rectangle_rounded(
+                    Rectangle::new(
+                        (x + 1) as f32,
+                        (y + 2) as f32,
+                        (w - 2) as f32,
+                        (h - 4) as f32,
+                    ),
+                    0.24,
+                    6,
+                    bg,
+                );
             }
             if is_active {
                 // Bottom accent bar marks the open document.
-                s.draw_rectangle(x, y + h - 2, w - 1, 2, Color::new(255, 255, 255, 215));
+                s.draw_rectangle(x + 7, y + h - 2, w - 15, 2, ui::ACCENT);
             }
 
             // Name, pushed left by the close button room. A dated journal tab's
@@ -786,9 +798,9 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
                 display
             };
             let color = if is_active {
-                Color::WHITE
+                ui::TEXT
             } else {
-                Color::new(255, 255, 255, 140)
+                ui::TEXT_SECONDARY
             };
             text::draw(&mut s, &shown, name_x, y + (h - 14) / 2, 14, color);
 
@@ -797,7 +809,7 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
                 s.draw_circle_v(
                     Vector2::new((x + TAB_NAME_LEFT_PAD) as f32, (y + h / 2) as f32),
                     2.5,
-                    Color::new(255, 255, 255, 180),
+                    ui::ACCENT,
                 );
             }
 
@@ -806,7 +818,7 @@ pub fn draw_tab_bar(d: &mut RaylibDrawHandle, bar_x: i32, bar_y: i32, bar_w: i32
             if over_close || is_active {
                 let (cx, cy, _, _) = close_rect(i, bar_x, bar_y, scroll);
                 let inset = 4;
-                let gc = if over_close { Color::WHITE } else { Color::new(255, 255, 255, 100) };
+                let gc = if over_close { ui::TEXT } else { ui::TEXT_MUTED };
                 s.draw_line(cx + inset, cy + inset, cx + CLOSE_W - inset, cy + CLOSE_W - inset, gc);
                 s.draw_line(cx + CLOSE_W - inset, cy + inset, cx + inset, cy + CLOSE_W - inset, gc);
             }

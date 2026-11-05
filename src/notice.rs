@@ -12,6 +12,7 @@ use raylib::prelude::*;
 
 use crate::config;
 use crate::editor::text;
+use crate::ui;
 
 const NOTICE_LIFETIME: Duration = Duration::from_secs(8);
 
@@ -75,7 +76,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     let screen_h = config::height();
     let title_size = config::scaled_size(16);
     let detail_size = config::scaled_size(13);
-    let pad = config::scaled_size(12);
+    let pad = config::scaled_size(14);
     let max_text_w = (screen_w - 2 * (pad * 3)).max(80);
     let title = fit(d, &notice.title, title_size, max_text_w);
     let detail = fit(d, &notice.detail, detail_size, max_text_w);
@@ -85,27 +86,23 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     let x = (screen_w - box_w) / 2;
     let y = config::scaled_size(20).min((screen_h - box_h).max(0));
 
+    let panel = Rectangle::new(x as f32, y as f32, box_w as f32, box_h as f32);
+    ui::panel(d, panel, 0.18);
+    // A quiet accent edge ties the toast to the rest of the chrome.
     d.draw_rectangle_rounded(
-        Rectangle::new(x as f32, y as f32, box_w as f32, box_h as f32),
-        0.18,
-        10,
-        Color::new(18, 18, 22, 242),
+        Rectangle::new(x as f32 + 3.0, (y + 10) as f32, 3.0, (box_h - 20).max(4) as f32),
+        0.5,
+        4,
+        ui::ACCENT,
     );
-    d.draw_rectangle_rounded_lines_ex(
-        Rectangle::new(x as f32, y as f32, box_w as f32, box_h as f32),
-        0.18,
-        10,
-        1.0,
-        Color::new(235, 235, 240, 90),
-    );
-    text::draw(d, &title, x + pad, y + pad, title_size, Color::WHITE);
+    text::draw(d, &title, x + pad, y + pad, title_size, ui::TEXT);
     text::draw(
         d,
         &detail,
         x + pad,
         y + pad + title_size + config::scaled_size(4),
         detail_size,
-        Color::new(200, 204, 214, 255),
+        ui::TEXT_SECONDARY,
     );
 }
 

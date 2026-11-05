@@ -438,14 +438,14 @@ impl ContextRow {
 
     pub fn hover_color(self) -> Color {
         match self {
-            ContextRow::Rename => Color::new(76, 128, 204, 160),
-            ContextRow::Delete => Color::new(200, 60, 60, 160),
-            ContextRow::Copy => Color::new(76, 128, 204, 160),
-            ContextRow::Cut => Color::new(200, 160, 80, 160),
-            ContextRow::OpenSubGraph => Color::new(76, 128, 204, 160),
-            ContextRow::FoldSubGraph => Color::new(76, 180, 120, 160),
-            ContextRow::UnwrapSubGraph => Color::new(76, 180, 120, 160),
-            ContextRow::SetHeader => Color::new(76, 128, 204, 160),
+            ContextRow::Rename => crate::ui::ACCENT_STRONG,
+            ContextRow::Delete => Color::new(230, 112, 112, 150),
+            ContextRow::Copy => crate::ui::ACCENT_STRONG,
+            ContextRow::Cut => Color::new(226, 170, 96, 150),
+            ContextRow::OpenSubGraph => crate::ui::ACCENT_STRONG,
+            ContextRow::FoldSubGraph => Color::new(122, 205, 158, 140),
+            ContextRow::UnwrapSubGraph => Color::new(122, 205, 158, 140),
+            ContextRow::SetHeader => crate::ui::ACCENT_STRONG,
         }
     }
 

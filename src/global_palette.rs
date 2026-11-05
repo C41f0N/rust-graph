@@ -21,6 +21,7 @@ use raylib::prelude::*;
 
 use crate::config;
 use crate::editor::text;
+use crate::ui;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteEntry {
@@ -390,7 +391,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     }
 
     let (sw, sh) = (config::width(), config::height());
-    d.draw_rectangle(0, 0, sw, sh, Color::new(0, 0, 0, 120));
+    d.draw_rectangle(0, 0, sw, sh, Color::new(3, 4, 7, 170));
 
     let font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
     let item_h = config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT).max(2);
@@ -432,26 +433,29 @@ pub fn draw(d: &mut RaylibDrawHandle) {
 
     let pad_x = 18;
     let path_font = (font_size * 70 / 100).max(11);
-    let input_h = font_size + 16;
+    let input_h = font_size + 22;
     // A deliberate 60% of the screen width: the list is not the star here,
     // the typed query is, and the wide box gives long paths room to breathe.
     let box_w = ((sw as f32 * 0.6) as i32).max(420);
     let shown_i32 = shown as i32;
-    let box_h = input_h + shown_i32 * item_h + 12;
+    let box_h = input_h + shown_i32 * item_h + 14;
     let cx = sw / 2 - box_w / 2;
     let cy = sh / 2 - box_h / 2;
 
-    d.draw_rectangle(cx, cy, box_w, box_h, config::AUTOCOMPLETE_BG);
-    d.draw_rectangle_lines(cx, cy, box_w, box_h, Color::new(110, 120, 150, 255));
+    ui::panel(
+        d,
+        Rectangle::new(cx as f32, cy as f32, box_w as f32, box_h as f32),
+        0.06,
+    );
 
     // Input line: the filter text (or a dim placeholder) plus a blinking
     // caret, so typing feels like editing rather than hidden single-key pushes.
     let (input_label, input_color) = if st.filter.is_empty() {
-        ("type a note name...".to_string(), Color::new(150, 160, 180, 180))
+        ("type a note name...".to_string(), ui::TEXT_MUTED)
     } else {
-        (st.filter.clone(), Color::WHITE)
+        (st.filter.clone(), ui::TEXT)
     };
-    let input_top = cy + 10;
+    let input_top = cy + 12;
     text::draw(d, &input_label, cx + pad_x, input_top, font_size, input_color);
     let text_w = text::measure(d, &input_label, font_size);
     let blink = ((d.get_time() * 2.0) as i32) % 2 == 0;
@@ -461,30 +465,36 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             input_top + 3,
             2,
             font_size - 5,
-            Color::WHITE,
+            ui::ACCENT,
         );
     }
     d.draw_line(
-        cx + 4,
+        cx + 12,
         cy + input_h,
-        cx + box_w - 4,
+        cx + box_w - 12,
         cy + input_h,
-        Color::new(80, 90, 115, 255),
+        ui::BORDER,
     );
 
     for r in 0..shown {
-        let row_y = cy + 8 + input_h + r as i32 * item_h;
+        let row_y = cy + 7 + input_h + r as i32 * item_h;
         // Row order: pinned journal row at the top, the match window next,
         // the pinned create row at the bottom.
         let journal_row = jrow == 1 && r == 0;
         let create_row = !journal_row && r >= shown - st.show_create as usize && st.show_create;
         if r == hl {
-            d.draw_rectangle(
-                cx + 2,
-                row_y,
-                box_w - 4,
-                item_h - 2,
-                config::AUTOCOMPLETE_SELECTED_BG,
+            let pill = Rectangle::new(
+                (cx + 6) as f32,
+                (row_y + 1) as f32,
+                (box_w - 12) as f32,
+                (item_h - 2) as f32,
+            );
+            ui::row_pill(d, pill, config::AUTOCOMPLETE_SELECTED_BG);
+            d.draw_rectangle_rounded(
+                Rectangle::new((cx + 9) as f32, (row_y + 5) as f32, 3.0, (item_h - 10) as f32),
+                0.5,
+                4,
+                ui::ACCENT,
             );
         }
         if journal_row {
@@ -495,7 +505,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                     cx + pad_x,
                     row_y + (item_h - font_size) / 2,
                     font_size,
-                    Color::new(160, 200, 255, 255),
+                    ui::ACCENT,
                 );
             }
             continue;
@@ -507,7 +517,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                 cx + pad_x,
                 row_y + (item_h - font_size) / 2,
                 font_size,
-                Color::new(150, 220, 160, 255),
+                ui::SUCCESS,
             );
             continue;
         }
@@ -520,7 +530,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
             cx + pad_x,
             row_y + (item_h - font_size) / 2,
             font_size,
-            Color::WHITE,
+            ui::TEXT,
         );
         // Notes inside a sub-graph carry a small dim path (their project-root-
         // relative location) instead of a badge, so the eye distinguishes
@@ -534,7 +544,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
                 cx + pad_x + name_w + 8,
                 row_y + (item_h - path_font) / 2,
                 path_font,
-                Color::new(150, 155, 175, 210),
+                ui::TEXT_MUTED,
             );
         }
     }

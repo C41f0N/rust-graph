@@ -19,19 +19,20 @@ use raylib::prelude::*;
 
 use crate::config;
 use crate::editor::text;
+use crate::ui;
 
 pub static VAULT_READY: AtomicBool = AtomicBool::new(false);
 
-const BG: Color = Color::new(18, 18, 22, 255);
-const PANEL_BG: Color = Color::new(28, 28, 34, 250);
-const PANEL_EDGE: Color = Color::new(255, 255, 255, 40);
-const BTN_BG: Color = Color::new(52, 56, 68, 255);
-const BTN_HOVER: Color = Color::new(76, 128, 204, 110);
-const BTN_TEXT: Color = Color::new(233, 236, 243, 255);
-const TITLE_COLOR: Color = Color::new(245, 246, 250, 255);
-const SUBTITLE_COLOR: Color = Color::new(168, 173, 186, 255);
-const ROW_HOVER: Color = Color::new(255, 255, 255, 22);
-const CARET: Color = Color::WHITE;
+// The first-run screens share the app's ink so the jump into the graph or the
+// editor never changes material.
+const BG: Color = ui::PANEL_SOLID;
+const BTN_BG: Color = ui::SURFACE;
+const BTN_HOVER: Color = ui::SURFACE_RAISED;
+const BTN_TEXT: Color = ui::TEXT;
+const TITLE_COLOR: Color = ui::TEXT;
+const SUBTITLE_COLOR: Color = ui::TEXT_SECONDARY;
+const ROW_HOVER: Color = ui::SURFACE_HOVER;
+const CARET: Color = ui::ACCENT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -653,18 +654,47 @@ fn draw_choose(d: &mut RaylibDrawHandle) {
     let title = "Welcome to the Graph";
     let title_w = text::measure(d, title, title_fs);
     let ty = (h as f32 * 0.24) as i32;
+
+    // A small accent rule above the title gives the bare first screen an
+    // anchor without adding another box.
+    d.draw_rectangle_rounded(
+        Rectangle::new(
+            (w - config::scaled_size(44)) as f32 / 2.0,
+            (ty - config::scaled_size(26)) as f32,
+            config::scaled_size(44) as f32,
+            3.0,
+        ),
+        0.5,
+        4,
+        ui::ACCENT,
+    );
     text::draw(d, title, (w - title_w) / 2, ty, title_fs, TITLE_COLOR);
 
     let sub = "Open a notes folder, or create a new one with a starter tutorial";
     let sub_w = text::measure(d, sub, sub_fs);
     text::draw(d, sub, (w - sub_w) / 2, ty + title_fs + config::scaled_size(14), sub_fs, SUBTITLE_COLOR);
 
-    // Two action buttons; the hover ring responds to the cursor.
+    // Two action buttons; the hover fill responds to the cursor.
     for (id, label) in [(0, "Open Folder..."), (1, "Create New")] {
         let (x, y, bw, bh) = choose_button_rect(id);
         let m = d.get_mouse_position();
         let hover = hit_button(m, (x, y, bw, bh));
-        d.draw_rectangle(x, y, bw, bh, if hover { BTN_HOVER } else { BTN_BG });
+        let rect = Rectangle::new(x as f32, y as f32, bw as f32, bh as f32);
+        // "Open Folder..." is the primary action, so it carries the accent
+        // wash; "Create New" stays a quiet surface.
+        let (fill, edge) = if id == 0 {
+            (
+                if hover { ui::ACCENT_STRONG } else { ui::ACCENT_SOFT },
+                ui::ACCENT,
+            )
+        } else {
+            (
+                if hover { BTN_HOVER } else { BTN_BG },
+                if hover { ui::BORDER_STRONG } else { ui::BORDER },
+            )
+        };
+        ui::surface(d, rect, 0.24, fill);
+        ui::border(d, rect, 0.24, edge);
         let fs = config::scaled_size(22);
         let lw = text::measure(d, label, fs);
         text::draw(d, label, x + (bw - lw) / 2, y + (bh - fs) / 2, fs, BTN_TEXT);
@@ -677,11 +707,25 @@ fn draw_choose(d: &mut RaylibDrawHandle) {
 
 fn draw_browse(d: &mut RaylibDrawHandle) {
     let (px, py, pw, ph) = browse_panel_rect();
-    d.draw_rectangle(px, py, pw, ph, PANEL_BG);
-    d.draw_rectangle_lines_ex(Rectangle::new(px as f32, py as f32, pw as f32, ph as f32), 1.0, PANEL_EDGE);
+    ui::panel(
+        d,
+        Rectangle::new(px as f32, py as f32, pw as f32, ph as f32),
+        0.035,
+    );
 
     let title_fs = config::scaled_size(24);
-    text::draw(d, "Open a notes folder", px + config::scaled_size(24), py + config::scaled_size(20), title_fs, TITLE_COLOR);
+    d.draw_rectangle_rounded(
+        Rectangle::new(
+            (px + config::scaled_size(24)) as f32,
+            (py + config::scaled_size(20) + (title_fs - 18) / 2) as f32,
+            3.0,
+            18.0,
+        ),
+        0.5,
+        4,
+        ui::ACCENT,
+    );
+    text::draw(d, "Open a notes folder", px + config::scaled_size(34), py + config::scaled_size(20), title_fs, TITLE_COLOR);
 
     // Current path, truncated to fit from the right end (keep the tail: that
     // is the part the user just navigated to).
@@ -689,7 +733,14 @@ fn draw_browse(d: &mut RaylibDrawHandle) {
     let path_text = BROWSE_DIR.read().unwrap().to_string_lossy().to_string();
     let max_w = pw - config::scaled_size(48);
     let shown = truncate_middle(&path_text, path_fs, max_w, d);
-    text::draw(d, &shown, px + config::scaled_size(24), py + config::scaled_size(58), path_fs, SUBTITLE_COLOR);
+    text::draw(d, &shown, px + config::scaled_size(24), py + config::scaled_size(58), path_fs, ui::TEXT_MUTED);
+    d.draw_line(
+        px + config::scaled_size(16),
+        py + config::scaled_size(86),
+        px + pw - config::scaled_size(16),
+        py + config::scaled_size(86),
+        ui::BORDER,
+    );
 
     // Row list (clipped by the panel; the wheel scrolls it).
     let list_top = py + config::scaled_size(96);
@@ -702,7 +753,7 @@ fn draw_browse(d: &mut RaylibDrawHandle) {
         let fs = config::scaled_size(16);
         let msg = "No sub-folders here (press N in the graph to create notes in it)";
         let mw = text::measure(d, msg, fs);
-        text::draw(d, msg, px + (pw - mw) / 2, list_top + config::scaled_size(40), fs, SUBTITLE_COLOR);
+        text::draw(d, msg, px + (pw - mw) / 2, list_top + config::scaled_size(40), fs, ui::TEXT_MUTED);
     }
 
     for (i, entry) in entries.iter().enumerate() {
@@ -716,7 +767,16 @@ fn draw_browse(d: &mut RaylibDrawHandle) {
             m.y as i32 >= y && m.y as i32 <= y + row_h && m.x as i32 >= px && m.x as i32 <= px + pw
         };
         if hover {
-            d.draw_rectangle(px + config::scaled_size(8), y, pw - config::scaled_size(16), row_h, ROW_HOVER);
+            ui::row_pill(
+                d,
+                Rectangle::new(
+                    (px + config::scaled_size(8)) as f32,
+                    (y + 1) as f32,
+                    (pw - config::scaled_size(16)) as f32,
+                    (row_h - 2) as f32,
+                ),
+                ROW_HOVER,
+            );
         }
         let name = entry.file_name().unwrap_or_default().to_string_lossy().to_string();
         let fs = config::scaled_size(16);
@@ -729,7 +789,18 @@ fn draw_browse(d: &mut RaylibDrawHandle) {
         let (x, y, bw, bh) = browse_button_rect(id);
         let m = d.get_mouse_position();
         let hover = hit_button(m, (x, y, bw, bh));
-        d.draw_rectangle(x, y, bw, bh, if hover { BTN_HOVER } else { BTN_BG });
+        let rect = Rectangle::new(x as f32, y as f32, bw as f32, bh as f32);
+        // The middle button is the commit action.
+        let (fill, edge) = if id == 1 {
+            (
+                if hover { ui::ACCENT_STRONG } else { ui::ACCENT_SOFT },
+                ui::ACCENT,
+            )
+        } else {
+            (if hover { BTN_HOVER } else { BTN_BG }, ui::BORDER)
+        };
+        ui::surface(d, rect, 0.28, fill);
+        ui::border(d, rect, 0.28, edge);
         let fs = config::scaled_size(16);
         let lw = text::measure(d, label, fs);
         text::draw(d, label, x + (bw - lw) / 2, y + (bh - fs) / 2, fs, BTN_TEXT);
@@ -738,14 +809,28 @@ fn draw_browse(d: &mut RaylibDrawHandle) {
 
 fn draw_create(d: &mut RaylibDrawHandle) {
     let (px, py, pw, ph) = create_panel_rect();
-    d.draw_rectangle(px, py, pw, ph, PANEL_BG);
-    d.draw_rectangle_lines_ex(Rectangle::new(px as f32, py as f32, pw as f32, ph as f32), 1.0, PANEL_EDGE);
+    ui::panel(
+        d,
+        Rectangle::new(px as f32, py as f32, pw as f32, ph as f32),
+        0.045,
+    );
 
     let title_fs = config::scaled_size(22);
-    text::draw(d, "Create a new notes folder", px + config::scaled_size(24), py + config::scaled_size(22), title_fs, TITLE_COLOR);
+    d.draw_rectangle_rounded(
+        Rectangle::new(
+            (px + config::scaled_size(24)) as f32,
+            (py + config::scaled_size(22) + (title_fs - 18) / 2) as f32,
+            3.0,
+            18.0,
+        ),
+        0.5,
+        4,
+        ui::ACCENT,
+    );
+    text::draw(d, "Create a new notes folder", px + config::scaled_size(34), py + config::scaled_size(22), title_fs, TITLE_COLOR);
 
     let label_fs = config::scaled_size(15);
-    text::draw(d, "Name", px + config::scaled_size(24), py + config::scaled_size(74), label_fs, SUBTITLE_COLOR);
+    text::draw(d, "NAME", px + config::scaled_size(24), py + config::scaled_size(74), label_fs, ui::ACCENT);
 
     // Name input box with a caret.
     let (bx, by, bw, bh) = {
@@ -753,7 +838,9 @@ fn draw_create(d: &mut RaylibDrawHandle) {
         let bh = config::scaled_size(40);
         (px + config::scaled_size(24), py + config::scaled_size(98), bw, bh)
     };
-    d.draw_rectangle(bx, by, bw, bh, Color::new(40, 44, 54, 255));
+    let input = Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32);
+    ui::surface(d, input, 0.24, ui::SURFACE_RAISED);
+    ui::border(d, input, 0.24, ui::ACCENT_SOFT);
     let fs = config::scaled_size(18);
     let name = CREATE_NAME.read().unwrap();
     let pad = config::scaled_size(10);
@@ -764,14 +851,24 @@ fn draw_create(d: &mut RaylibDrawHandle) {
     let home = home_dir();
     let hint = format!("Created at {}", home.join(&*name).display());
     let hint_fs = config::scaled_size(13);
-    text::draw(d, &hint, bx, by + bh + config::scaled_size(10), hint_fs, SUBTITLE_COLOR);
+    text::draw(d, &hint, bx, by + bh + config::scaled_size(10), hint_fs, ui::TEXT_MUTED);
 
     let buttons = ["Create & Start", "Cancel"];
     for (id, label) in buttons.iter().enumerate() {
         let (x, y, bw, bh) = create_button_rect(id);
         let m = d.get_mouse_position();
         let hover = hit_button(m, (x, y, bw, bh));
-        d.draw_rectangle(x, y, bw, bh, if hover { BTN_HOVER } else { BTN_BG });
+        let rect = Rectangle::new(x as f32, y as f32, bw as f32, bh as f32);
+        let (fill, edge) = if id == 0 {
+            (
+                if hover { ui::SUCCESS } else { ui::ACCENT_SOFT },
+                if hover { ui::SUCCESS } else { ui::ACCENT },
+            )
+        } else {
+            (if hover { BTN_HOVER } else { BTN_BG }, ui::BORDER)
+        };
+        ui::surface(d, rect, 0.28, fill);
+        ui::border(d, rect, 0.28, edge);
         let fs = config::scaled_size(16);
         let lw = text::measure(d, label, fs);
         text::draw(d, label, x + (bw - lw) / 2, y + (bh - fs) / 2, fs, BTN_TEXT);

@@ -5,6 +5,7 @@ use crate::editor::text;
 use crate::graph::hover_popup::MenuItem;
 use crate::graph::processing::*;
 use crate::graph::settings;
+use crate::ui;
 use raylib::prelude::*;
 
 pub static CAMERA: RwLock<Camera2D> = RwLock::new(Camera2D {
@@ -303,12 +304,32 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         if let Some(idx) = *selected_node {
             let name = &nodes[idx].name;
             let prompt = format!("Delete '{}'? (Y/N)", name);
-            let fs = config::scaled_size(20);
-            let box_h = config::scaled_size(30);
+            let fs = config::scaled_size(18);
+            let box_h = config::scaled_size(38);
+            let pad = config::scaled_size(16);
             let text_width = text::measure(d, &prompt, fs);
-            let x = (config::width() - text_width) / 2;
-            d.draw_rectangle(x - 10, 10, text_width + 20, box_h, Color::BLACK.alpha(0.7));
-            text::draw(d, &prompt, x, 10 + (box_h - fs) / 2, fs, Color::WHITE);
+            let box_w = text_width + 2 * pad;
+            let x = (config::width() - box_w) / 2;
+            let y = config::scaled_size(12);
+            ui::panel(
+                d,
+                Rectangle::new(x as f32, y as f32, box_w as f32, box_h as f32),
+                0.32,
+            );
+            d.draw_rectangle_rounded(
+                Rectangle::new((x + 3) as f32, (y + 9) as f32, 3.0, (box_h - 18) as f32),
+                0.5,
+                4,
+                ui::DANGER,
+            );
+            text::draw(
+                d,
+                &prompt,
+                x + pad,
+                y + (box_h - fs) / 2,
+                fs,
+                ui::TEXT,
+            );
         }
     }
 
@@ -318,20 +339,33 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         let adding_name = crate::graph::processing::ADDING_NAME.read().unwrap();
         let prompt_base = "Filename: ";
         let full = format!("{}{}", prompt_base, adding_name);
-        let fs = config::scaled_size(20);
-        let box_h = config::scaled_size(30);
+        let fs = config::scaled_size(18);
+        let box_h = config::scaled_size(38);
+        let pad = config::scaled_size(16);
         let label_width = text::measure(d, prompt_base, fs);
         let text_width = text::measure(d, &full, fs);
-        let x = (config::width() - text_width) / 2 - 10;
-        let y = 10;
-        d.draw_rectangle(x, y, text_width + 20, box_h, Color::BLACK.alpha(0.7));
-        text::draw(d, prompt_base, x + 10, y + (box_h - fs) / 2, fs, Color::WHITE);
+        let box_w = text_width + 2 * pad;
+        let x = (config::width() - box_w) / 2;
+        let y = config::scaled_size(12);
+        ui::panel(
+            d,
+            Rectangle::new(x as f32, y as f32, box_w as f32, box_h as f32),
+            0.32,
+        );
+        d.draw_rectangle_rounded(
+            Rectangle::new((x + 3) as f32, (y + 9) as f32, 3.0, (box_h - 18) as f32),
+            0.5,
+            4,
+            ui::ACCENT,
+        );
+        let ty = y + (box_h - fs) / 2;
+        text::draw(d, prompt_base, x + pad, ty, fs, ui::TEXT_SECONDARY);
 
-        // Draw the input content (in a lighter color) plus a cursor
-        text::draw(d, &adding_name, x + 10 + label_width, y + (box_h - fs) / 2, fs, Color::SKYBLUE);
+        // Draw the input content in the primary ink plus an accent cursor.
+        text::draw(d, &adding_name, x + pad + label_width, ty, fs, ui::TEXT);
         let name_width = text::measure(d, &adding_name, fs);
-        let cursor_x = x + 10 + label_width + name_width;
-        d.draw_rectangle(cursor_x, y + (box_h - fs) / 2, 2, fs, Color::WHITE);
+        let cursor_x = x + pad + label_width + name_width;
+        d.draw_rectangle(cursor_x, ty, 2, fs, ui::ACCENT);
     }
 
     // Right-click context menu (screen space)
@@ -363,7 +397,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
                     MenuItem {
                         label,
                         key: Some(key),
-                        hover_color: Color::new(76, 180, 120, 160),
+                        hover_color: Color::new(122, 205, 158, 140),
                         separator_before: false,
                         rect: Rectangle::new(
                             mx as f32,
@@ -415,18 +449,31 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         let rename_name = crate::graph::processing::RENAME_NAME.read().unwrap();
         let prompt_base = "Rename to: ";
         let full = format!("{}{}", prompt_base, rename_name);
-        let fs = config::scaled_size(20);
-        let box_h = config::scaled_size(30);
+        let fs = config::scaled_size(18);
+        let box_h = config::scaled_size(38);
+        let pad = config::scaled_size(16);
         let label_width = text::measure(d, prompt_base, fs);
         let text_width = text::measure(d, &full, fs);
-        let x = (config::width() - text_width) / 2 - 10;
-        let y = 10;
-        d.draw_rectangle(x, y, text_width + 20, box_h, Color::BLACK.alpha(0.7));
-        text::draw(d, prompt_base, x + 10, y + (box_h - fs) / 2, fs, Color::WHITE);
-        text::draw(d, &rename_name, x + 10 + label_width, y + (box_h - fs) / 2, fs, Color::SKYBLUE);
+        let box_w = text_width + 2 * pad;
+        let x = (config::width() - box_w) / 2;
+        let y = config::scaled_size(12);
+        ui::panel(
+            d,
+            Rectangle::new(x as f32, y as f32, box_w as f32, box_h as f32),
+            0.32,
+        );
+        d.draw_rectangle_rounded(
+            Rectangle::new((x + 3) as f32, (y + 9) as f32, 3.0, (box_h - 18) as f32),
+            0.5,
+            4,
+            ui::ACCENT,
+        );
+        let ty = y + (box_h - fs) / 2;
+        text::draw(d, prompt_base, x + pad, ty, fs, ui::TEXT_SECONDARY);
+        text::draw(d, &rename_name, x + pad + label_width, ty, fs, ui::TEXT);
         let name_width = text::measure(d, &rename_name, fs);
-        let cursor_x = x + 10 + label_width + name_width;
-        d.draw_rectangle(cursor_x, y + (box_h - fs) / 2, 2, fs, Color::WHITE);
+        let cursor_x = x + pad + label_width + name_width;
+        d.draw_rectangle(cursor_x, ty, 2, fs, ui::ACCENT);
     }
 
     // Breadcrumb trail (only when inside a sub-graph)
@@ -462,7 +509,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         drop(dir);
 
         let mut x = config::BREADCRUMB_PAD;
-        let text_color = Color::new(200, 200, 200, 220);
+        let text_color = ui::TEXT_MUTED;
         let total = components.len();
         let bf = config::scaled_size(16);
         let band_h = bf + 4;
@@ -477,7 +524,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
                     && screen_mouse.x as i32 <= x + w
                     && screen_mouse.y as i32 >= config::BREADCRUMB_Y
                     && screen_mouse.y as i32 <= config::BREADCRUMB_Y + band_h;
-                let color = if hover { Color::SKYBLUE } else { text_color };
+                let color = if hover { ui::ACCENT } else { text_color };
                 text::draw(d, &label, x, config::BREADCRUMB_Y, bf, color);
 
                 // Detect click and store the level for the input handler.
@@ -494,7 +541,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
                     *crate::graph::processing::BREADCRUMB_CLICK.write().unwrap() = Some(level);
                 }
             } else {
-                text::draw(d, &label, x, config::BREADCRUMB_Y, bf, Color::WHITE);
+                text::draw(d, &label, x, config::BREADCRUMB_Y, bf, ui::TEXT);
             }
 
             x += w;
@@ -513,33 +560,62 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         && screen_mouse.y as i32 <= settings::SETTINGS_BUTTON_Y + sb_h;
 
     let btn_bg = if settings_open {
-        Color::new(76, 128, 204, 180)
+        ui::ACCENT_STRONG
     } else if over_btn {
-        Color::new(76, 128, 204, 120)
+        ui::SURFACE_RAISED
     } else {
-        Color::new(40, 40, 46, 200)
+        ui::SURFACE
     };
-    d.draw_rectangle(
-        settings::settings_button_x(),
-        settings::SETTINGS_BUTTON_Y,
-        sb_w,
-        sb_h,
-        btn_bg,
+    let btn_rect = Rectangle::new(
+        settings::settings_button_x() as f32,
+        settings::SETTINGS_BUTTON_Y as f32,
+        sb_w as f32,
+        sb_h as f32,
     );
+    ui::surface(d, btn_rect, 0.32, btn_bg);
+    ui::border(
+        d,
+        btn_rect,
+        0.32,
+        if settings_open { ui::ACCENT } else { ui::BORDER },
+    );
+
+    // Tiny sliders mark: three rails with a knob on each, so the button reads
+    // as settings even before the label does.
+    let icon_x = settings::settings_button_x() + config::scaled_size(12);
+    let icon_cy = settings::SETTINGS_BUTTON_Y + sb_h / 2;
+    let icon_w = config::scaled_size(12);
+    let icon_step = config::scaled_size(5);
+    for (i, offset) in [-icon_step, 0, icon_step].iter().enumerate() {
+        let ly = icon_cy + *offset;
+        d.draw_line(
+            icon_x,
+            ly,
+            icon_x + icon_w,
+            ly,
+            if settings_open { ui::TEXT } else { ui::TEXT_SECONDARY },
+        );
+        let knob_x = icon_x + icon_w * (2 - i as i32) / 3;
+        d.draw_circle(knob_x, ly, config::scaled_size(2) as f32, ui::ACCENT);
+    }
+
     let btn_label = "Settings";
     let btn_w = text::measure(d, btn_label, sb_f);
+    let text_left = config::scaled_size(26);
     text::draw(
         d,
         btn_label,
-        settings::settings_button_x() + (sb_w - btn_w) / 2,
+        settings::settings_button_x()
+            + text_left
+            + ((sb_w - text_left - btn_w) / 2).max(config::scaled_size(2)),
         settings::SETTINGS_BUTTON_Y + (sb_h - sb_f) / 2,
         sb_f,
-        Color::WHITE,
+        ui::TEXT,
     );
 
     // Settings dialog / font picker
     if settings_open {
-        d.draw_rectangle(0, 0, config::width(), config::height(), Color::new(0, 0, 0, 120));
+        d.draw_rectangle(0, 0, config::width(), config::height(), Color::new(3, 4, 7, 180));
 
         let px = settings::panel_x();
         let py = settings::panel_y();
@@ -549,20 +625,34 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         let rh = settings::row_h();
         let tf = config::scaled_size(24);
         let rf = config::scaled_size(16);
-        d.draw_rectangle(
-            px,
-            py,
-            pw,
-            ph,
-            Color::new(25, 25, 30, 245),
+        let panel = Rectangle::new(px as f32, py as f32, pw as f32, ph as f32);
+        ui::panel(d, panel, 0.035);
+
+        // Accent tick before the title, then the dialog name.
+        d.draw_rectangle_rounded(
+            Rectangle::new((px + 14) as f32, (py + (th - 18) / 2) as f32, 3.0, 18.0),
+            0.5,
+            4,
+            ui::ACCENT,
         );
-        text::draw(d, "Settings", px + 12, py + (th - tf) / 2, tf, Color::WHITE);
+        text::draw(d, "Settings", px + 26, py + (th - tf) / 2, tf, ui::TEXT);
+        let esc = "Esc to close";
+        let esc_font = config::scaled_size(12);
+        let esc_w = text::measure(d, esc, esc_font);
+        text::draw(
+            d,
+            esc,
+            px + pw - esc_w - config::scaled_size(16),
+            py + (th - esc_font) / 2,
+            esc_font,
+            ui::TEXT_MUTED,
+        );
         d.draw_line(
             px,
             py + th,
             px + pw,
             py + th,
-            Color::new(255, 255, 255, 50),
+            ui::BORDER,
         );
 
         // --- Editor options section (modifiable layout values) ---
@@ -571,21 +661,37 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         text::draw(
             d,
             "OPTIONS",
-            px + 12,
+            px + 18,
             settings::options_top() + (settings::options_label_h() - section_font) / 2,
             section_font,
-            Color::new(150, 158, 190, 255),
+            ui::ACCENT,
         );
         for row in 0..settings::OPTION_ROWS {
             let row_y = settings::option_row_y(row);
             let (value, min, max) = settings::option_value(row);
+            let row_hovered = screen_mouse.x as i32 >= px
+                && screen_mouse.x as i32 <= px + pw
+                && screen_mouse.y as i32 >= row_y
+                && screen_mouse.y as i32 <= row_y + rh;
+            if row_hovered {
+                ui::row_pill(
+                    d,
+                    Rectangle::new(
+                        (px + 8) as f32,
+                        (row_y + 1) as f32,
+                        (pw - 16) as f32,
+                        (rh - 2) as f32,
+                    ),
+                    ui::SURFACE_HOVER,
+                );
+            }
             text::draw(
                 d,
                 settings::option_label(row),
-                px + 12,
+                px + 18,
                 row_y + (rh - section_font) / 2,
                 section_font,
-                Color::WHITE,
+                ui::TEXT,
             );
             // Value, right-aligned just left of the steppers, dimmed once the
             // setting sits at a limit so a dead press reads as dead. Toggle
@@ -602,9 +708,9 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
                 row_y + (rh - section_font) / 2,
                 section_font,
                 if at_limit {
-                    Color::new(130, 138, 160, 255)
+                    ui::TEXT_MUTED
                 } else {
-                    Color::new(200, 210, 230, 255)
+                    ui::TEXT_SECONDARY
                 },
             );
             for (rect, glyph, up) in [(minus, "-", false), (plus, "+", true)] {
@@ -619,13 +725,16 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
                     0.4,
                     4,
                     if hovered && live {
-                        Color::new(76, 128, 204, 200)
+                        ui::ACCENT_STRONG
                     } else if live {
-                        Color::new(76, 128, 204, 110)
+                        ui::ACCENT_SOFT
                     } else {
-                        Color::new(90, 100, 125, 70)
+                        Color::new(255, 255, 255, 8)
                     },
                 );
+                if live {
+                    d.draw_rectangle_rounded_lines_ex(rect, 0.4, 4, 1.0, ui::BORDER);
+                }
                 let gw = text::measure(d, glyph, step_font);
                 text::draw(
                     d,
@@ -634,9 +743,9 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
                     rect.y as i32 + ((rect.height as i32) - step_font) / 2,
                     step_font,
                     if live {
-                        Color::WHITE
+                        ui::TEXT
                     } else {
-                        Color::new(120, 128, 150, 255)
+                        ui::TEXT_MUTED
                     },
                 );
             }
@@ -648,7 +757,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
             list_top - config::scaled_size(4),
             px + pw,
             list_top - config::scaled_size(4),
-            Color::new(255, 255, 255, 50),
+            ui::BORDER,
         );
 
         let fonts = crate::graph::settings::FONTS.read().unwrap();
@@ -668,31 +777,37 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
                 && screen_mouse.y as i32 <= row_y + rh;
             let row_selected = selected == Some(idx);
 
-            if row_hovered {
-                sc.draw_rectangle(
-                    px,
-                    row_y,
-                    pw,
-                    rh,
-                    Color::new(76, 128, 204, 120),
+            if row_hovered || row_selected {
+                ui::row_pill(
+                    &mut sc,
+                    Rectangle::new(
+                        (px + 8) as f32,
+                        (row_y + 1) as f32,
+                        (pw - 16) as f32,
+                        (rh - 2) as f32,
+                    ),
+                    if row_selected {
+                        ui::ACCENT_SOFT
+                    } else {
+                        ui::SURFACE_HOVER
+                    },
                 );
             }
             if row_selected {
-                sc.draw_rectangle_lines(
-                    px,
-                    row_y,
-                    pw,
-                    rh,
-                    Color::new(76, 128, 204, 255),
+                sc.draw_rectangle_rounded(
+                    Rectangle::new((px + 11) as f32, (row_y + 6) as f32, 3.0, (rh - 12) as f32),
+                    0.5,
+                    4,
+                    ui::ACCENT,
                 );
             }
 
             let color = if row_selected {
-                Color::SKYBLUE
+                ui::TEXT
             } else {
-                Color::WHITE
+                ui::TEXT_SECONDARY
             };
-            text::draw(&mut sc, &fam.name, px + 12, row_y + (rh - rf) / 2, rf, color);
+            text::draw(&mut sc, &fam.name, px + 20, row_y + (rh - rf) / 2, rf, color);
         }
         drop(sc);
     }
@@ -716,10 +831,21 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         let rf = config::scaled_size(14);
         let vf = config::scaled_size(12);
 
-        d.draw_rectangle(px, py, pw, total_h, Color::new(18, 18, 26, 235));
+        ui::panel(
+            d,
+            Rectangle::new(px as f32, py as f32, pw as f32, total_h as f32),
+            0.03,
+        );
         let title = format!("Force Controls   alpha={:.3}", alpha);
-        text::draw(d, &title, px + 8, py + (th - tf) / 2, tf, Color::WHITE);
-        d.draw_line(px, py + th, px + pw, py + th, Color::new(255, 255, 255, 50));
+        text::draw(
+            d,
+            &title,
+            px + config::scaled_size(14),
+            py + (th - tf) / 2,
+            tf,
+            ui::TEXT,
+        );
+        d.draw_line(px, py + th, px + pw, py + th, ui::BORDER);
 
         // Alpha-cooldown toggle row (hit-test matches hit_test_alpha_toggle).
         let toggle_y = panel_body_y();
@@ -728,7 +854,16 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
             && m.y as i32 >= toggle_y
             && m.y as i32 <= toggle_y + rh;
         if toggle_hover {
-            d.draw_rectangle(px, toggle_y, pw, rh, Color::new(76, 128, 204, 80));
+            ui::row_pill(
+                d,
+                Rectangle::new(
+                    (px + 8) as f32,
+                    (toggle_y + 1) as f32,
+                    (pw - 16) as f32,
+                    (rh - 2) as f32,
+                ),
+                ui::SURFACE_HOVER,
+            );
         }
         let on_label = if alpha_cooling {
             "Alpha Cooldown: ON"
@@ -738,10 +873,10 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         text::draw(
             d,
             on_label,
-            px + 8,
+            px + config::scaled_size(14),
             toggle_y + (rh - rf) / 2,
             rf,
-            if alpha_cooling { Color::GREEN } else { Color::GRAY },
+            if alpha_cooling { ui::SUCCESS } else { ui::TEXT_MUTED },
         );
 
         // Slider rows: track between TRACK_LEFT..TRACK_RIGHT, thumb at value.
@@ -768,22 +903,32 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
             let track_y = row_y + rh / 2 - 3;
             let thumb_x = track_l + (t * track_w as f32) as i32;
 
-            d.draw_rectangle(track_l, track_y, track_w, 6, Color::new(70, 70, 70, 200));
-            d.draw_rectangle(thumb_x - 4, track_y - 3, 8, 12, Color::new(76, 180, 120, 230));
+            d.draw_rectangle_rounded(
+                Rectangle::new(track_l as f32, track_y as f32, track_w as f32, 6.0),
+                0.5,
+                4,
+                Color::new(255, 255, 255, 14),
+            );
+            d.draw_rectangle_rounded(
+                Rectangle::new((thumb_x - 4) as f32, (track_y - 3) as f32, 8.0, 12.0),
+                0.5,
+                4,
+                ui::ACCENT,
+            );
             text::draw(
                 d,
                 label,
-                px + 8,
+                px + config::scaled_size(14),
                 row_y + (rh - rf) / 2,
                 rf,
-                Color::new(210, 210, 215, 230),
+                ui::TEXT_SECONDARY,
             );
             let val = if value >= 100.0 {
                 format!("{value:.0}")
             } else {
                 format!("{value:.3}")
             };
-            text::draw(d, &val, track_r + 8, row_y + (rh - vf) / 2, vf, Color::SKYBLUE);
+            text::draw(d, &val, track_r + 8, row_y + (rh - vf) / 2, vf, ui::ACCENT);
         }
 
         // Bottom row: Reset Tweaks (left) and Respawn (right), split at the
@@ -801,12 +946,22 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
             && m.y as i32 <= btn_y + rh;
         let btn_color = |hover: bool| {
             if hover {
-                Color::new(76, 128, 204, 170)
+                ui::ACCENT_STRONG
             } else {
-                Color::new(76, 128, 204, 80)
+                ui::ACCENT_SOFT
             }
         };
-        d.draw_rectangle(px + 8, btn_y + 3, mid - px - 12, rh - 6, btn_color(reset_hover));
+        d.draw_rectangle_rounded(
+            Rectangle::new(
+                (px + 8) as f32,
+                (btn_y + 3) as f32,
+                (mid - px - 12) as f32,
+                (rh - 6) as f32,
+            ),
+            0.32,
+            5,
+            btn_color(reset_hover),
+        );
         let reset_label = "Reset Tweaks";
         let reset_w = text::measure(d, reset_label, rf);
         text::draw(
@@ -815,13 +970,17 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
             px + 8 + (mid - px - 12 - reset_w) / 2,
             btn_y + (rh - rf) / 2,
             rf,
-            Color::WHITE,
+            ui::TEXT,
         );
-        d.draw_rectangle(
-            mid + 4,
-            btn_y + 3,
-            px + pw - 8 - mid - 4,
-            rh - 6,
+        d.draw_rectangle_rounded(
+            Rectangle::new(
+                (mid + 4) as f32,
+                (btn_y + 3) as f32,
+                (px + pw - 8 - mid - 4) as f32,
+                (rh - 6) as f32,
+            ),
+            0.32,
+            5,
             btn_color(respawn_hover),
         );
         let respawn_label = "Respawn";
@@ -832,7 +991,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
             mid + 4 + (px + pw - 8 - mid - 4 - respawn_w) / 2,
             btn_y + (rh - rf) / 2,
             rf,
-            Color::WHITE,
+            ui::TEXT,
         );
     }
 
@@ -866,7 +1025,12 @@ fn draw_zoom_scale(d: &mut RaylibDrawHandle) {
     let track_x = bx + (bw - track_w) / 2;
 
     // Faint guide rail along the whole band.
-    d.draw_rectangle(track_x, btop, track_w, bh, Color::new(255, 255, 255, (22.0 * alpha) as u8));
+    d.draw_rectangle_rounded(
+        Rectangle::new(track_x as f32, btop as f32, track_w as f32, bh as f32),
+        0.5,
+        4,
+        Color::new(255, 255, 255, (18.0 * alpha) as u8),
+    );
 
     // Thumb: the current camera zoom projected onto the band (log-spaced).
     let zoom = CAMERA.read().unwrap().zoom;
@@ -877,9 +1041,9 @@ fn draw_zoom_scale(d: &mut RaylibDrawHandle) {
     let tx = bx + (bw - thumb_w) / 2;
     d.draw_rectangle_rounded(
         Rectangle::new(tx as f32, ty, thumb_w as f32, thumb_h),
-        0.4,
+        0.5,
         4,
-        Color::new(120, 170, 240, (210.0 * alpha) as u8),
+        Color::new(104, 156, 242, (220.0 * alpha) as u8),
     );
 
     // The current zoom percentage floats beside the thumb while readable.
@@ -887,10 +1051,27 @@ fn draw_zoom_scale(d: &mut RaylibDrawHandle) {
         let label = format!("{:.0}%", zoom * 100.0);
         let fs = config::scaled_size(12);
         let lw = text::measure(d, &label, fs) as i32;
-        let lx = tx - lw - config::scaled_size(8);
+        let lx = tx - lw - config::scaled_size(10);
         let ly = (ty + thumb_h * 0.5 - fs as f32 / 2.0) as i32;
-        d.draw_rectangle(lx - 4, ly - 2, lw + 8, fs + 4, Color::new(0, 0, 0, (130.0 * alpha) as u8));
-        text::draw(d, &label, lx, ly, fs, Color::new(255, 255, 255, (235.0 * alpha) as u8));
+        d.draw_rectangle_rounded(
+            Rectangle::new(
+                (lx - 6) as f32,
+                (ly - 4) as f32,
+                (lw + 12) as f32,
+                (fs + 8) as f32,
+            ),
+            0.4,
+            5,
+            Color::new(14, 16, 21, (210.0 * alpha) as u8),
+        );
+        text::draw(
+            d,
+            &label,
+            lx,
+            ly,
+            fs,
+            Color::new(237, 240, 246, (235.0 * alpha) as u8),
+        );
     }
 }
 

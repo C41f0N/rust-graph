@@ -14,6 +14,7 @@ mod journal;
 mod notice;
 mod sidebar;
 mod startup;
+mod ui;
 
 use graph::processing::*;
 

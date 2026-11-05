@@ -1,4 +1,5 @@
 use crate::config;
+use crate::ui;
 use raylib::prelude::*;
 use std::sync::RwLock;
 
@@ -34,14 +35,14 @@ pub const BUTTON_COUNT: usize = 2;
 const BAR_MARGIN_Y: i32 = BAR_PAD_V;
 const BAR_H: i32 = 2 * BUTTON_H + BUTTON_GAP + 2 * BAR_PAD_V;
 
-// Monochrome palette: the strip is black, everything else is white alpha.
-const BAR_BG: Color = Color::new(18, 18, 18, 235);
-const BAR_EDGE: Color = Color::new(255, 255, 255, 36);
-const HOVER_BG: Color = Color::new(255, 255, 255, 20);
-const ACTIVE_BG: Color = Color::new(255, 255, 255, 14);
-const ICON_IDLE: Color = Color::new(255, 255, 255, 110);
-const ICON_ACTIVE: Color = Color::new(255, 255, 255, 255);
-const ACCENT: Color = Color::new(255, 255, 255, 235);
+// Monochrome palette: the strip is near-black, everything else is white alpha.
+const BAR_BG: Color = ui::PANEL;
+const BAR_EDGE: Color = ui::BORDER;
+const HOVER_BG: Color = ui::SURFACE_HOVER;
+const ACTIVE_BG: Color = ui::SURFACE_RAISED;
+const ICON_IDLE: Color = ui::TEXT_MUTED;
+const ICON_ACTIVE: Color = ui::TEXT;
+const ACCENT: Color = ui::ACCENT;
 
 // The whole strip rectangle, vertically centered on the left edge.
 pub fn bar_bounds() -> (i32, i32, i32, i32) {
@@ -161,15 +162,21 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
     let screen_mouse = d.get_mouse_position();
     let over = hit_bar(screen_mouse);
 
-    // Strip background: solid black so it reads over the graph and the editor.
+    // Strip background: solid near-black so it reads over the graph and the
+    // editor.
     d.draw_rectangle_rounded(
         Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32),
-        0.2,
-        0,
+        0.24,
+        10,
         BAR_BG,
     );
-    // Right edge divider so the strip reads as a dock.
-    d.draw_line(bx + bw, by, bx + bw, by + bh, BAR_EDGE);
+    d.draw_rectangle_rounded_lines_ex(
+        Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32),
+        0.24,
+        10,
+        1.0,
+        BAR_EDGE,
+    );
 
     for id in 0..BUTTON_COUNT {
         let (x, y, w, h) = button_bounds(id);
@@ -182,17 +189,22 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
         if active {
             d.draw_rectangle_rounded(
                 Rectangle::new(x as f32, y as f32, w as f32, h as f32),
-                0.2,
-                0,
+                0.26,
+                8,
                 ACTIVE_BG,
             );
             // Left accent bar on the active button.
-            d.draw_rectangle(x, y + 5, 3, h - 10, ACCENT);
+            d.draw_rectangle_rounded(
+                Rectangle::new(x as f32 + 3.0, (y + 7) as f32, 3.0, (h - 14) as f32),
+                0.5,
+                4,
+                ACCENT,
+            );
         } else if hovered {
             d.draw_rectangle_rounded(
                 Rectangle::new(x as f32, y as f32, w as f32, h as f32),
-                0.2,
-                0,
+                0.26,
+                8,
                 HOVER_BG,
             );
         }

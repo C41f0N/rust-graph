@@ -131,8 +131,12 @@ pub const EDITOR_IMAGE_MAX_HEIGHT: i32 = 320;
 // Collapsed frontmatter block: shown as a small pill of this height when the
 // cursor is outside it, so the dead-metadata lines never scroll through.
 pub const EDITOR_FRONTMATTER_HEIGHT: i32 = 16;
-pub const EDITOR_FRONTMATTER_BG: Color = Color::new(60, 60, 72, 160);
+pub const EDITOR_FRONTMATTER_BG: Color = Color::new(45, 50, 62, 200);
 pub const EDITOR_FRONTMATTER_COLOR: Color = Color::new(150, 158, 190, 255);
+
+// The editor's translucent panel. Dark enough that body text stays legible
+// over a busy graph while the graph still ghosts through at the edges.
+pub const EDITOR_PANEL_BG: Color = Color::new(8, 10, 14, 230);
 
 // --- Large-file policy ------------------------------------------------------
 // The editor keeps small notes fully editable. Anything above the edit limits
@@ -159,13 +163,13 @@ pub const EDITOR_FONT_COLOR: Color = Color::WHITE;
 // Headings are a step brighter than the body so the hierarchy reads even
 // though they share the body's weight under a family with no bold cut.
 pub const EDITOR_HEADING_COLOR: Color = Color::new(245, 246, 250, 255);
-pub const EDITOR_SELECTION_COLOR: Color = Color::new(76, 128, 204, 102);
+pub const EDITOR_SELECTION_COLOR: Color = Color::new(104, 156, 242, 96);
 // Links and list bullets stay in the same black-and-white family as the rest
 // of the theme: a soft mid-gray for links (the hover backplate carries the
 // interactivity) and a slightly dimmer gray so bullets recede behind the text.
 pub const EDITOR_LINK_COLOR: Color = Color::new(188, 194, 202, 255);
 pub const EDITOR_CODE_COLOR: Color = Color::new(240, 200, 120, 255);
-pub const EDITOR_CODE_BG: Color = Color::new(50, 50, 60, 220);
+pub const EDITOR_CODE_BG: Color = Color::new(24, 28, 36, 235);
 pub const EDITOR_BLOCKQUOTE_COLOR: Color = Color::new(170, 190, 220, 255);
 pub const EDITOR_BLOCKQUOTE_BAR: Color = Color::new(120, 150, 210, 255);
 pub const EDITOR_HR_COLOR: Color = Color::new(120, 120, 120, 255);
@@ -207,8 +211,7 @@ pub const EDITOR_FAUX_ITALIC_SLANT: f32 = 0.2;
 
 pub const AUTOCOMPLETE_MAX_VISIBLE: usize = 8;
 pub const AUTOCOMPLETE_ITEM_HEIGHT: i32 = 18;
-pub const AUTOCOMPLETE_BG: Color = Color::new(20, 20, 20, 235);
-pub const AUTOCOMPLETE_SELECTED_BG: Color = Color::new(76, 128, 204, 160);
+pub const AUTOCOMPLETE_SELECTED_BG: Color = Color::new(104, 156, 242, 56);
 
 // Highlight bar for the selected line while the editor is in navigation mode
 // (cursor detached): a light grey stripe in the left padding gutter.
@@ -230,12 +233,12 @@ pub const TAB_SCROLL_STEP: i32 = 40;
 // Bottom shortcut-helper bar: shows the keys that fire in the current state.
 // Height is a base UI pixel, scaled with the global zoom like the other
 // chrome; the chip colors follow the quiet dark palette of the menus.
-pub const HELPBAR_H: i32 = 26;
-pub const HELPBAR_BG: Color = Color::new(20, 20, 24, 210);
-pub const HELPBAR_SEP: Color = Color::new(255, 255, 255, 28);
-pub const HELPBAR_KEY_BG: Color = Color::new(52, 56, 68, 255);
-pub const HELPBAR_KEY_TEXT: Color = Color::new(233, 236, 243, 255);
-pub const HELPBAR_ACTION_TEXT: Color = Color::new(168, 173, 186, 255);
+pub const HELPBAR_H: i32 = 28;
+pub const HELPBAR_BG: Color = Color::new(9, 11, 15, 238);
+pub const HELPBAR_SEP: Color = Color::new(255, 255, 255, 38);
+pub const HELPBAR_KEY_BG: Color = Color::new(38, 43, 54, 255);
+pub const HELPBAR_KEY_TEXT: Color = Color::new(237, 240, 246, 255);
+pub const HELPBAR_ACTION_TEXT: Color = Color::new(174, 181, 197, 255);
 
 #[cfg(test)]
 mod tests {
