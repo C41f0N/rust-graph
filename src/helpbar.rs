@@ -221,7 +221,12 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
             ("N", "cancel"),
             ("Esc", "cancel"),
         ],
-        HelpContext::GraphContextMenu => &[("C/X/V", "copy/cut/paste"), ("Esc", "dismiss")],
+        HelpContext::GraphContextMenu => &[
+            ("W/S", "move"),
+            ("Enter", "select"),
+            ("C/X/V", "copy/cut/paste"),
+            ("Esc", "dismiss"),
+        ],
         HelpContext::GraphBase => GRAPH_BASE,
         HelpContext::EditorCreatingNode => &[
             ("Enter", "create"),

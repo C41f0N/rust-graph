@@ -572,6 +572,78 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         return;
     }
 
+    // ------------------------------------------------------------
+    // Keyboard navigation of the open context menu
+    // ------------------------------------------------------------
+
+    let menu_open = context_node.is_some() || *context_empty;
+    let mut menu_activate: Option<usize> = None;
+    if menu_open && !*editor_open {
+        let row_count = if *context_empty {
+            if CLIPBOARD.read().unwrap().is_some() {
+                2
+            } else {
+                1
+            }
+        } else {
+            context_menu_rows(*context_node, &nodes).len()
+        };
+
+        if row_count > 0 {
+            let mut focus = CONTEXT_FOCUS.write().unwrap();
+            let mut idx = focus.unwrap_or(0).min(row_count - 1);
+
+            let up = rl.is_key_pressed(KeyboardKey::KEY_UP)
+                || rl.is_key_pressed(KeyboardKey::KEY_W);
+            let down = rl.is_key_pressed(KeyboardKey::KEY_DOWN)
+                || rl.is_key_pressed(KeyboardKey::KEY_S);
+            let left = rl.is_key_pressed(KeyboardKey::KEY_LEFT)
+                || rl.is_key_pressed(KeyboardKey::KEY_A);
+            let right = rl.is_key_pressed(KeyboardKey::KEY_RIGHT)
+                || rl.is_key_pressed(KeyboardKey::KEY_D);
+            let navigated = up || down || left || right;
+
+            if up || left {
+                idx = idx.saturating_sub(1);
+            }
+            if down || right {
+                idx = (idx + 1).min(row_count - 1);
+            }
+
+            // Moving the pointer takes the highlight with it; keyboard
+            // navigation owns it otherwise. This keeps exactly one row lit.
+            let delta = rl.get_mouse_delta();
+            if !navigated && (delta.x.abs() > 0.01 || delta.y.abs() > 0.01) {
+                let (mx, my) = *context_pos;
+                let mw = config::scaled_size(config::CONTEXT_MENU_W);
+                let mh = config::scaled_size(config::CONTEXT_MENU_ITEM_H);
+                let m = rl.get_mouse_position();
+                if m.x >= mx as f32
+                    && m.x <= (mx + mw) as f32
+                    && m.y >= my as f32
+                    && m.y <= (my + row_count as i32 * mh) as f32
+                {
+                    let row = (m.y as i32 - my) / mh;
+                    if row >= 0 && (row as usize) < row_count {
+                        idx = row as usize;
+                    }
+                }
+            }
+
+            *focus = Some(idx);
+
+            // Enter/Space run the focused row. The existing mouse dispatch
+            // below handles the actual action, so both paths share one
+            // implementation.
+            if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+                || rl.is_key_pressed(KeyboardKey::KEY_KP_ENTER)
+                || rl.is_key_pressed(KeyboardKey::KEY_SPACE)
+            {
+                menu_activate = Some(idx);
+            }
+        }
+    }
+
     // G toggles to the editor view: reopen the last active tab, or the
     // selected node when no tab exists yet. Mirrors the sidebar editor button.
     // Ctrl+G is left alone, and an open context menu owns the keyboard.
@@ -770,6 +842,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             *context_empty = true;
             *context_pos = (screen_mouse.x as i32, screen_mouse.y as i32);
         }
+        // A mouse-opened menu starts on its first row, then the pointer or
+        // WASD/arrows can move the highlight.
+        *CONTEXT_FOCUS.write().unwrap() = Some(0);
     }
 
     // Middle-click on a node that owns a sub-graph navigates into it.
@@ -837,11 +912,10 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         return;
     }
 
-    // While a context menu is open, a left click either picks an item or
-    // dismisses the menu (anything that isn't the menu closes it).
-    if (context_node.is_some() || *context_empty)
-        && rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
-    {
+    // While a context menu is open, a left click or Enter/Space either picks
+    // an item or dismisses the menu (a click that isn't on the menu closes it).
+    let menu_click = rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT);
+    if menu_open && (menu_click || menu_activate.is_some()) {
         let (mx, my) = *context_pos;
         let mw = config::scaled_size(config::CONTEXT_MENU_W);
         let mh = config::scaled_size(config::CONTEXT_MENU_ITEM_H);
@@ -850,17 +924,29 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             // Empty-space menu: Add Node, plus Paste when the clipboard holds
             // a note (both rows mirror the renderer's empty menu exactly).
             let has_clip = crate::graph::processing::CLIPBOARD.read().unwrap().is_some();
-            let click = rl.get_mouse_position();
-            let clicked = |r: i32| {
-                click.x as i32 >= mx
-                    && click.x as i32 <= mx + mw
-                    && click.y as i32 >= my + r * mh
-                    && click.y as i32 <= my + r * mh + mh
-            };
-            if clicked(0) {
+            let activated = menu_activate.or_else(|| {
+                if !menu_click {
+                    return None;
+                }
+                let click = rl.get_mouse_position();
+                let clicked = |r: i32| {
+                    click.x as i32 >= mx
+                        && click.x as i32 <= mx + mw
+                        && click.y as i32 >= my + r * mh
+                        && click.y as i32 <= my + r * mh + mh
+                };
+                if clicked(0) {
+                    Some(0)
+                } else if has_clip && clicked(1) {
+                    Some(1)
+                } else {
+                    None
+                }
+            });
+            if activated == Some(0) {
                 *adding_name = String::new();
                 *adding_note = true;
-            } else if has_clip && clicked(1) {
+            } else if has_clip && activated == Some(1) {
                 drop(nodes);
                 drop(dragging_node);
                 drop(hover_node);
@@ -887,21 +973,27 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             return;
         }
 
-        // Hit-test against the same row list the renderer draws, so a click
-        // always targets the exact row under the cursor.
+        // Keyboard activation picks the focused row; otherwise hit-test the
+        // same row list the renderer draws, so a click always targets the
+        // exact row under the cursor.
         let rows: Vec<ContextRow> = context_menu_rows(*context_node, &nodes);
-        let mut clicked_row: Option<ContextRow> = None;
-        for (i, row) in rows.iter().copied().enumerate() {
-            let y = my + i as i32 * mh;
-            if screen_mouse.x as i32 >= mx
-                && screen_mouse.x as i32 <= mx + mw
-                && screen_mouse.y as i32 >= y
-                && screen_mouse.y as i32 <= y + mh
-            {
-                clicked_row = Some(row);
-                break;
+        let clicked_row = if let Some(i) = menu_activate {
+            rows.get(i).copied()
+        } else {
+            let mut clicked_row: Option<ContextRow> = None;
+            for (i, row) in rows.iter().copied().enumerate() {
+                let y = my + i as i32 * mh;
+                if screen_mouse.x as i32 >= mx
+                    && screen_mouse.x as i32 <= mx + mw
+                    && screen_mouse.y as i32 >= y
+                    && screen_mouse.y as i32 <= y + mh
+                {
+                    clicked_row = Some(row);
+                    break;
+                }
             }
-        }
+            clicked_row
+        };
 
         match clicked_row {
             Some(ContextRow::Rename) => {
@@ -1227,8 +1319,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_MIDDLE);
     let handed_off = {
         let mut reticle = RETICLE_ACTIVE.write().unwrap();
-        // WASD movement or holding a zoom key engages keyboard navigation.
-        if nav_x != 0 || nav_y != 0 || zoom_held {
+        // WASD movement or holding a zoom key engages keyboard navigation,
+        // unless an open menu owns those keys for row navigation.
+        if !menu_open && (nav_x != 0 || nav_y != 0 || zoom_held) {
             *reticle = true;
         }
         let was_active = *reticle;
@@ -1353,6 +1446,11 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
                 config::width() / 2 - mw / 2,
                 config::height() / 2 - rows * mh / 2,
             );
+            // R puts the keyboard focus on the freshly opened menu. Release
+            // the reticle so WASD/arrows drive the menu instead of the camera.
+            *CONTEXT_FOCUS.write().unwrap() = Some(0);
+            *RETICLE_ACTIVE.write().unwrap() = false;
+            reset_motion();
             return;
         }
     }
@@ -1369,7 +1467,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     // Ease the keyboard pan velocity toward the held direction (or zero on
     // release). This runs before the camera lock so a coasting camera keeps
     // moving for a few frames after the key lets go.
-    let motion_allowed = reticle_on && !*editor_open;
+    let motion_allowed = reticle_on && !*editor_open && !menu_open;
     let pan_dir = if motion_allowed {
         Vector2::new(nav_x as f32, nav_y as f32)
     } else {

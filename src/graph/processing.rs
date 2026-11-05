@@ -387,6 +387,10 @@ pub static ADDING_NAME: RwLock<String> = RwLock::new(String::new());
 pub static CONTEXT_NODE: RwLock<Option<usize>> = RwLock::new(None);
 pub static CONTEXT_EMPTY: RwLock<bool> = RwLock::new(false);
 pub static CONTEXT_POS: RwLock<(i32, i32)> = RwLock::new((0, 0));
+// Keyboard focus row of the open context menu. R opens the menu with row 0
+// focused; WASD/arrows move it and Enter/Space activates it. Mouse movement
+// over the menu takes the focus back, so only one row is ever highlighted.
+pub static CONTEXT_FOCUS: RwLock<Option<usize>> = RwLock::new(None);
 pub static RENAMING: RwLock<bool> = RwLock::new(false);
 pub static RENAME_NAME: RwLock<String> = RwLock::new(String::new());
 
@@ -417,6 +421,18 @@ impl ContextRow {
             ContextRow::FoldSubGraph => "Fold Sub-Graph",
             ContextRow::UnwrapSubGraph => "Unwrap Sub-Graph",
             ContextRow::SetHeader => "Set Header",
+        }
+    }
+
+    // Shortcut chip shown by the menu, mirroring the graph bindings. Rows
+    // without a direct keyboard shortcut leave the chip slot empty.
+    pub fn key(self) -> Option<&'static str> {
+        match self {
+            ContextRow::Delete => Some("Del"),
+            ContextRow::Copy => Some("Ctrl+C"),
+            ContextRow::Cut => Some("Ctrl+X"),
+            ContextRow::OpenSubGraph => Some("V"),
+            _ => None,
         }
     }
 

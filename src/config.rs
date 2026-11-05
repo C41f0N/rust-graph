@@ -215,9 +215,10 @@ pub const AUTOCOMPLETE_SELECTED_BG: Color = Color::new(76, 128, 204, 160);
 pub const EDITOR_LINE_SELECT_BAR: Color = Color::new(190, 200, 215, 170);
 
 // Context menu
-pub const CONTEXT_MENU_W: i32 = 180;
+// Matches the hover action popup: both menus share one panel width, row
+// height, padding and key-chip layout.
+pub const CONTEXT_MENU_W: i32 = 208;
 pub const CONTEXT_MENU_ITEM_H: i32 = 30;
-pub const CONTEXT_MENU_SEP_COLOR: Color = Color::new(60, 60, 60, 255);
 
 // Breadcrumb trail
 pub const BREADCRUMB_Y: i32 = 10;

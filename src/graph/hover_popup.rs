@@ -298,32 +298,47 @@ pub fn hit_test(
     None
 }
 
-// Draw the popup in screen space. The caller has already filtered out modal
-// states; `nodes` is the renderer's existing read guard.
-pub fn draw(d: &mut RaylibDrawHandle, nodes: &[Node]) {
-    let Some(idx) = visible_index(nodes) else {
-        return;
-    };
-    let camera = *CAMERA.read().unwrap();
-    let layout = layout_for(&nodes[idx], &camera);
+// Padding between a menu's rounded panel edge and its rows. The right-click
+// context menu uses the same value so both menus share one visual language.
+pub fn menu_pad() -> i32 {
+    config::scaled_size(POPUP_PAD)
+}
+
+// One drawn menu row. The hover popup and the right-click context menu both
+// hand their rows to `draw_menu`, so their chrome, hover tint and key chips
+// match exactly.
+pub struct MenuItem<'a> {
+    pub label: &'a str,
+    pub key: Option<&'a str>,
+    pub hover_color: Color,
+    pub separator_before: bool,
+    pub rect: Rectangle,
+}
+
+// `focused` is the keyboard-selected row. When it is None the row under the
+// pointer is highlighted instead (the hover popup's behaviour); an explicit
+// focus always wins so the context menu can be driven entirely by the keyboard.
+pub fn draw_menu(
+    d: &mut RaylibDrawHandle,
+    panel: Rectangle,
+    items: &[MenuItem],
+    focused: Option<usize>,
+) {
     let mouse = d.get_mouse_position();
     let font = config::scaled_size(15);
     let key_font = config::scaled_size(12);
     let label_inset = config::scaled_size(LABEL_INSET);
     let key_inset = config::scaled_size(KEY_INSET);
+    let right_inset = config::scaled_size(8);
+    let focused = focused.filter(|i| *i < items.len());
 
-    d.draw_rectangle_rounded(layout.rect, 0.16, 8, Color::new(20, 20, 20, 235));
-    d.draw_rectangle_rounded_lines_ex(
-        layout.rect,
-        0.16,
-        8,
-        1.0,
-        Color::new(255, 255, 255, 36),
-    );
+    d.draw_rectangle_rounded(panel, 0.16, 8, Color::new(20, 20, 20, 235));
+    d.draw_rectangle_rounded_lines_ex(panel, 0.16, 8, 1.0, Color::new(255, 255, 255, 36));
 
-    for (row_index, (action, rect)) in layout.rows.iter().enumerate() {
-        // Separate the hand-off row from the direct actions.
-        if *action == HoverAction::More && row_index > 0 {
+    for (index, item) in items.iter().enumerate() {
+        let rect = item.rect;
+
+        if item.separator_before {
             d.draw_line(
                 rect.x as i32,
                 rect.y as i32,
@@ -333,39 +348,68 @@ pub fn draw(d: &mut RaylibDrawHandle, nodes: &[Node]) {
             );
         }
 
-        if rect_contains(*rect, mouse) {
-            d.draw_rectangle_rec(*rect, action.hover_color());
+        let highlighted = match focused {
+            Some(row) => row == index,
+            None => rect_contains(rect, mouse),
+        };
+        if highlighted {
+            d.draw_rectangle_rec(rect, item.hover_color);
         }
 
         text::draw(
             d,
-            action.label(),
+            item.label,
             rect.x as i32 + label_inset,
             rect.y as i32 + (rect.height as i32 - font) / 2,
             font,
             Color::WHITE,
         );
 
-        let key = action.key();
-        let key_w = text::measure(d, key, key_font);
-        let chip_w = key_w + key_inset * 2;
-        let chip_h = key_font + config::scaled_size(8);
-        let chip = Rectangle::new(
-            rect.x + rect.width - chip_w as f32 - config::scaled_size(8) as f32,
-            rect.y + (rect.height - chip_h as f32) / 2.0,
-            chip_w as f32,
-            chip_h as f32,
-        );
-        d.draw_rectangle_rounded(chip, 0.3, 6, Color::new(255, 255, 255, 18));
-        text::draw(
-            d,
-            key,
-            chip.x as i32 + key_inset,
-            chip.y as i32 + (chip_h - key_font) / 2,
-            key_font,
-            Color::new(225, 228, 235, 230),
-        );
+        if let Some(key) = item.key {
+            let key_w = text::measure(d, key, key_font);
+            let chip_w = key_w + key_inset * 2;
+            let chip_h = key_font + config::scaled_size(8);
+            let chip = Rectangle::new(
+                rect.x + rect.width - chip_w as f32 - right_inset as f32,
+                rect.y + (rect.height - chip_h as f32) / 2.0,
+                chip_w as f32,
+                chip_h as f32,
+            );
+            d.draw_rectangle_rounded(chip, 0.3, 6, Color::new(255, 255, 255, 18));
+            text::draw(
+                d,
+                key,
+                chip.x as i32 + key_inset,
+                chip.y as i32 + (chip_h - key_font) / 2,
+                key_font,
+                Color::new(225, 228, 235, 230),
+            );
+        }
     }
+}
+
+// Draw the popup in screen space. The caller has already filtered out modal
+// states; `nodes` is the renderer's existing read guard.
+pub fn draw(d: &mut RaylibDrawHandle, nodes: &[Node]) {
+    let Some(idx) = visible_index(nodes) else {
+        return;
+    };
+    let camera = *CAMERA.read().unwrap();
+    let layout = layout_for(&nodes[idx], &camera);
+    let items: Vec<MenuItem> = layout
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, (action, rect))| MenuItem {
+            label: action.label(),
+            key: Some(action.key()),
+            hover_color: action.hover_color(),
+            // Separate the hand-off row from the direct actions.
+            separator_before: *action == HoverAction::More && i > 0,
+            rect: *rect,
+        })
+        .collect();
+    draw_menu(d, layout.rect, &items, None);
 }
 
 #[cfg(test)]

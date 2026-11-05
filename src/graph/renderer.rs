@@ -2,6 +2,7 @@ use std::sync::RwLock;
 
 use crate::config;
 use crate::editor::text;
+use crate::graph::hover_popup::MenuItem;
 use crate::graph::processing::*;
 use crate::graph::settings;
 use raylib::prelude::*;
@@ -339,55 +340,74 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
     let renaming = *crate::graph::processing::RENAMING.read().unwrap();
     if (context_node.is_some() || context_empty) && !renaming {
         let (mx, my) = *crate::graph::processing::CONTEXT_POS.read().unwrap();
-        let screen_mouse = d.get_mouse_position();
         let mw = config::scaled_size(config::CONTEXT_MENU_W);
         let mh = config::scaled_size(config::CONTEXT_MENU_ITEM_H);
-        let mf = config::scaled_size(18);
-        let my_ofs = (mh - mf) / 2;
+        let pad = crate::graph::hover_popup::menu_pad();
 
-        if context_empty {
+        // The panel extends `pad` beyond the row area, so the rows inside it
+        // line up exactly with the hover popup's rows while the existing
+        // CONTEXT_POS hit-testing keeps working unchanged.
+        let (items, menu_h) = if context_empty {
             // Empty-space menu: "Add Node" always, plus "Paste" when the
             // clipboard holds a note (it drops into the folder this graph
             // level is showing — e.g. the sub-graph you navigated into).
             let has_clip = crate::graph::processing::CLIPBOARD.read().unwrap().is_some();
             let rows = if has_clip { 2usize } else { 1usize };
-            let menu_h = rows as i32 * mh;
-            d.draw_rectangle(mx, my, mw, menu_h, Color::new(20, 20, 20, 235));
-            for (i, label) in [("Add Node",), ("Paste",)].iter().enumerate().take(rows) {
-                let y = my + i as i32 * mh;
-                let hover = screen_mouse.x as i32 >= mx
-                    && screen_mouse.x as i32 <= mx + mw
-                    && screen_mouse.y as i32 >= y
-                    && screen_mouse.y as i32 <= y + mh;
-                d.draw_rectangle(
-                    mx, y, mw, mh,
-                    if hover { Color::new(76, 180, 120, 160) } else { Color::new(0, 0, 0, 0) },
-                );
-                text::draw(d, label.0, mx + 10, y + my_ofs, mf, Color::WHITE);
-            }
+            let items = (0..rows)
+                .map(|i| {
+                    let (label, key) = if i == 0 {
+                        ("Add Node", "N")
+                    } else {
+                        ("Paste", "Ctrl+V")
+                    };
+                    MenuItem {
+                        label,
+                        key: Some(key),
+                        hover_color: Color::new(76, 180, 120, 160),
+                        separator_before: false,
+                        rect: Rectangle::new(
+                            mx as f32,
+                            (my + i as i32 * mh) as f32,
+                            mw as f32,
+                            mh as f32,
+                        ),
+                    }
+                })
+                .collect::<Vec<_>>();
+            (items, rows as i32 * mh)
         } else {
             // Node menu: rows come from context_menu_rows (shared with the
             // input handler) so drawing and hit-testing can't drift apart.
             let rows: Vec<ContextRow> = context_menu_rows(context_node, &nodes);
             let menu_h = rows.len() as i32 * mh;
-            d.draw_rectangle(mx, my, mw, menu_h, Color::new(20, 20, 20, 235));
+            let items = rows
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, row)| MenuItem {
+                    label: row.label(),
+                    key: row.key(),
+                    hover_color: row.hover_color(),
+                    separator_before: i > 0 && row.group() != rows[i - 1].group(),
+                    rect: Rectangle::new(
+                        mx as f32,
+                        (my + i as i32 * mh) as f32,
+                        mw as f32,
+                        mh as f32,
+                    ),
+                })
+                .collect::<Vec<_>>();
+            (items, menu_h)
+        };
 
-            for (i, row) in rows.iter().copied().enumerate() {
-                let y = my + i as i32 * mh;
-                if i > 0 && row.group() != rows[i - 1].group() {
-                    d.draw_line(mx, y, mx + mw, y, config::CONTEXT_MENU_SEP_COLOR);
-                }
-                let hover = screen_mouse.x as i32 >= mx
-                    && screen_mouse.x as i32 <= mx + mw
-                    && screen_mouse.y as i32 >= y
-                    && screen_mouse.y as i32 <= y + mh;
-                d.draw_rectangle(
-                    mx, y, mw, mh,
-                    if hover { row.hover_color() } else { Color::new(0, 0, 0, 0) },
-                );
-                text::draw(d, row.label(), mx + 10, y + my_ofs, mf, Color::WHITE);
-            }
-        }
+        let panel = Rectangle::new(
+            (mx - pad) as f32,
+            (my - pad) as f32,
+            (mw + 2 * pad) as f32,
+            (menu_h + 2 * pad) as f32,
+        );
+        let focused = *crate::graph::processing::CONTEXT_FOCUS.read().unwrap();
+        crate::graph::hover_popup::draw_menu(d, panel, &items, focused);
     }
 
     // Rename-note name prompt (screen space)
