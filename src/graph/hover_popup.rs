@@ -416,6 +416,13 @@ mod tests {
     }
 
     #[test]
+    fn folder_backed_nodes_offer_the_subgraph_row() {
+        let mut folder = node("folder", true);
+        folder.folder_backed = true;
+        assert!(hover_actions(&folder).contains(&HoverAction::OpenSubGraph));
+    }
+
+    #[test]
     fn dwell_shows_only_after_the_threshold() {
         let path = PathBuf::from("/tmp/a.md");
         let mut state = None;

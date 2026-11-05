@@ -660,6 +660,11 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
             drop(dir_path);
             drop(context_empty);
 
+            // A click on the popup is a mouse interaction; hand the pointer
+            // back from the keyboard reticle and stop any camera glide.
+            *RETICLE_ACTIVE.write().unwrap() = false;
+            reset_motion();
+
             // The popup is a button surface for the same actions the keyboard
             // and context menu expose. Reuse their state changes instead of
             // introducing a second implementation.
@@ -705,16 +710,19 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         hover_popup::clear();
     }
 
+    // Keyboard navigation hovers with the reticle, so the popup follows
+    // whichever pointer owns the frame: the reticle when keyboard mode is
+    // active, the mouse otherwise.
     let popup_reticle_on = *RETICLE_ACTIVE.read().unwrap();
-    let popup_candidate = if popup_reticle_on {
-        None
+    let popup_point = if popup_reticle_on {
+        reticle_world(&popup_camera)
     } else {
-        nodes
-            .iter()
-            .position(|n| (n.position - mouse_pos).length() <= n.radius)
+        mouse_pos
     };
+    let popup_candidate = nodes
+        .iter()
+        .position(|n| (n.position - popup_point).length() <= n.radius);
     let popup_suppressed = popup_modal
-        || popup_reticle_on
         || dragging_node.is_some()
         || rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT)
         || rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_MIDDLE)
