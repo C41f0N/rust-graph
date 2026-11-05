@@ -804,6 +804,10 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         || rl.is_key_down(KeyboardKey::KEY_A)
         || rl.is_key_down(KeyboardKey::KEY_S)
         || rl.is_key_down(KeyboardKey::KEY_D)
+        || rl.is_key_down(KeyboardKey::KEY_UP)
+        || rl.is_key_down(KeyboardKey::KEY_DOWN)
+        || rl.is_key_down(KeyboardKey::KEY_LEFT)
+        || rl.is_key_down(KeyboardKey::KEY_RIGHT)
         || rl.is_key_down(KeyboardKey::KEY_Q)
         || rl.is_key_down(KeyboardKey::KEY_E);
     hover_popup::update(
@@ -1285,23 +1289,26 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
 
     // ------------------------------------------------------------
     // Keyboard navigation: a reticle pinned to the centre of the view stands
-    // in for the pointer. W/A/S/D pan the graph under it, holding Q zooms in
-    // and E zooms out (continuous, anchored on the reticle), and Space / V / R
-    // act on the node under it. Esc or a mouse press hands the pointer back and
-    // hides the reticle; merely moving the mouse leaves keyboard navigation on.
+    // in for the pointer. W/A/S/D or the arrow keys pan the graph under it,
+    // holding Q zooms in and E zooms out (continuous, anchored on the
+    // reticle), and Space / V / R act on the node under it. Esc or a mouse
+    // press hands the pointer back and hides the reticle; merely moving the
+    // mouse leaves keyboard navigation on.
     // ------------------------------------------------------------
 
-    let nav_x =
-        rl.is_key_down(KeyboardKey::KEY_D) as i32 - rl.is_key_down(KeyboardKey::KEY_A) as i32;
-    let nav_y =
-        rl.is_key_down(KeyboardKey::KEY_S) as i32 - rl.is_key_down(KeyboardKey::KEY_W) as i32;
+    let nav_x = (rl.is_key_down(KeyboardKey::KEY_D)
+        || rl.is_key_down(KeyboardKey::KEY_RIGHT)) as i32
+        - (rl.is_key_down(KeyboardKey::KEY_A) || rl.is_key_down(KeyboardKey::KEY_LEFT)) as i32;
+    let nav_y = (rl.is_key_down(KeyboardKey::KEY_S)
+        || rl.is_key_down(KeyboardKey::KEY_DOWN)) as i32
+        - (rl.is_key_down(KeyboardKey::KEY_W) || rl.is_key_down(KeyboardKey::KEY_UP)) as i32;
     // Q zooms in, E zooms out. Both held cancels out.
     let zoom_dir =
         (rl.is_key_down(KeyboardKey::KEY_Q) as i32 - rl.is_key_down(KeyboardKey::KEY_E) as i32)
             as f32;
     let zoom_held = !ctrl && zoom_dir != 0.0;
-    // Shift doubles WASD and Q/E speed. The accel scales with it, so the ramp
-    // stays the same length and only the sustained speed changes.
+    // Shift doubles WASD/arrow and Q/E speed. The accel scales with it, so the
+    // ramp stays the same length and only the sustained speed changes.
     let boost = if rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
         || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
     {
@@ -1311,7 +1318,7 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     };
 
     // Only a deliberate click hands the pointer back. Moving the mouse no
-    // longer interrupts keyboard movement: the reticle stays put (and WASD/QE
+    // longer interrupts keyboard movement: the reticle stays put (and WASD/arrow/QE
     // keep working) until a button is actually pressed.
     let handoff_input = rl.is_key_pressed(KeyboardKey::KEY_ESCAPE)
         || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
@@ -1319,14 +1326,14 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
         || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_MIDDLE);
     let handed_off = {
         let mut reticle = RETICLE_ACTIVE.write().unwrap();
-        // WASD movement or holding a zoom key engages keyboard navigation,
+        // WASD/arrow movement or holding a zoom key engages keyboard navigation,
         // unless an open menu owns those keys for row navigation.
         if !menu_open && (nav_x != 0 || nav_y != 0 || zoom_held) {
             *reticle = true;
         }
         let was_active = *reticle;
         // Esc or a mouse press hands the pointer back. Passive mouse motion
-        // does not, so nudging the mouse never stops a WASD/QE glide.
+        // does not, so nudging the mouse never stops a WASD/arrow/QE glide.
         if handoff_input {
             *reticle = false;
         }

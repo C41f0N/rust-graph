@@ -263,7 +263,7 @@ fn shortcuts_note() -> &'static str {
      together.\n\
      \n\
      **Graph**\n\
-     - WASD - move; Q / E - zoom in / out (hold to glide)\n\
+     - WASD / arrow keys - move; Q / E - zoom in / out (hold to glide)\n\
      - G - open the editor view\n\
      - Space - open the hovered node\n\
      - V - dive into the hovered node's sub-graph\n\

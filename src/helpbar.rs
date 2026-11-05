@@ -152,7 +152,7 @@ fn resolve_from(f: &StateFlags) -> HelpContext {
 // The default (no sub-graph stack) graph view: "up level" is a no-op at the
 // root, so it only appears once a stack exists (GRAPH_BASE_FULL).
 const GRAPH_BASE: &[Chip] = &[
-    ("WASD", "move"),
+    ("WASD/Arrows", "move"),
     ("Q/E", "zoom in/out"),
     ("G", "to editor"),
     ("Space", "open"),
@@ -167,7 +167,7 @@ const GRAPH_BASE: &[Chip] = &[
 ];
 
 const GRAPH_BASE_FULL: &[Chip] = &[
-    ("WASD", "move"),
+    ("WASD/Arrows", "move"),
     ("Q/E", "zoom in/out"),
     ("G", "to editor"),
     ("Space", "open"),
