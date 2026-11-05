@@ -1324,9 +1324,9 @@ pub fn handle_input(rl: &mut RaylibHandle, editor_open: &mut bool) {
     let nav_y = (rl.is_key_down(KeyboardKey::KEY_S)
         || rl.is_key_down(KeyboardKey::KEY_DOWN)) as i32
         - (rl.is_key_down(KeyboardKey::KEY_W) || rl.is_key_down(KeyboardKey::KEY_UP)) as i32;
-    // Q zooms in, E zooms out. Both held cancels out.
+    // E zooms in, Q zooms out. Both held cancels out.
     let zoom_dir =
-        (rl.is_key_down(KeyboardKey::KEY_Q) as i32 - rl.is_key_down(KeyboardKey::KEY_E) as i32)
+        (rl.is_key_down(KeyboardKey::KEY_E) as i32 - rl.is_key_down(KeyboardKey::KEY_Q) as i32)
             as f32;
     let zoom_held = !ctrl && zoom_dir != 0.0;
     // Shift doubles WASD/arrow and Q/E speed. The accel scales with it, so the

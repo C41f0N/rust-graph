@@ -158,7 +158,7 @@ fn resolve_from(f: &StateFlags) -> HelpContext {
 // them here would just crowd out the global bindings.
 const GRAPH_BASE: &[Chip] = &[
     ("WASD/Arrows", "move"),
-    ("Q/E", "zoom in/out"),
+    ("Q/E", "zoom out/in"),
     ("G", "to editor"),
     ("N", "new"),
     ("Ctrl+C/V/X", "copy/cut/paste"),
@@ -169,7 +169,7 @@ const GRAPH_BASE: &[Chip] = &[
 
 const GRAPH_BASE_FULL: &[Chip] = &[
     ("WASD/Arrows", "move"),
-    ("Q/E", "zoom in/out"),
+    ("Q/E", "zoom out/in"),
     ("G", "to editor"),
     ("N", "new"),
     ("Ctrl+C/V/X", "copy/cut/paste"),
