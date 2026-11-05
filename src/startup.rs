@@ -840,7 +840,7 @@ fn draw_create(d: &mut RaylibDrawHandle) {
     };
     let input = Rectangle::new(bx as f32, by as f32, bw as f32, bh as f32);
     ui::surface(d, input, 0.24, ui::SURFACE_RAISED);
-    ui::border(d, input, 0.24, ui::ACCENT_SOFT);
+    ui::border(d, input, 0.24, ui::BORDER_STRONG);
     let fs = config::scaled_size(18);
     let name = CREATE_NAME.read().unwrap();
     let pad = config::scaled_size(10);
@@ -861,8 +861,8 @@ fn draw_create(d: &mut RaylibDrawHandle) {
         let rect = Rectangle::new(x as f32, y as f32, bw as f32, bh as f32);
         let (fill, edge) = if id == 0 {
             (
-                if hover { ui::SUCCESS } else { ui::ACCENT_SOFT },
-                if hover { ui::SUCCESS } else { ui::ACCENT },
+                if hover { ui::ACCENT_STRONG } else { ui::ACCENT_SOFT },
+                ui::ACCENT,
             )
         } else {
             (if hover { BTN_HOVER } else { BTN_BG }, ui::BORDER)

@@ -439,12 +439,12 @@ impl ContextRow {
     pub fn hover_color(self) -> Color {
         match self {
             ContextRow::Rename => crate::ui::ACCENT_STRONG,
-            ContextRow::Delete => Color::new(230, 112, 112, 150),
+            ContextRow::Delete => Color::new(255, 255, 255, 32),
             ContextRow::Copy => crate::ui::ACCENT_STRONG,
-            ContextRow::Cut => Color::new(226, 170, 96, 150),
+            ContextRow::Cut => Color::new(255, 255, 255, 32),
             ContextRow::OpenSubGraph => crate::ui::ACCENT_STRONG,
-            ContextRow::FoldSubGraph => Color::new(122, 205, 158, 140),
-            ContextRow::UnwrapSubGraph => Color::new(122, 205, 158, 140),
+            ContextRow::FoldSubGraph => Color::new(255, 255, 255, 32),
+            ContextRow::UnwrapSubGraph => Color::new(255, 255, 255, 32),
             ContextRow::SetHeader => crate::ui::ACCENT_STRONG,
         }
     }

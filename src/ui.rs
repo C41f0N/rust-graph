@@ -4,14 +4,17 @@
 // paint from this one palette so a new panel cannot drift into a different
 // shade or border. Geometry stays in the feature modules; these are the ink
 // and the reusable panel primitives.
+//
+// The theme is strictly monochrome: black and white with a ramp of neutral
+// grays. No hue is introduced anywhere, so the graph and the chrome read as
+// one material.
 use raylib::prelude::*;
 
-// Near-black surfaces with a faint blue cast, so white text stays soft rather
-// than glaring and the whole app reads as one material.
-pub const PANEL: Color = Color::new(14, 16, 21, 244);
-pub const PANEL_SOLID: Color = Color::new(9, 11, 15, 255);
-pub const SURFACE: Color = Color::new(19, 22, 29, 250);
-pub const SURFACE_RAISED: Color = Color::new(28, 32, 41, 255);
+// Near-black neutral surfaces.
+pub const PANEL: Color = Color::new(16, 16, 16, 244);
+pub const PANEL_SOLID: Color = Color::new(10, 10, 10, 255);
+pub const SURFACE: Color = Color::new(22, 22, 22, 250);
+pub const SURFACE_RAISED: Color = Color::new(34, 34, 34, 255);
 pub const SURFACE_HOVER: Color = Color::new(255, 255, 255, 14);
 
 // Hairlines: BORDER for quiet seams, BORDER_STRONG for floating panels.
@@ -19,17 +22,17 @@ pub const BORDER: Color = Color::new(255, 255, 255, 28);
 pub const BORDER_STRONG: Color = Color::new(255, 255, 255, 52);
 
 // Type ramp.
-pub const TEXT: Color = Color::new(237, 240, 246, 255);
-pub const TEXT_SECONDARY: Color = Color::new(174, 181, 197, 255);
-pub const TEXT_MUTED: Color = Color::new(116, 124, 144, 255);
+pub const TEXT: Color = Color::new(240, 240, 240, 255);
+pub const TEXT_SECONDARY: Color = Color::new(180, 180, 180, 255);
+pub const TEXT_MUTED: Color = Color::new(126, 126, 126, 255);
 
-// One accent (soft blue) for selection and affordances; green/red are reserved
-// for create/destructive actions so the interface stays calm.
-pub const ACCENT: Color = Color::new(104, 156, 242, 255);
-pub const ACCENT_SOFT: Color = Color::new(104, 156, 242, 44);
-pub const ACCENT_STRONG: Color = Color::new(104, 156, 242, 160);
-pub const SUCCESS: Color = Color::new(122, 205, 158, 255);
-pub const DANGER: Color = Color::new(230, 112, 112, 255);
+// The accent is white: solid for marks and labels, translucent for pills and
+// soft edges. Success/danger are expressed by brightness, not by hue.
+pub const ACCENT: Color = Color::new(240, 240, 240, 255);
+pub const ACCENT_SOFT: Color = Color::new(255, 255, 255, 24);
+pub const ACCENT_STRONG: Color = Color::new(255, 255, 255, 40);
+pub const SUCCESS: Color = Color::new(220, 220, 220, 255);
+pub const DANGER: Color = Color::new(245, 245, 245, 255);
 
 // A floating panel: rounded near-black fill with a one-pixel hairline.
 pub fn panel(d: &mut impl RaylibDraw, rect: Rectangle, radius: f32) {

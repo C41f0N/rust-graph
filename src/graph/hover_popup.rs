@@ -65,10 +65,10 @@ impl HoverAction {
 
     fn hover_color(self) -> Color {
         match self {
-            HoverAction::Open => Color::new(76, 128, 204, 160),
-            HoverAction::OpenSubGraph => Color::new(76, 180, 120, 160),
-            HoverAction::Delete => Color::new(200, 60, 60, 160),
-            HoverAction::More => Color::new(120, 120, 130, 160),
+            HoverAction::Open => crate::ui::ACCENT_STRONG,
+            HoverAction::OpenSubGraph => crate::ui::ACCENT_STRONG,
+            HoverAction::Delete => Color::new(255, 255, 255, 32),
+            HoverAction::More => crate::ui::ACCENT_STRONG,
         }
     }
 }

@@ -492,7 +492,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool, editor_dimentions: Vect
                     button,
                     0.32,
                     if over {
-                        Color::new(104, 156, 242, 190)
+                        Color::new(255, 255, 255, 44)
                     } else {
                         ui::ACCENT_SOFT
                     },
@@ -1148,7 +1148,7 @@ guide_runs.retain(|r| {
                     let ccolor = if over {
                         Color::WHITE
                     } else {
-                        Color::new(205, 215, 235, 255)
+                        Color::new(210, 210, 210, 255)
                     };
                     let t = 2.0;
                     if folded_heads.contains(&line.line) {
@@ -1171,9 +1171,9 @@ guide_runs.retain(|r| {
                         0.5,
                         4,
                         if over {
-                            Color::new(180, 200, 235, 80)
+                            Color::new(255, 255, 255, 26)
                         } else {
-                            Color::new(150, 165, 200, 55)
+                            Color::new(255, 255, 255, 18)
                         },
                     );
                     fold_markers.push((cx, cy, cw, ch, line.line));
@@ -1673,7 +1673,7 @@ guide_runs.retain(|r| {
                                     hit.y,
                                     hit.w,
                                     hit.h,
-                                    Color::new(76, 128, 204, 70),
+                                    Color::new(255, 255, 255, 22),
                                 );
                                 s.draw_line(
                                     hit.x,

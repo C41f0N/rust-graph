@@ -192,12 +192,14 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
             mode.draw_circle_v(node.position, draw_radius + 1.5, Color::new(255, 255, 255, 90));
         }
 
-        // Selection is signaled by the node body flipping to light pink.
-        let node_color = if is_selected {
-            Color::LIGHTPINK
-        } else {
-            node.color
-        };
+        // Selection is signaled by a white ring around the disc; the body
+        // stays in the monochrome ink so the graph keeps its black-and-white
+        // look.
+        if is_selected {
+            mode.draw_circle_v(node.position, draw_radius + 3.0, Color::new(255, 255, 255, 150));
+        }
+
+        let node_color = node.color;
         mode.draw_circle_v(node.position, draw_radius, node_color);
 
         // A header image (frontmatter `header:` pointing into assets/) is
@@ -397,7 +399,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
                     MenuItem {
                         label,
                         key: Some(key),
-                        hover_color: Color::new(122, 205, 158, 140),
+                        hover_color: crate::ui::ACCENT_STRONG,
                         separator_before: false,
                         rect: Rectangle::new(
                             mx as f32,
@@ -615,7 +617,7 @@ pub fn draw(d: &mut RaylibDrawHandle, editor_open: bool) {
 
     // Settings dialog / font picker
     if settings_open {
-        d.draw_rectangle(0, 0, config::width(), config::height(), Color::new(3, 4, 7, 180));
+        d.draw_rectangle(0, 0, config::width(), config::height(), Color::new(0, 0, 0, 180));
 
         let px = settings::panel_x();
         let py = settings::panel_y();
@@ -1043,7 +1045,7 @@ fn draw_zoom_scale(d: &mut RaylibDrawHandle) {
         Rectangle::new(tx as f32, ty, thumb_w as f32, thumb_h),
         0.5,
         4,
-        Color::new(104, 156, 242, (220.0 * alpha) as u8),
+        Color::new(240, 240, 240, (220.0 * alpha) as u8),
     );
 
     // The current zoom percentage floats beside the thumb while readable.
@@ -1062,7 +1064,7 @@ fn draw_zoom_scale(d: &mut RaylibDrawHandle) {
             ),
             0.4,
             5,
-            Color::new(14, 16, 21, (210.0 * alpha) as u8),
+            Color::new(16, 16, 16, (210.0 * alpha) as u8),
         );
         text::draw(
             d,
@@ -1070,7 +1072,7 @@ fn draw_zoom_scale(d: &mut RaylibDrawHandle) {
             lx,
             ly,
             fs,
-            Color::new(237, 240, 246, (235.0 * alpha) as u8),
+            Color::new(240, 240, 240, (235.0 * alpha) as u8),
         );
     }
 }

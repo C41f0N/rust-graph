@@ -391,7 +391,7 @@ pub fn draw(d: &mut RaylibDrawHandle) {
     }
 
     let (sw, sh) = (config::width(), config::height());
-    d.draw_rectangle(0, 0, sw, sh, Color::new(3, 4, 7, 170));
+    d.draw_rectangle(0, 0, sw, sh, Color::new(0, 0, 0, 170));
 
     let font_size = config::scaled_size(config::EDITOR_FONT_SIZE);
     let item_h = config::scaled_size(config::AUTOCOMPLETE_ITEM_HEIGHT).max(2);
