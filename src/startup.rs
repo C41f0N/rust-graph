@@ -288,6 +288,7 @@ fn shortcuts_note() -> &'static str {
      - Ctrl+S - save (autosave also fires after a typing pause)\n\
      - Ctrl+Z / Ctrl+Y - undo / redo\n\
      - Ctrl+W (or Ctrl+Shift+T) - close the active tab\n\
+     - Ctrl+Tab / Ctrl+Shift+Tab - cycle open tabs\n\
      - Alt+1..9 - jump to an open tab\n\
      - Esc - back to navigation mode\n\
      \n\

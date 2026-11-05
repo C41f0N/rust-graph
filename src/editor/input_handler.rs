@@ -424,6 +424,21 @@ pub fn handle_input(rl: &mut RaylibHandle) {
         return;
     }
 
+    // Ctrl+Tab cycles forward through the open tabs and Ctrl+Shift+Tab
+    // backward, wrapping at the ends. Deferred like the other tab actions.
+    // Checked before the plain Tab binding below so it never indents text.
+    if ctrl_down(rl) && rl.is_key_pressed(KeyboardKey::KEY_TAB) {
+        let count = crate::editor::tabs::count();
+        if count > 1 {
+            let current = crate::editor::tabs::active_index().unwrap_or(0);
+            let delta = if shift_down(rl) { -1 } else { 1 };
+            let next = crate::editor::tabs::cycle_index(current, count, delta);
+            crate::editor::ACTIVATE_TAB_REQUEST
+                .store(next as i32, std::sync::atomic::Ordering::Relaxed);
+        }
+        return;
+    }
+
     // Alt+1..9 jumps straight to a tab. Deferred like the close above because
     // activation also swaps the buffer globals.
     if alt_down(rl) {

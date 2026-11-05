@@ -339,6 +339,20 @@ pub fn active_index() -> Option<usize> {
     *ACTIVE.read().unwrap()
 }
 
+// Number of open documents.
+pub fn count() -> usize {
+    TABS.read().unwrap().len()
+}
+
+// The tab reached by stepping `delta` positions from `current`, wrapping at
+// both ends. Pure so the cycle shortcut is unit-testable.
+pub fn cycle_index(current: usize, count: usize, delta: i32) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    (current as i32 + delta).rem_euclid(count as i32) as usize
+}
+
 // Make tab `idx` the active document. Saves the old tab first if it was
 // edited, preserves per-tab view + undo state. `view_w` is the tab bar width,
 // used to keep the freshly activated tab visible.
@@ -912,6 +926,17 @@ mod tests {
         assert_eq!(clamp_scroll(9999, count, view_w), total - view_w);
         assert_eq!(clamp_scroll(-50, count, view_w), 0);
         assert_eq!(clamp_scroll(0, 0, 100), 0);
+    }
+
+    #[test]
+    fn cycle_index_wraps_in_both_directions() {
+        assert_eq!(cycle_index(0, 3, 1), 1);
+        assert_eq!(cycle_index(2, 3, 1), 0);
+        assert_eq!(cycle_index(0, 3, -1), 2);
+        assert_eq!(cycle_index(1, 3, -1), 0);
+        // A single tab cycles to itself, and an empty strip reports 0.
+        assert_eq!(cycle_index(0, 1, 1), 0);
+        assert_eq!(cycle_index(0, 0, 1), 0);
     }
 
     #[test]

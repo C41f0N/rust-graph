@@ -247,6 +247,7 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
             ("J", "journal"),
             ("W/S/Up/Down", "move"),
             ("Ctrl+W", "close tab"),
+            ("Ctrl+Tab", "cycle tabs"),
             ("Alt+1-9", "switch tab"),
         ],
         HelpContext::CommandPalette => &[
@@ -265,6 +266,7 @@ pub fn chips(ctx: HelpContext) -> &'static [Chip] {
             ("Ctrl+Z", "undo"),
             ("Ctrl+Y", "redo"),
             ("Ctrl+W", "close tab"),
+            ("Ctrl+Tab", "cycle tabs"),
             ("Alt+1-9", "switch tab"),
         ],
     }
